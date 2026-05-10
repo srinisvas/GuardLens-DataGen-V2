@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=v11_gen
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --account=V_cs_hat_capstone_mkhan74
+#SBATCH --partition=defq
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
