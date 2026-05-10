@@ -1,0 +1,17 @@
+{
+    "job_id": "23001",
+    "node": "g002",
+    "pipeline_version": "v11",
+    "stage": "generation",
+    "gen_model": "Qwen/Qwen2.5-7B-Instruct",
+    "n_pairs": 1000,
+    "paraphrase_variants": 1,
+    "misleading_fraction": 0.10,
+    "random_seed": 42,
+    "raw_records": 2941,
+    "augmented_records": 3171,
+    "final_records": 2954,
+    "gen_elapsed_min": 460,
+    "total_elapsed_min": 460,
+    "completed": "2026-05-10T08:01:02-04:00"
+}
