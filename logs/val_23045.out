@@ -1,0 +1,26 @@
+========================================================
+  Batch 2: Dataset Validation (v11)
+  Job:              23045
+  Node:             g004
+  Val model:        meta-llama/Meta-Llama-3-8B-Instruct
+  Input:            /gpfs/home/s001/ssubram7/staging/dataset_gen_output/semantic_multiturn_v11_llama_augmented_dedup.jsonl
+  Counterfactual:   false
+  Checkpoint every: 25 records
+  Model cache:      /gpfs/home/s001/ssubram7/work/hf_models
+  Output:           /gpfs/home/s001/ssubram7/staging/dataset_gen_output
+  Results:          /gpfs/home/s001/ssubram7/work/results/dataset_gen
+========================================================
+HF_HOME locked to: /gpfs/home/s001/ssubram7/work/hf_models
+CUDA_HOME: not set
+NVIDIA A100 80GB PCIe, 81920 MiB, 81156 MiB
+System RAM: 503Gi total, 495Gi available
+
+--- Storage pre-flight checks ---
+  Model cache: 60G at /gpfs/home/s001/ssubram7/work/hf_models
+ERROR: meta-llama/Meta-Llama-3-8B-Instruct not found in cache.
+  Expected: /gpfs/home/s001/ssubram7/work/hf_models/hub/models--meta-llama--Meta-Llama-3-8B-Instruct
+  Run: bash prestage_models.sh
+
+[16:48:20] Cleanup (exit code: 1)...
+  Job ended with error. Checkpoint preserved for resume.
+  Done.
