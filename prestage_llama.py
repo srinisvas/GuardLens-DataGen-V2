@@ -26,12 +26,12 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pre-stage Llama-3.1-8B-Instruct")
+    parser = argparse.ArgumentParser(description="Pre-stage Llama-3.0-8B-Instruct")
     parser.add_argument("--cache-dir", type=str,
                         default=os.path.expanduser("~/work/hf_models"),
                         help="HuggingFace cache directory")
     parser.add_argument("--model", type=str,
-                        default="meta-llama/Llama-3.1-8B-Instruct",
+                        default="meta-llama/Llama-3.0-8B-Instruct",
                         help="Model to download")
     args = parser.parse_args()
 
