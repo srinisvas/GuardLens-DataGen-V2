@@ -1,0 +1,2 @@
+/gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
