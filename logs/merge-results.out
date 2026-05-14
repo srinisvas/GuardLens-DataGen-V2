@@ -1,0 +1,48 @@
+Loaded 1100 interactive records
+Wrote 1100 merged records to /gpfs/home/s001/ssubram7/staging/dataset_gen_output/merged_7b.jsonl
+
+============================================================
+  Merged Dataset Statistics
+============================================================
+  Total: 1100 (550 malicious, 550 benign)
+
+  Transfer tiers:
+    benign: 550 (50.0%)
+    transfer_success: 227 (20.6%)
+    cross_only: 167 (15.2%)
+    no_jailbreak: 132 (12.0%)
+    target_only: 24 (2.2%)
+
+  Jailbreak success (malicious only):
+    Llama-8B (target):  251/550 (45.6%)
+    Qwen-7B (transfer): 394/550 (71.6%)
+    Both (transfer):    227/550 (41.3%)
+    Any validator:      418/550 (76.0%)
+
+  False alarms (benign):
+    Rejected: 199/550 (36.2%)
+
+  Supervision tiers:
+    construction: 873
+    llm_confirmed: 227
+
+  Pivot kinds (malicious):
+    contextual_pivot: 223
+    lexical_pivot: 181
+    none: 142
+    misleading_decoy: 4
+
+  Training eligible: 769/1100
+
+  Attack strategies:
+    perspective_shift: 84 total, 81 jailbreaks (96%)
+    fictional_scenario: 75 total, 57 jailbreaks (76%)
+    academic_framing: 62 total, 59 jailbreaks (95%)
+    meta_discussion: 59 total, 42 jailbreaks (71%)
+    role_escalation: 50 total, 41 jailbreaks (82%)
+    task_decomposition: 49 total, 33 jailbreaks (67%)
+    gradual_normalization: 46 total, 32 jailbreaks (70%)
+    context_injection: 43 total, 31 jailbreaks (72%)
+    translation_encoding: 42 total, 21 jailbreaks (50%)
+    authority_impersonation: 40 total, 21 jailbreaks (52%)
+============================================================
