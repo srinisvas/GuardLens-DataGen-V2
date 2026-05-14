@@ -35,7 +35,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_semantic_datasetv11 as gen
 from inference_backend import create_backend, InferenceBackend
 
-
 # =========================================================
 # LLM Span Annotation Prompt
 # =========================================================
@@ -146,6 +145,9 @@ class CausalAnalysisValidator:
         Replay a conversation through the validator.
         Optionally skip or replace a specific turn.
         Returns max_unsafe_score across all turns.
+
+        Sanitizes message list to ensure strict user/assistant
+        alternation required by chat templates.
         """
         messages = []
         trajectory = []
@@ -164,13 +166,27 @@ class CausalAnalysisValidator:
                     else:
                         continue
 
+                # Enforce alternation: if last message was also user,
+                # insert a placeholder assistant response
+                if messages and messages[-1]["role"] == "user":
+                    messages.append({"role": "assistant", "content": "I understand. Please continue."})
+
                 messages.append({"role": "user", "content": text})
 
                 # Truncate for context window
                 send_messages = messages[-MAX_MESSAGES:] if len(messages) > MAX_MESSAGES else messages
 
+                # Ensure truncated window starts with user
+                if send_messages and send_messages[0]["role"] == "assistant":
+                    send_messages = send_messages[1:]
+
+                if not send_messages:
+                    continue
+
                 response = self.chat(send_messages)
                 if response.startswith("[error"):
+                    # Still append a placeholder so alternation stays valid
+                    messages.append({"role": "assistant", "content": "I cannot assist with that."})
                     continue
 
                 judge = self.judge_response(text, response)
@@ -181,6 +197,14 @@ class CausalAnalysisValidator:
                     "compliance": judge["compliance"],
                 })
                 messages.append({"role": "assistant", "content": response})
+
+            elif turn["role"] == "assistant":
+                # Include original assistant turns to maintain context
+                # but merge if previous was also assistant
+                if messages and messages[-1]["role"] == "assistant":
+                    messages[-1]["content"] += " " + turn["text"][:200]
+                else:
+                    messages.append({"role": "assistant", "content": turn["text"][:300]})
 
         max_unsafe = max((t["unsafe_score"] for t in trajectory), default=0.0)
         max_turn = None
@@ -411,8 +435,8 @@ def run_pass2(records: List[Dict], validator: CausalAnalysisValidator) -> List[D
     jailbreak_records = [
         (i, r) for i, r in enumerate(records)
         if r.get("label") == 1
-        and r.get("transfer_tier", "no_jailbreak") != "no_jailbreak"
-        and r.get("pivot_turn_id") is not None
+           and r.get("transfer_tier", "no_jailbreak") != "no_jailbreak"
+           and r.get("pivot_turn_id") is not None
     ]
     print(f"  Records with pivot: {len(jailbreak_records)}")
 
@@ -528,7 +552,7 @@ def run_pass3(records: List[Dict], validator: CausalAnalysisValidator) -> List[D
     causal_records = [
         (i, r) for i, r in enumerate(records)
         if r.get("causal_analysis", {}).get("pivot_turn_cf", {}).get("label")
-        in ("cf_turn_strong", "cf_turn_weak")
+           in ("cf_turn_strong", "cf_turn_weak")
     ]
     print(f"  Records with causal pivot turns: {len(causal_records)}")
 
@@ -627,7 +651,7 @@ def run_pass4(records: List[Dict], validator: CausalAnalysisValidator) -> List[D
     causal_records = [
         (i, r) for i, r in enumerate(records)
         if r.get("causal_analysis", {}).get("pivot_turn_cf", {}).get("label")
-        in ("cf_turn_strong", "cf_turn_weak")
+           in ("cf_turn_strong", "cf_turn_weak")
     ]
     print(f"  Records to test: {len(causal_records)}")
 
