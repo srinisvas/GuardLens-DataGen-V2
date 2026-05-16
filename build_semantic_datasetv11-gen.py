@@ -2155,15 +2155,12 @@ class SeedLoader:
 # =========================================================
 
 SUPERVISION_TIERS = {
-    "cf_strong":        1.00,   # Counterfactual removal clearly changes outcome (delta >= 0.40)
-    "benign_validated": 1.00,   # Clean benign accepted by both validators
-    "cf_weak":          0.70,   # Counterfactual signal exists but smaller (delta 0.15-0.40)
-    "hard_benign":      0.80,   # Benign twin accepted by validators, near adversarial context
-    "llm_confirmed":    0.60,   # LLM annotator detected span + transfer/distributed evidence
-    "construction":     0.40,   # Generator placed span, not causally confirmed
-    "llm_only":         0.25,   # LLM judge found it, no construction confirmation
+    "cf_strong":        1.00,   # Counterfactual removal clearly changes outcome
+    "llm_confirmed":    0.80,   # LLM annotator detected span as MALICIOUS_TRIGGER or PAYLOAD_SPAN
+    "cf_weak":          0.65,   # Counterfactual signal exists but small
+    "construction":     0.50,   # Generator placed span, not causally confirmed
+    "llm_only":         0.30,   # LLM judge found it, no construction confirmation
     "incidental":       0.00,   # Confirmed negative or false lead
-    "boundary_benign":  0.00,   # Benign rejected by at least one validator
     "ignore":           0.00,   # Ambiguous or unvalidated -- excluded from loss
 }
 
@@ -2195,18 +2192,8 @@ def get_loss_weight(tier: str) -> float:
 
 def assign_sample_tier(sample: "ConversationSample") -> "ConversationSample":
     """Set sample-level supervision_tier from the strongest span tier."""
-    tier_priority = [
-        "cf_strong",
-        "benign_validated",
-        "hard_benign",
-        "cf_weak",
-        "llm_confirmed",
-        "construction",
-        "llm_only",
-        "incidental",
-        "boundary_benign",
-        "ignore",
-    ]
+    tier_priority = ["cf_strong", "llm_confirmed", "cf_weak", "construction",
+                     "llm_only", "incidental", "ignore"]
 
     # Detect if any span was LLM-annotated (match_type == "llm_detected")
     has_llm = any(
