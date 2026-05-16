@@ -1,0 +1,37 @@
+(/gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen) [ssubram7@vhpcprdssh01 GuardLens-DataGen-V2]$ python3 split_dataset.py \
+>     --input $HOME/staging/dataset_gen_output/final_dataset.jsonl \
+>     --output-dir $HOME/staging/dataset_gen_output/splits/ \
+>     --human-benchmark 100 \
+>     --double-annotated 50
+Loaded 1762 records from /gpfs/home/s001/ssubram7/staging/dataset_gen_output/final_dataset.jsonl
+Internal records: 1762, External test: 0
+Grouped into 1463 pair groups
+Split statistics:
+  Train: 1220 records
+    Labels: {1: 383, 0: 837}
+    Training eligible: 1220
+    External test: 0
+    Validation: {'validated': 1220}
+    Supervision tiers: {'llm_confirmed': 237, 'construction': 452, 'cf_weak': 22, 'cf_strong': 7, 'benign_validated': 502}
+    Pivot kinds: {'contextual_pivot': 213, 'none': 844, 'lexical_pivot': 160, 'misleading_decoy': 3}
+    Families (top 5): {'interactive_adversarial': 383, 'interactive_benign_twin': 335, 'clean_everyday': 206, 'research_technical': 132, 'topic_matched_safe': 72}
+  Dev: 266 records
+    Labels: {1: 79, 0: 187}
+    Training eligible: 266
+    External test: 0
+    Validation: {'validated': 266}
+    Supervision tiers: {'llm_confirmed': 54, 'construction': 100, 'cf_strong': 2, 'cf_weak': 4, 'benign_validated': 106}
+    Pivot kinds: {'contextual_pivot': 44, 'none': 188, 'lexical_pivot': 34}
+    Families (top 5): {'interactive_benign_twin': 81, 'interactive_adversarial': 79, 'clean_everyday': 44, 'research_technical': 28, 'topic_matched_safe': 15}
+  Test: 276 records
+    Labels: {1: 87, 0: 189}
+    Training eligible: 276
+    External test: 0
+    Validation: {'validated': 276}
+    Supervision tiers: {'llm_confirmed': 52, 'construction': 105, 'cf_weak': 4, 'cf_strong': 2, 'benign_validated': 113}
+    Pivot kinds: {'contextual_pivot': 48, 'none': 191, 'lexical_pivot': 36, 'misleading_decoy': 1}
+    Families (top 5): {'interactive_adversarial': 87, 'interactive_benign_twin': 76, 'clean_everyday': 45, 'research_technical': 29, 'topic_matched_safe': 17}
+Human benchmark:
+  Single-annotated: 100 records
+  Double-annotated: 50 records
+All splits written to /gpfs/home/s001/ssubram7/staging/dataset_gen_output/splits//

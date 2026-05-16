@@ -1,0 +1,66 @@
+/gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+/gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m We recommend installing via `pip install torch-c-dlpack-ext`
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m   warnings.warn(
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Loading safetensors checkpoint shards:   0% Completed | 0/3 [00:00<?, ?it/s]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Loading safetensors checkpoint shards:  33% Completed | 1/3 [00:13<00:26, 13.26s/it]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Loading safetensors checkpoint shards:  67% Completed | 2/3 [00:25<00:12, 12.65s/it]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Loading safetensors checkpoint shards: 100% Completed | 3/3 [00:39<00:00, 13.05s/it]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Loading safetensors checkpoint shards: 100% Completed | 3/3 [00:39<00:00, 13.00s/it]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m 
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   4%|▍         | 2/51 [00:00<00:02, 18.94it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   8%|▊         | 4/51 [00:00<00:02, 19.25it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  12%|█▏        | 6/51 [00:00<00:02, 19.43it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  16%|█▌        | 8/51 [00:00<00:02, 19.58it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  22%|██▏       | 11/51 [00:00<00:01, 20.96it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  27%|██▋       | 14/51 [00:00<00:01, 21.79it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  33%|███▎      | 17/51 [00:00<00:01, 22.61it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  39%|███▉      | 20/51 [00:00<00:01, 23.85it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  45%|████▌     | 23/51 [00:01<00:01, 24.64it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  51%|█████     | 26/51 [00:01<00:00, 25.31it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  57%|█████▋    | 29/51 [00:01<00:00, 25.39it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  63%|██████▎   | 32/51 [00:01<00:00, 25.93it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  69%|██████▊   | 35/51 [00:01<00:00, 26.83it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  75%|███████▍  | 38/51 [00:01<00:00, 27.63it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  82%|████████▏ | 42/51 [00:01<00:00, 28.60it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  90%|█████████ | 46/51 [00:01<00:00, 29.78it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  98%|█████████▊| 50/51 [00:01<00:00, 31.19it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 51/51 [00:01<00:00, 25.79it/s]
+[1;36m(EngineCore_DP0 pid=3818011)[0;0m Capturing CUDA graphs (decode, FULL):   0%|          | 0/35 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL):   9%|▊         | 3/35 [00:00<00:01, 25.60it/s]Capturing CUDA graphs (decode, FULL):  17%|█▋        | 6/35 [00:00<00:01, 25.89it/s]Capturing CUDA graphs (decode, FULL):  26%|██▌       | 9/35 [00:00<00:00, 26.58it/s]Capturing CUDA graphs (decode, FULL):  34%|███▍      | 12/35 [00:00<00:00, 27.27it/s]Capturing CUDA graphs (decode, FULL):  43%|████▎     | 15/35 [00:00<00:00, 27.70it/s]Capturing CUDA graphs (decode, FULL):  54%|█████▍    | 19/35 [00:00<00:00, 28.85it/s]Capturing CUDA graphs (decode, FULL):  66%|██████▌   | 23/35 [00:00<00:00, 29.91it/s]Capturing CUDA graphs (decode, FULL):  77%|███████▋  | 27/35 [00:00<00:00, 31.06it/s]Capturing CUDA graphs (decode, FULL):  89%|████████▊ | 31/35 [00:01<00:00, 32.80it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 35/35 [00:01<00:00, 33.99it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 35/35 [00:01<00:00, 30.59it/s]
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Started server process [3817715]
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Waiting for application startup.
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Application startup complete.
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/filters.py:1795: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   func = prepare_select_or_reject(context, args, kwargs, modfunc, lookup_attr)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/environment.py:1503: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   tuple(map(int, x.split("=")))  # type: ignore
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/tokenization_utils_fast.py:344: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   encoding_dict["attention_mask"].append(e.attention_mask)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/traceback.py:598: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   case ast.Expr(expr):
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/traceback.py:595: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   normalize = lambda offset: _byte_offset_to_character_offset(segment, offset)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/filters.py:1644: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   return select_or_reject(context, value, args, kwargs, lambda x: x, True)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/environment.py:530: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   pass_arg = _PassArg.from_obj(func)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/tokenization_utils_fast.py:566: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   self._convert_encoding(
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/filters.py:1783: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   return lambda item: modfunc(func(transfunc(item)))
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/tokenization_utils_fast.py:627: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   batched_output = self._batch_encode_plus(
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/filters.py:72: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   for part in parts:
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/jinja2/filters.py:1797: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   for item in value:
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/site-packages/transformers/tokenization_utils_base.py:249: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   self.convert_to_tensors(tensor_type=tensor_type, prepend_batch_axis=prepend_batch_axis)
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[1;36m(APIServer pid=3817715)[0;0m /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen/lib/python3.11/re/__init__.py:274: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m   if isinstance(flags, RegexFlag):
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+[rank0]:[W514 15:50:38.758855412 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Shutting down
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Waiting for application shutdown.
+[1;36m(APIServer pid=3817715)[0;0m INFO:     Application shutdown complete.
+[1;36m(APIServer pid=3817715)[0;0m sys:1: RuntimeWarning: coroutine 'AsyncMultiModalItemTracker.all_mm_data' was never awaited
+[1;36m(APIServer pid=3817715)[0;0m RuntimeWarning: Enable tracemalloc to get the object allocation traceback

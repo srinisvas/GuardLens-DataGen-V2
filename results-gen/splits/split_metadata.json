@@ -1,0 +1,14 @@
+{
+  "total_records": 1762,
+  "train": 1220,
+  "dev": 266,
+  "test": 276,
+  "external_test_in_test": 0,
+  "rejected_excluded": true,
+  "seed": 42,
+  "train_frac": 0.7,
+  "dev_frac": 0.15,
+  "test_frac": 0.15,
+  "human_benchmark": 100,
+  "double_annotated": 50
+}

@@ -1,0 +1,19 @@
+Llama validated: 1000
+Mistral validated: 1000
+
+Clean benign accepted by both: 721
+Boundary rejected: 279
+
+Clean benign by category:
+  clean_everyday: 295
+  research_technical: 189
+  topic_matched_safe: 104
+  hard_benign: 99
+  false_lead_benign: 34
+
+Boundary rejected by:
+  mistral: 274
+  llama: 31
+
+Wrote 721 to /gpfs/home/s001/ssubram7/staging/dataset_gen_output/benign_clean.jsonl
+Wrote 279 to /gpfs/home/s001/ssubram7/staging/dataset_gen_output/benign_boundary.jsonl

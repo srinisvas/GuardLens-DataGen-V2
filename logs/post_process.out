@@ -1,0 +1,91 @@
+(/gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen) [ssubram7@vhpcprdssh01 GuardLens-DataGen-V2]$ python3 postprocess_causal.py \
+>     --input $HOME/staging/dataset_gen_output/causal_analyzed_all_final.jsonl \
+>     --output $HOME/staging/dataset_gen_output/causal_postprocessed_all.jsonl
+Loaded 1500 records from /gpfs/home/s001/ssubram7/staging/dataset_gen_output/causal_analyzed_all_final.jsonl
+
+Step 1: Relabel causal BENIGN_CONTEXT/DECOY spans
+  Relabeled 32 causal BENIGN_CONTEXT/DECOY spans -> CONTEXT_BRIDGE
+
+Step 2: Assign distributed-context tier
+  Upgraded 88 distributed-causal records: construction -> llm_confirmed
+
+Step 3: Validate tier consistency
+  Fixed 1401 tier/weight/eligibility inconsistencies
+
+Wrote 1500 records to /gpfs/home/s001/ssubram7/staging/dataset_gen_output/causal_postprocessed_all.jsonl
+Persistent: /gpfs/home/s001/ssubram7/work/results/dataset_gen/causal_postprocessed_all.jsonl
+
+======================================================================
+  FINAL DATASET STATISTICS (for paper)
+======================================================================
+
+  Total records: 1500
+  Malicious: 750
+  Benign: 750
+  Training eligible: 1041
+
+  Transfer tiers (malicious):
+    transfer_success: 268
+    cross_only: 244
+    no_jailbreak: 201
+    target_only: 37
+
+  Supervision tiers (all records):
+    construction (w=0.40): 1116
+    llm_confirmed (w=0.60): 343
+    cf_weak (w=0.70): 30
+    cf_strong (w=1.00): 11
+
+  Pivot-turn counterfactual (malicious with pivots):
+    none: 487
+    distributed_or_unclear: 223
+    cf_turn_weak: 28
+    cf_turn_strong: 12
+
+  Span-level attribution:
+    Causal spans: 62
+      CONTEXT_BRIDGE: 40
+      PAYLOAD_SPAN: 10
+      MALICIOUS_TRIGGER: 7
+      STRUCTURAL_TRIGGER: 5
+    Incidental spans: 146
+      SAFE_CONSTRAINT: 65
+      BENIGN_CONTEXT: 23
+      PAYLOAD_SPAN: 18
+      CONTEXT_BRIDGE: 14
+      STRUCTURAL_TRIGGER: 10
+      MALICIOUS_TRIGGER: 10
+      DECOY: 6
+    Unvalidated spans: 4333
+    Relabeled (BENIGN_CONTEXT/DECOY -> CONTEXT_BRIDGE): 32
+
+  Loss weight distribution (eligible only):
+    >=0.9 (cf_strong / clean benign): 11
+    0.7-0.9 (cf_weak / hard benign): 30
+    0.5-0.7 (llm_confirmed): 343
+    0.2-0.5 (construction / llm_only): 657
+    Mean: 0.481
+
+  Attack strategies (malicious):
+    fictional_scenario: 103 total, 82 jailbreaks (80%)
+    perspective_shift: 102 total, 99 jailbreaks (97%)
+    meta_discussion: 77 total, 49 jailbreaks (64%)
+    academic_framing: 76 total, 73 jailbreaks (96%)
+    context_injection: 70 total, 44 jailbreaks (63%)
+    task_decomposition: 68 total, 43 jailbreaks (63%)
+    gradual_normalization: 68 total, 50 jailbreaks (74%)
+    translation_encoding: 65 total, 34 jailbreaks (52%)
+    role_escalation: 63 total, 51 jailbreaks (81%)
+    authority_impersonation: 58 total, 24 jailbreaks (41%)
+
+  Generator model breakdown:
+    7B: 550
+    14B: 200
+
+  Conversation length:
+    Malicious: mean=28.2, min=16, max=48
+    Benign: mean=15.4, min=12, max=20
+
+  Distributed-context upgrades: 88
+
+======================================================================

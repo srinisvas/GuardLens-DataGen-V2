@@ -1,0 +1,11 @@
+Final dataset: 1762 records
+Stress/excluded old benign: 258 records
+
+Labels: Counter({0: 1213, 1: 549})
+Source datasets: Counter({'synthetic': 1041, 'separate_benign_pool': 721})
+Supervision tiers: Counter({'benign_validated': 721, 'construction': 657, 'llm_confirmed': 343, 'cf_weak': 30, 'cf_strong': 11})
+Benign status: Counter({'clean_benign': 721, 'validated_benign_twin': 492})
+Transfer tiers: Counter({'transfer_success': 268, 'cross_only': 244, 'target_only': 37})
+
+Wrote /gpfs/home/s001/ssubram7/staging/dataset_gen_output/final_dataset.jsonl
+Wrote stress file /gpfs/home/s001/ssubram7/staging/dataset_gen_output/old_benign_boundary_or_unused.jsonl
