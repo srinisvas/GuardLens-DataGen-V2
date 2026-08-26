@@ -1,0 +1,125 @@
+# model_bench_configs.yaml
+#
+# v2 — corrections from reviewer:
+#   - Qwen post-trained ID is Qwen/Qwen3.5-27B (no -Instruct suffix).
+#   - Qwen/Qwen3.5-32B-Instruct is not a real release; use Qwen3.5-27B.
+#   - Llama-4-Scout is 17B activated but 109B total parameters. In BF16 it
+#     cannot coexist with Qwen + Mistral on 4×A100-80GB. Deferred to a
+#     separate quantized benchmark (see comments below).
+#   - Both configs share Llama-3.3-70B and Qwen3.5-27B servers (role swap
+#     across configs, not same-record circularity).
+#   - max_model_len capped at 16384 tokens per server; raise only if the
+#     long-horizon strategy K actually needs more.
+#
+# Server layout on 4×A100-80GB (all BF16, all concurrent):
+#
+#   port 8001 (GPUs 0,1, TP=2): meta-llama/Llama-3.3-70B-Instruct
+#                                 → config_a generator
+#                                 → config_b target
+#   port 8002 (GPU 2, TP=1):    Qwen/Qwen3.5-27B
+#                                 → config_a judge
+#                                 → config_b generator
+#   port 8003 (GPU 3, TP=1):    google/gemma-4-31B-it
+#                                 → config_a target only
+#                                 → (must swap out for config_b)
+#   port 8004 (GPU 3, TP=1):    mistralai/Mistral-Small-3.2-24B-Instruct-2506
+#                                 → config_b judge only
+#                                 → (must swap out for config_a)
+#
+# Since GPU 3 can only host one of {Gemma-4-31B, Mistral-Small-3.2-24B} at
+# a time in BF16, the benchmark runs in two phases:
+#   Phase 1: launch Llama-70B, Qwen3.5-27B, Gemma-4-31B → bench config_a
+#   Phase 2: swap Gemma-4-31B → Mistral-Small-3.2 → bench config_b
+# The cross-judge agreement pass runs after both by reloading either
+# Gemma or Mistral one more time to re-score the other config's outputs.
+#
+# Suggested vLLM launch flags per server (BENCH: start at 8K):
+#   --max-model-len 8192
+#   --dtype bfloat16
+#   --gpu-memory-utilization 0.95
+#   --enable-prefix-caching     (recommended; helps interactive loop reuse)
+# For Qwen3.5:
+#   --language-model-only       (skips multimodal profiling per Qwen card)
+#
+# Only raise --max-model-len (8K -> 12K -> 16K) after inspecting observed
+# prompt-token maxima from the bench. Strategy K may approach 8K on
+# long-horizon 8-turn conversations; other strategies should stay well below.
+# Do not hardcode gpu-memory-utilization at 0.95 for the production run
+# without first inspecting actual KV-cache allocation from the bench servers.
+
+configurations:
+
+  - name: config_a
+    # 70% of full generation
+    generator:
+      family: meta
+      model: meta-llama/Llama-3.3-70B-Instruct
+      base_url: http://localhost:8001
+      notes: "TP=2 across GPUs 0,1; ~140GB BF16"
+    target:
+      family: google
+      model: google/gemma-4-31B-it
+      base_url: http://localhost:8003
+      notes: "TP=1 GPU 3; ~62GB BF16; contemporary aligned target"
+    judge:
+      family: alibaba
+      model: Qwen/Qwen3.5-27B
+      base_url: http://localhost:8002
+      notes: "TP=1 GPU 2; ~54GB BF16; post-trained ID does not carry -Instruct suffix"
+
+  - name: config_b
+    # 30% of full generation. Initial version — Llama-4-Scout target
+    # deferred to a separate quantized bench (see below).
+    generator:
+      family: alibaba
+      model: Qwen/Qwen3.5-27B
+      base_url: http://localhost:8002
+      notes: "Same physical server as config_a judge — role swap across configs"
+    target:
+      family: meta
+      model: meta-llama/Llama-3.3-70B-Instruct
+      base_url: http://localhost:8001
+      notes: "Same physical server as config_a generator — role swap"
+    judge:
+      family: mistral
+      model: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+      base_url: http://localhost:8004
+      notes: "TP=1 GPU 3; ~55GB BF16; replaces Gemma between phases"
+
+# ---------------------------------------------------------------------------
+# Deferred / optional configurations (do NOT include in the main run):
+#
+# - name: config_b2_scout_quantized_optional
+#   # Only enable after separately validating an FP8 or NVFP4 Llama-4-Scout
+#   # deployment. NVIDIA publishes an FP8 Scout at
+#   # nvidia/Llama-4-Scout-17B-16E-Instruct-FP8 which reduces footprint but
+#   # introduces quantization as a benchmark variable. Not the default 30%.
+#   generator:
+#     family: alibaba
+#     model: Qwen/Qwen3.5-27B
+#     base_url: http://localhost:8002
+#   target:
+#     family: meta
+#     model: nvidia/Llama-4-Scout-17B-16E-Instruct-FP8
+#     base_url: http://localhost:8005
+#   judge:
+#     family: mistral
+#     model: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+#     base_url: http://localhost:8004
+#
+# - name: config_c_single_family_control
+#   # NEGATIVE CONTROL for the paper: single-family across all roles
+#   # reproduces v11 circularity. Only for the ablation showing family
+#   # diversity matters. Do NOT include in main generation.
+#   generator:
+#     family: meta
+#     model: meta-llama/Llama-3.3-70B-Instruct
+#     base_url: http://localhost:8001
+#   target:
+#     family: meta
+#     model: meta-llama/Llama-3.3-70B-Instruct
+#     base_url: http://localhost:8001
+#   judge:
+#     family: meta
+#     model: meta-llama/Llama-3.3-70B-Instruct
+#     base_url: http://localhost:8001
