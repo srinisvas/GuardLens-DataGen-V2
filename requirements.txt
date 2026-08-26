@@ -1,0 +1,65 @@
+# GuardLens DataGen V2 — pip requirements
+#
+# Target system:
+#   NVIDIA A100 80GB PCIe (Ampere, sm_80)
+#   Driver R580 LTS (580.105.08+), CUDA runtime 13.0
+#   Linux x86_64
+#
+# Recommended env creation:
+#   conda create -n dataset_gen python=3.11 -y
+#   conda activate dataset_gen
+#   pip install -r requirements.txt
+#
+# CUDA compatibility notes:
+#   Driver 580 supports CUDA 13.0 natively. PyTorch >=2.11 and vLLM >=0.20
+#   both publish CUDA 13.0 wheels as the PyPI default, so no --extra-index-url
+#   is required. If you have a mixed cluster where some nodes are on older
+#   drivers, you can pin to CUDA 12.9 wheels instead:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu129
+#   then install this file. vLLM will auto-detect the installed torch's CUDA.
+#
+# Install order matters:
+#   vLLM pins its own torch version. Install this file top-to-bottom OR let
+#   pip resolve the full graph in one shot. Do NOT install torch, then vllm,
+#   then a different torch — pip will silently downgrade.
+
+# ---- Core (required by every script) -------------------------------------
+requests>=2.31.0                # HTTP calls to vLLM OpenAI-compatible endpoints
+                                #   inference_backend.py, model_bench.py, generator scripts
+
+# ---- Model / tokenizer stack ---------------------------------------------
+# PyTorch 2.11 made CUDA 13.0 the stable PyPI default (March 2026).
+# transformers 4.50+ is the modern floor for Qwen3.5, Gemma-4, Mistral-3.2.
+torch>=2.11.0                   # cu130 wheels by default from PyPI
+transformers>=4.50.0            # AutoTokenizer, AutoModelForCausalLM (hf backend)
+accelerate>=0.34.0              # device_map="auto" behavior on multi-GPU
+sentencepiece>=0.2.0            # tokenizers for Llama / Mistral checkpoints
+protobuf>=4.25.0                # sentencepiece tokenizer conversion
+safetensors>=0.4.5              # checkpoint format used by pre-staged models
+
+# ---- Model download / pre-staging ----------------------------------------
+huggingface_hub>=0.24.0         # snapshot_download in prestage_*.py
+
+# ---- Serving backend (GPU nodes only) ------------------------------------
+# Launched as `vllm serve <model>` by the SLURM scripts.
+# Publishes CUDA 12.8, 12.9, and 13.0 variants. PyPI default is aligned with
+# torch's PyPI default (currently CUDA 13.0).
+# Omit this line for a CPU-only analysis/post-processing environment.
+vllm>=0.20.0                    # >=0.20 required for Qwen3.5 / Gemma-4 support
+
+# ---- Datasets ------------------------------------------------------------
+datasets>=2.19.0                # load_dataset in export_mhj_from_hf.py
+
+# ---- Config parsing ------------------------------------------------------
+PyYAML>=6.0                     # model_bench.py reads model_bench_configs.yaml
+
+# ---- Contamination checking (contamination_check.py) ---------------------
+datasketch>=1.6.4               # MinHash / MinHashLSH near-duplicate detection
+numpy>=1.26.0                   # embedding similarity path (numpy 2.x compatible)
+sentence-transformers>=3.0.0    # bge-m3 support (8192-token context)
+                                # 2.7.0 works but 3.0+ has better model loading
+
+# ---- OpenAI client (only if existing v11 code uses it) ------------------
+# Uncomment if `grep -r 'from openai\|import openai' src/` returns anything.
+# The new model_bench.py and contamination_check.py use raw `requests`.
+# openai>=1.40.0
