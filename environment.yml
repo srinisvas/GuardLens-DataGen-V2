@@ -23,7 +23,7 @@
 # truth). This YAML is a thin conda wrapper so `conda env create -f` still
 # works if you prefer conda. Any dep change goes in requirements.txt only.
 
-name: /gpfs/home/s001/ssubram7/work/conda_envs/dataset_gen
+name: dataset_gen
 channels:
   - conda-forge
 dependencies:
