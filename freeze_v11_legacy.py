@@ -1,22 +1,29 @@
 """
 freeze_v11_legacy.py
 
-Freeze the current v11 dataset generation artifacts into a legacy directory
-for use ONLY as a historical-distribution behavioral evaluation set in the
-NAACL 2027 paper. After freezing, all v12 work operates against fresh
-regenerated data. v11's causal-analysis outputs are known-invalid and are
-never used as ground truth.
+v2 corrections (post-review):
+  1. README no longer hard-codes a single generator model. v11 used a POOL
+     (Qwen2.5-7B-Instruct + Qwen2.5-14B-Instruct, evidence: merged_7b.jsonl,
+     merged_14b.jsonl in the artifact directory). README describes pools
+     and points to actual manifests instead of guessing.
+  2. Refuses to commit a zero-file freeze. Prior version happily created
+     an empty legacy directory when --source pointed to a subdirectory
+     with only nested folders and no files at the top level.
+  3. Auto-detects manifest.json / dataset_manifest.json in the source and
+     echoes its contents into the README so provenance comes from the
+     actual pipeline outputs rather than my assumptions.
+  4. Categorizes model-specific merge files (merged_7b.jsonl, merged_14b.jsonl,
+     etc.) as such so the README makes the pool structure visible.
 
 Safety:
   - Dry-run by default. Pass --commit to actually copy.
-  - Refuses to run if the destination already exists (unless --overwrite).
+  - Refuses --commit if source has zero files.
+  - Refuses if dest exists (unless --overwrite).
   - Never deletes source files. Move semantics are opt-in via --move.
 
 Usage:
-    python freeze_v11_legacy.py --source ~/work/results/dataset_gen \
-                                --dest ~/work/results
-    python freeze_v11_legacy.py --source ~/work/results/dataset_gen \
-                                --dest ~/work/results --commit
+    python freeze_v11_legacy.py --source ./results-gen --dest ~/work/results
+    python freeze_v11_legacy.py --source ./results-gen --dest ~/work/results --commit
 """
 
 import argparse
@@ -26,26 +33,13 @@ import os
 import shutil
 import sys
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 LEGACY_DIR_NAME = "dataset_v11_legacy"
 
-
-V11_MODEL_CONFIG = {
-    "generator": "Qwen2.5-14B-Instruct (Alibaba family)",
-    "target": "Meta-Llama-3-8B-Instruct (Meta family)",
-    "validator_primary": "Qwen2.5-7B-Instruct (Alibaba family)",
-    "validator_secondary": "Qwen2.5-14B-Instruct (Alibaba family, optional)",
-    "family_pattern": (
-        "Generator and validators were Qwen-family; target was Meta Llama. "
-        "The circularity flagged by the SAC was generator/validator family "
-        "coupling (both Alibaba), even though the attacked target belonged "
-        "to a different family. This is what v12's multi-family design "
-        "explicitly fixes: v12 rotates generator, target, and judge across "
-        "at least three distinct families per configuration."
-    ),
-}
+MANIFEST_CANDIDATES = ["manifest.json", "dataset_manifest.json",
+                        "config.json", "generation_config.json"]
 
 V11_KNOWN_ISSUES = [
     "Baseline-model mismatch in causal_analysis.py Pass 2: baseline scores "
@@ -68,8 +62,8 @@ V11_KNOWN_ISSUES = [
     "(mean ~19 user turns): a linear probe on turn count would separate the "
     "two non-trivially, so length is a viable shortcut in v11.",
 
-    "Generator/validator family coupling (both Qwen): flagged by SAC "
-    "review as circularity in dataset construction.",
+    "Generator/validator family coupling (both Qwen family): flagged by "
+    "SAC review as circularity in dataset construction.",
 ]
 
 README_TEMPLATE = """# dataset_v11_legacy
@@ -84,32 +78,29 @@ This directory is a frozen snapshot of the v11 dataset generation pipeline.
 It is retained solely for use as a **historical-distribution behavioral
 evaluation set** in the NAACL 2027 paper. Its role is to test whether the
 v12-trained model generalizes to attacks generated against an older model
-regime (2024-era Qwen + Llama-3-8B). It is NOT a source of attribution
-ground truth — see "Intended use" below.
-
-The final paper reports evaluation across three distribution slices:
-
-| slice | source | role |
-|-------|--------|------|
-| in-distribution | new v12 pipeline (contemporary models) | training + IID eval |
-| current external | MHJ, HarmBench, JailbreakBench, WildJailbreak eval | zero-shot transfer |
-| **historical-distribution** | **this directory (v11)** | **older-attack-era behavioral eval** |
+regime. It is NOT a source of attribution ground truth.
 
 ## Original model configuration
 
-- generator: `{generator}`
-- target: `{target}`
-- validator (primary): `{validator_primary}`
-- validator (secondary): `{validator_secondary}`
+**Generator pools (based on files present in the frozen artifact):**
 
-**Family pattern (important):** {family_pattern}
+{model_pool_evidence}
+
+**Target family:** Meta-Llama-3-8B-Instruct
+
+**Validation:** multiple downstream validation passes across pipeline stages.
+See any `manifest.json` echoed below and the file listing under "Files by
+category" for exact per-job model choices.
+
+## Manifests detected in source
+
+{manifest_dump}
 
 ## Known issues (disclosed in paper)
 
-The v11 causal-analysis outputs in this directory should be considered
-**invalid, not merely diagnostic**. The following issues are documented
-here for reproducibility and are addressed in the v12 pipeline
-(`causal_analysis_v12_3.py`):
+The v11 causal-analysis outputs in this directory are **invalid, not merely
+diagnostic**. The following issues are documented for reproducibility and
+are addressed in the v12 pipeline (`causal_analysis_v12_3.py`):
 
 {known_issues_list}
 
@@ -117,28 +108,23 @@ here for reproducibility and are addressed in the v12 pipeline
 
 **DO:**
 - Report v11 as a historical-distribution eval set for behavioral
-  detection (i.e. does the v12 model correctly classify v11
-  conversations as malicious/benign given the trained detection head).
-- Use v11 user turn text as a **contamination reference set** so that
-  newly generated v12 data does not accidentally overlap with v11's
-  attack surface.
-- Cite v11 methods in the paper's related-work / history discussion.
+  detection.
+- Use v11 user turn text as a contamination reference set for v12
+  generation.
+- Cite v11 methods in the paper's related-work discussion.
 
 **DO NOT:**
 - Use v11 records as training data for the v12 model.
 - Report v11 causal_analysis Delta values, evidence sets, or span-level
-  causal labels as scientific claims. Those fields are known-invalid.
+  causal labels as scientific claims.
 - Use v11 attribution outputs as ground truth for evaluating v12's
-  attribution performance. If we need attribution evaluation on v11,
-  it must come from independent human annotation, not from the frozen
-  v11 causal_analysis fields.
-- Modify any file in this directory. It is frozen; use as read-only.
+  attribution performance.
+- Modify any file in this directory.
 
 ## Manifest
 
-See `freeze_manifest.json` for SHA256 hashes of every file in
-`original_layout/`. Verify with `verify_manifest.py` before treating
-these files as authoritative.
+See `freeze_manifest.json` for SHA256 hashes. Verify with
+`python verify_manifest.py`.
 
 ## Files by category
 
@@ -160,9 +146,15 @@ def sha256_file(path: str, chunk_size: int = 65536) -> str:
 def categorize_file(filename: str) -> str:
     lower = filename.lower()
     if "causal" in lower and ".jsonl" in lower:
-        return "Causal analysis output (v11, KNOWN INVALID — do not use as ground truth)"
+        return "Causal analysis output (v11, KNOWN INVALID)"
+    # Model-pool-specific merges get their own category so the README
+    # makes the multi-model pool visible.
+    if lower.startswith("merged_") and lower.endswith(".jsonl"):
+        return "Merged per-model-pool output"
     if "merged" in lower and ".jsonl" in lower:
-        return "Merged pipeline output (safe as historical behavioral eval set)"
+        return "Merged pipeline output"
+    if "final_dataset" in lower and ".jsonl" in lower:
+        return "Post-processed final dataset artifact"
     if "interactive" in lower and ".jsonl" in lower:
         return "Interactive attack generation output"
     if "benign" in lower and ".jsonl" in lower:
@@ -173,6 +165,8 @@ def categorize_file(filename: str) -> str:
         return "MHJ external test set in v11 schema"
     if "final" in lower and ".jsonl" in lower:
         return "Post-processed dataset artifact"
+    if "manifest" in lower and ".json" in lower:
+        return "Pipeline manifest / config"
     if lower.endswith(".jsonl"):
         return "JSONL data (unclassified)"
     if lower.endswith(".py"):
@@ -223,8 +217,47 @@ def render_known_issues(issues: List[str]) -> str:
     return "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
 
 
+def render_model_pool_evidence(files: List[Dict]) -> str:
+    """Look at file names to infer which generator variants contributed
+    to the pool. If we see merged_7b.jsonl and merged_14b.jsonl, we say
+    so instead of guessing a single model."""
+    pool_hints = []
+    for f in files:
+        low = f["relpath"].lower()
+        if "merged_7b" in low:
+            pool_hints.append("Qwen2.5-7B-Instruct (evidence: merged_7b.jsonl)")
+        if "merged_14b" in low:
+            pool_hints.append("Qwen2.5-14B-Instruct (evidence: merged_14b.jsonl)")
+        if "merged_70b" in low:
+            pool_hints.append("Some 70B model (evidence: merged_70b.jsonl)")
+    pool_hints = sorted(set(pool_hints))
+    if not pool_hints:
+        return ("- Unable to determine generator pool from filenames alone. "
+                "Consult `manifest.json` (echoed below) or per-job configs.")
+    return "\n".join(f"- {p}" for p in pool_hints)
+
+
+def find_and_dump_manifests(source: str) -> str:
+    """If a manifest file exists in source, dump its contents into README."""
+    dumps = []
+    for candidate in MANIFEST_CANDIDATES:
+        candidate_path = os.path.join(source, candidate)
+        if os.path.isfile(candidate_path):
+            try:
+                with open(candidate_path) as f:
+                    content = f.read()
+                dumps.append(f"### `{candidate}`\n\n```json\n{content}\n```\n")
+            except Exception as e:
+                dumps.append(f"### `{candidate}` (read error: {e})\n")
+    if not dumps:
+        return ("_(No `manifest.json` / `dataset_manifest.json` / `config.json` "
+                "found in source. Model provenance must be reconstructed from "
+                "per-file inspection or job logs.)_")
+    return "\n".join(dumps)
+
+
 def freeze(source: str, dest_dir: str, commit: bool, move: bool,
-           overwrite: bool):
+           overwrite: bool, allow_empty: bool):
     if not os.path.isdir(source):
         print(f"ERROR: source does not exist: {source}", file=sys.stderr)
         sys.exit(2)
@@ -248,6 +281,21 @@ def freeze(source: str, dest_dir: str, commit: bool, move: bool,
     print(f"  files:  {len(files)}  ({total_mb:.1f} MB)")
     print(f"  mode:   {'MOVE' if move else 'COPY'}")
     print(f"  commit: {commit}")
+
+    if len(files) == 0 and not allow_empty:
+        print(f"\nERROR: source directory has ZERO files. This is almost "
+              f"certainly the wrong --source path.", file=sys.stderr)
+        print(f"  Contents of {source}:", file=sys.stderr)
+        try:
+            for entry in os.listdir(source)[:20]:
+                full = os.path.join(source, entry)
+                marker = "d" if os.path.isdir(full) else "f"
+                print(f"    [{marker}] {entry}", file=sys.stderr)
+        except OSError:
+            pass
+        print(f"\n  If you REALLY want to freeze an empty directory "
+              f"(e.g., for testing), pass --allow-empty.", file=sys.stderr)
+        sys.exit(4)
 
     if not commit:
         print(f"\nDRY RUN. Pass --commit to execute.")
@@ -286,11 +334,8 @@ def freeze(source: str, dest_dir: str, commit: bool, move: bool,
         freeze_date=manifest["freeze_date_utc"],
         source_path=os.path.abspath(source),
         n_files=len(files), total_mb=total_mb,
-        generator=V11_MODEL_CONFIG["generator"],
-        target=V11_MODEL_CONFIG["target"],
-        validator_primary=V11_MODEL_CONFIG["validator_primary"],
-        validator_secondary=V11_MODEL_CONFIG["validator_secondary"],
-        family_pattern=V11_MODEL_CONFIG["family_pattern"],
+        model_pool_evidence=render_model_pool_evidence(files),
+        manifest_dump=find_and_dump_manifests(source),
         known_issues_list=render_known_issues(V11_KNOWN_ISSUES),
         files_by_category=render_files_by_category(files),
     )
@@ -326,6 +371,7 @@ sys.exit(0 if n_bad == 0 and n_missing == 0 else 1)
         vf.write(verify_script)
     os.chmod(vp, 0o755)
     print(f"\n Wrote {legacy_root}/")
+    print(f"  {len(files)} files ({total_mb:.1f} MB)")
 
 
 def main():
@@ -335,10 +381,13 @@ def main():
     p.add_argument("--commit", action="store_true")
     p.add_argument("--move", action="store_true")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--allow-empty", action="store_true",
+                   help="Allow committing a zero-file freeze (dangerous)")
     args = p.parse_args()
     freeze(source=os.path.expanduser(args.source),
            dest_dir=os.path.expanduser(args.dest),
-           commit=args.commit, move=args.move, overwrite=args.overwrite)
+           commit=args.commit, move=args.move, overwrite=args.overwrite,
+           allow_empty=args.allow_empty)
 
 
 if __name__ == "__main__":

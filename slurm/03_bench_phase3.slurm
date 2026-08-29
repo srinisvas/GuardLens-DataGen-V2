@@ -11,11 +11,12 @@
 #SBATCH --error=logs/%x-%j.err
 
 # Phase 3: Cross-judge agreement
-#   Servers: Qwen3.5-27B (GPU 0, judge for Config A), Mistral-Small-3.2 (GPU 1, judge for Config B)
-#   Runs:    model_bench.py --cross-judge-only  (reads stored raw_conversations.jsonl)
+#   Servers: Qwen3.5-27B (GPU 0, config_a judge), Mistral-Small-3.2 (GPU 1, config_b judge)
+#   Runs:    model_bench.py --cross-judge-only
 #
-# No generation happens in this phase. Only the two judges need to be alive.
-# Each judge re-scores the OTHER config's stored target responses.
+# CRITICAL: launch flags MUST match the corresponding Phase 1/2 judge
+# launches exactly, so cross-judge scores come from the same inference
+# setup used for the original scores.
 
 set -euo pipefail
 
@@ -25,15 +26,14 @@ RESULTS_DIR="$HOME/work/results/model_bench_2026"
 source ~/.bashrc
 conda activate dataset_gen
 
-export HF_TOKEN=$(cat "$HOME/.hf_token")
-export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
 mkdir -p "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Verify both stored result files exist before spinning up any GPU
+# Verify Phase 1 and 2 outputs exist
 if [ ! -f "$RESULTS_DIR/config_a/raw_conversations.jsonl" ]; then
     echo "ERROR: $RESULTS_DIR/config_a/raw_conversations.jsonl missing. Run Phase 1 first."
     exit 1
@@ -43,26 +43,32 @@ if [ ! -f "$RESULTS_DIR/config_b/raw_conversations.jsonl" ]; then
     exit 1
 fi
 
-# -----------------------------------------------------------
-# Launch judges only
-# -----------------------------------------------------------
-echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 0, port 8002"
+echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 0, port 8002 (thinking OFF)"
 CUDA_VISIBLE_DEVICES=0 \
     vllm serve Qwen/Qwen3.5-27B \
-        --host 0.0.0.0 --port 8002 \
+        --host 127.0.0.1 --port 8002 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
+        --enable-prefix-caching \
+        --reasoning-parser qwen3 \
+        --language-model-only \
+        --default-chat-template-kwargs '{"enable_thinking": false}' \
         > logs/qwen27b_phase3.log 2>&1 &
 QWEN_PID=$!
 
-echo "[$(date +%T)] Launching Mistral-Small-3.2 on GPU 1, port 8004"
+echo "[$(date +%T)] Launching Mistral-Small-3.2 on GPU 1, port 8004 (mistral tokenizer)"
 CUDA_VISIBLE_DEVICES=1 \
     vllm serve mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
-        --host 0.0.0.0 --port 8004 \
+        --host 127.0.0.1 --port 8004 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
+        --enable-prefix-caching \
+        --language-model-only \
+        --tokenizer_mode mistral \
+        --config_format mistral \
+        --load_format mistral \
         > logs/mistral24b_phase3.log 2>&1 &
 MISTRAL_PID=$!
 
@@ -76,7 +82,7 @@ trap cleanup EXIT
 wait_for() {
     local port=$1 name=$2 max_wait=1500 elapsed=0
     while [ $elapsed -lt $max_wait ]; do
-        if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${port}/health" > /dev/null 2>&1; then
             echo "[$(date +%T)] $name ready on port $port"
             return 0
         fi
@@ -90,9 +96,6 @@ wait_for() {
 wait_for 8002 "Qwen3.5-27B"
 wait_for 8004 "Mistral-Small-3.2"
 
-# -----------------------------------------------------------
-# Run cross-judge (no smoke test — schema was verified in Phases 1 & 2)
-# -----------------------------------------------------------
 echo ""
 echo "[$(date +%T)] Running cross-judge agreement"
 python model_bench.py \

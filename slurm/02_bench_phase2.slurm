@@ -13,6 +13,13 @@
 # Phase 2: Config B benchmark
 #   Servers: Llama-3.3-70B (GPUs 0,1 TP=2), Qwen3.5-27B (GPU 2), Mistral-Small-3.2 (GPU 3)
 #   Runs:    model_bench.py --config-name config_b
+#
+# v2 corrections:
+#   - --host 127.0.0.1 for all servers
+#   - Qwen3.5 with thinking-mode suppression
+#   - Mistral with official --tokenizer_mode/config_format/load_format mistral
+#     + --language-model-only per Mistral's current serving guidance
+#   - HF_HUB_OFFLINE=1
 
 set -euo pipefail
 
@@ -22,21 +29,27 @@ RESULTS_DIR="$HOME/work/results/model_bench_2026"
 source ~/.bashrc
 conda activate dataset_gen
 
-export HF_TOKEN=$(cat "$HOME/.hf_token")
-export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
 mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# -----------------------------------------------------------
-# Launch servers
-# -----------------------------------------------------------
+for m in "models--meta-llama--Llama-3.3-70B-Instruct" \
+         "models--Qwen--Qwen3.5-27B" \
+         "models--mistralai--Mistral-Small-3.2-24B-Instruct-2506"; do
+    if ! find "$HF_HUB_CACHE" -maxdepth 2 -name "$m" -type d 2>/dev/null | grep -q .; then
+        echo "FATAL: model $m not found in $HF_HUB_CACHE"
+        echo "Run: python prestage_v12.py --config-file model_bench_configs.yaml"
+        exit 1
+    fi
+done
+
 echo "[$(date +%T)] Launching Llama-3.3-70B on GPUs 0,1 (TP=2), port 8001"
 CUDA_VISIBLE_DEVICES=0,1 \
     vllm serve meta-llama/Llama-3.3-70B-Instruct \
-        --host 0.0.0.0 --port 8001 \
+        --host 127.0.0.1 --port 8001 \
         --tensor-parallel-size 2 \
         --dtype bfloat16 \
         --max-model-len 8192 \
@@ -45,25 +58,32 @@ CUDA_VISIBLE_DEVICES=0,1 \
         > logs/llama70b_phase2.log 2>&1 &
 LLAMA_PID=$!
 
-echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002"
+echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF)"
 CUDA_VISIBLE_DEVICES=2 \
     vllm serve Qwen/Qwen3.5-27B \
-        --host 0.0.0.0 --port 8002 \
+        --host 127.0.0.1 --port 8002 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
         --enable-prefix-caching \
+        --reasoning-parser qwen3 \
+        --language-model-only \
+        --default-chat-template-kwargs '{"enable_thinking": false}' \
         > logs/qwen27b_phase2.log 2>&1 &
 QWEN_PID=$!
 
-echo "[$(date +%T)] Launching Mistral-Small-3.2-24B on GPU 3, port 8004"
+echo "[$(date +%T)] Launching Mistral-Small-3.2-24B on GPU 3, port 8004 (mistral tokenizer)"
 CUDA_VISIBLE_DEVICES=3 \
     vllm serve mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
-        --host 0.0.0.0 --port 8004 \
+        --host 127.0.0.1 --port 8004 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
         --enable-prefix-caching \
+        --language-model-only \
+        --tokenizer_mode mistral \
+        --config_format mistral \
+        --load_format mistral \
         > logs/mistral24b_phase2.log 2>&1 &
 MISTRAL_PID=$!
 
@@ -74,13 +94,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# -----------------------------------------------------------
-# Wait for readiness
-# -----------------------------------------------------------
 wait_for() {
     local port=$1 name=$2 max_wait=1500 elapsed=0
     while [ $elapsed -lt $max_wait ]; do
-        if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${port}/health" > /dev/null 2>&1; then
             echo "[$(date +%T)] $name ready on port $port"
             return 0
         fi
@@ -95,9 +112,6 @@ wait_for 8001 "Llama-3.3-70B"
 wait_for 8002 "Qwen3.5-27B"
 wait_for 8004 "Mistral-Small-3.2"
 
-# -----------------------------------------------------------
-# Smoke test
-# -----------------------------------------------------------
 echo ""
 echo "[$(date +%T)] Running smoke test on Config B servers"
 python smoke_test_backends.py \
@@ -106,9 +120,6 @@ python smoke_test_backends.py \
     --output-json "$RESULTS_DIR/config_b_preflight.json" \
     || { echo "FATAL: smoke test failed. Aborting."; exit 1; }
 
-# -----------------------------------------------------------
-# Run benchmark
-# -----------------------------------------------------------
 echo ""
 echo "[$(date +%T)] Starting Config B benchmark (12 conversations per strategy)"
 python model_bench.py \
@@ -124,5 +135,5 @@ echo "[$(date +%T)] Config B benchmark complete."
 echo "Report at: $RESULTS_DIR/bench_report_config_b.md"
 echo "Metrics at: $RESULTS_DIR/config_b/metrics.json"
 echo ""
-echo "Next: submit Phase 3 (cross-judge, no reload needed):"
+echo "Next: submit Phase 3:"
 echo "  sbatch slurm/03_bench_phase3.slurm"
