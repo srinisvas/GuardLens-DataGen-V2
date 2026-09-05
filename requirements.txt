@@ -17,8 +17,18 @@
 # and default_chat_template_kwargs machinery this benchmark depends on,
 # and (b) has an aggressive dependency graph that will conflict with
 # anything we pin manually. Let vLLM pull its matching torch, transformers,
-# huggingface_hub, safetensors, protobuf, etc. We do NOT redundantly pin
-# those here.
+# huggingface_hub, safetensors, protobuf, FlashInfer, etc. We do NOT
+# redundantly pin those here.
+#
+# Runtime compatibility note for Python 3.11 / cluster nodes:
+#   vLLM 0.28.0 resolves to a FlashInfer build whose comm/fd_exchange.py
+#   contains array.array[int], which is not runtime-subscriptable on Python
+#   3.11. runtime_compat_v12.py applies the exact upstream postponed-
+#   annotations compatibility fix before model loading, in an idempotent and
+#   GPFS-lock-protected way. The SLURM jobs also set
+#   VLLM_USE_FLASHINFER_SAMPLER=0 so sampling uses vLLM's native path and does
+#   not require an external nvcc/CUDA_HOME for FlashInfer JIT compilation.
+#   VLLM_ALLREDUCE_USE_FLASHINFER=0 is explicitly locked as well.
 #
 # Non-vLLM dependencies are floor-pinned only. These are packages vLLM
 # does not depend on, so there is no conflict risk.
@@ -26,13 +36,15 @@
 # AFTER PHASE 1 PASSES with this file, capture the exact resolved
 # versions with:
 #     pip freeze > requirements.lock.txt
-# and treat requirements.lock.txt as the reproducible artifact for the
-# paper. Do not leave `>=` ranges in the frozen environment.
+# and treat requirements.lock.txt plus runtime_compat_v12.py as the
+# reproducible runtime artifact for the paper. Do not leave `>=` ranges in
+# the frozen environment description.
 #
-# If Phase 1 preflight (smoke test) reveals Qwen3.5 issues with 0.28.0,
-# switch to a pinned nightly build here rather than relaxing the pin.
+# If Phase 1 preflight reveals a genuine vLLM/Qwen3.5 incompatibility after
+# these environment fixes, switch to a pinned tested build rather than
+# relaxing version constraints ad hoc.
 
-# ---- vLLM (pins torch, transformers, hf_hub, safetensors transitively) ----
+# ---- vLLM (pins torch, transformers, hf_hub, FlashInfer, etc. transitively) ----
 vllm==0.28.0
 
 # ---- HTTP client (used by every script that hits vLLM) ----
