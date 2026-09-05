@@ -14,12 +14,13 @@
 #   Servers: Llama-3.3-70B (GPUs 0,1 TP=2), Qwen3.5-27B (GPU 2), Mistral-Small-3.2 (GPU 3)
 #   Runs:    model_bench.py --config-name config_b
 #
-# v3 corrections:
-#   - Qwen3.5 launched WITHOUT --enable-prefix-caching (hybrid GDN/Mamba;
-#     prefix caching for it is experimental in vLLM 0.28).
+# v4 runtime corrections mirror Phase 1:
 #   - Prefer the conda C/C++ runtime over the cluster GCC 11.2 runtime.
-#     The environment's ICU requires CXXABI_1.3.15, which GCC 11.2 lacks.
-#   - Fail fast on sqlite/CUDA/vLLM device detection before loading models.
+#   - Force vLLM's native sampler for every model to avoid FlashInfer JIT/nvcc.
+#   - Explicitly disable FlashInfer all-reduce.
+#   - Run runtime_compat_v12.py before loading model weights.
+#   - Qwen3.5 uses explicit --no-enable-prefix-caching because vLLM 0.28
+#     defaults prefix caching ON.
 
 set -eo pipefail
 
@@ -36,6 +37,10 @@ set -u
 # take precedence.
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Universal vLLM runtime policy for this benchmark.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ALLREDUCE_USE_FLASHINFER=0
+
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
@@ -43,29 +48,8 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Fail before model loading if the Python/C++ runtime or Slurm GPU exposure
-# regresses. This specifically guards the ABI and login-node device issues
-# found during Phase 1 bring-up.
-echo "[$(date +%T)] Runtime/GPU preflight"
-python - <<'PY'
-import sqlite3
-import torch
-import vllm
-from vllm.platforms import current_platform
-
-print("sqlite:", sqlite3.sqlite_version)
-print("vLLM:", vllm.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
-print("vLLM device:", current_platform.device_type)
-if torch.cuda.is_available():
-    print("GPU 0:", torch.cuda.get_device_name(0))
-
-assert torch.cuda.is_available(), "CUDA is not visible inside this Slurm job"
-assert current_platform.device_type == "cuda", (
-    f"vLLM detected device={current_platform.device_type!r}, expected 'cuda'"
-)
-PY
+echo "[$(date +%T)] Runtime/GPU compatibility preflight"
+python runtime_compat_v12.py --required-gpus 4
 
 for m in "models--meta-llama--Llama-3.3-70B-Instruct" \
          "models--Qwen--Qwen3.5-27B" \
@@ -89,7 +73,7 @@ CUDA_VISIBLE_DEVICES=0,1 \
         > logs/llama70b_phase2.log 2>&1 &
 LLAMA_PID=$!
 
-# Qwen prefix caching intentionally OFF (see phase 1 note)
+# Qwen prefix caching explicitly OFF.
 echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=2 \
     vllm serve Qwen/Qwen3.5-27B \
@@ -97,6 +81,7 @@ CUDA_VISIBLE_DEVICES=2 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
+        --no-enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
