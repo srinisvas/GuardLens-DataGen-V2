@@ -15,14 +15,10 @@
 #   Runs:    model_bench.py --cross-judge-only
 #
 # CRITICAL: launch flags MUST match the corresponding Phase 1/2 judge
-# launches exactly so cross-judge scores come from the same inference
-# setup. That includes: Qwen prefix cache OFF, thinking OFF; Mistral with
-# native tokenizer/config/load.
-#
-# Runtime guard:
-#   - Prefer the conda C/C++ runtime over the cluster GCC 11.2 runtime.
-#     The environment's ICU requires CXXABI_1.3.15, which GCC 11.2 lacks.
-#   - Fail fast on sqlite/CUDA/vLLM device detection before loading models.
+# launches exactly so cross-judge scores come from the same inference setup.
+# Qwen prefix cache is explicitly OFF and thinking is OFF. Mistral uses the
+# native tokenizer/config/load path. The same native sampler runtime policy is
+# used in every phase.
 
 set -eo pipefail
 
@@ -39,6 +35,10 @@ set -u
 # take precedence.
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Universal vLLM runtime policy, identical to Phases 1 and 2.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ALLREDUCE_USE_FLASHINFER=0
+
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
@@ -46,28 +46,8 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 mkdir -p "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Fail before model loading if the Python/C++ runtime or Slurm GPU exposure
-# regresses.
-echo "[$(date +%T)] Runtime/GPU preflight"
-python - <<'PY'
-import sqlite3
-import torch
-import vllm
-from vllm.platforms import current_platform
-
-print("sqlite:", sqlite3.sqlite_version)
-print("vLLM:", vllm.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
-print("vLLM device:", current_platform.device_type)
-if torch.cuda.is_available():
-    print("GPU 0:", torch.cuda.get_device_name(0))
-
-assert torch.cuda.is_available(), "CUDA is not visible inside this Slurm job"
-assert current_platform.device_type == "cuda", (
-    f"vLLM detected device={current_platform.device_type!r}, expected 'cuda'"
-)
-PY
+echo "[$(date +%T)] Runtime/GPU compatibility preflight"
+python runtime_compat_v12.py --required-gpus 2
 
 if [ ! -f "$RESULTS_DIR/config_a/raw_conversations.jsonl" ]; then
     echo "ERROR: $RESULTS_DIR/config_a/raw_conversations.jsonl missing. Run Phase 1 first."
@@ -78,7 +58,7 @@ if [ ! -f "$RESULTS_DIR/config_b/raw_conversations.jsonl" ]; then
     exit 1
 fi
 
-# Qwen prefix caching intentionally OFF to match Phase 1/2 judge deployment
+# Qwen prefix caching explicitly OFF to match Phase 1/2 judge deployment.
 echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 0, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=0 \
     vllm serve Qwen/Qwen3.5-27B \
@@ -86,6 +66,7 @@ CUDA_VISIBLE_DEVICES=0 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
+        --no-enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
