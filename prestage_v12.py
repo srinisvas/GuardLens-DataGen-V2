@@ -158,7 +158,7 @@ def main():
     print(f"  approximate total: ~{approx_total_gb} GB")
 
     if not args.skip_disk_check:
-        required = max(approx_total_gb + 40, MIN_FREE_GB)
+        required = approx_total_gb + 40
         if not check_disk_space(cache_dir, required):
             sys.exit(1)
 
