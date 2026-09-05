@@ -1,14 +1,21 @@
 # model_bench_configs.yaml
 #
-# v3 changes:
-#   - Cross-judge phase now correctly documented as reloading BOTH judges
-#     (Qwen + Mistral) on 2 GPUs, not "either Gemma or Mistral".
-#   - K max_turns note updated to 12 (was 8) to match _BENCH_STRATEGIES.
-#   - Explicit note that Qwen prefix caching is disabled in SLURM launches
-#     due to hybrid GDN/Mamba architecture requiring experimental
-#     mamba_cache_mode=align path.
+# v4 runtime policy:
+#   - All benchmark phases set VLLM_USE_FLASHINFER_SAMPLER=0 so every model
+#     uses vLLM's native sampler. This avoids FlashInfer JIT compilation and
+#     removes the compute-node nvcc/CUDA_HOME dependency.
+#   - All phases explicitly set VLLM_ALLREDUCE_USE_FLASHINFER=0.
+#   - runtime_compat_v12.py applies the upstream Python <=3.11 postponed-
+#     annotations fix needed by the pinned FlashInfer communicator import.
+#   - Qwen3.5 uses --no-enable-prefix-caching explicitly because vLLM 0.28
+#     defaults prefix caching ON.
 #
-# v2 corrections (retained):
+# v3 changes retained:
+#   - Cross-judge phase reloads BOTH judges (Qwen + Mistral) on 2 GPUs.
+#   - K max_turns is 12 to match _BENCH_STRATEGIES.
+#   - Qwen prefix caching is disabled due to the hybrid GDN/Mamba path.
+#
+# v2 corrections retained:
 #   - Qwen post-trained ID is Qwen/Qwen3.5-27B (no -Instruct suffix).
 #   - Llama-4-Scout is 17B activated but 109B total; deferred to a
 #     separate quantized bench (config_b2_scout_quantized_optional).
@@ -38,6 +45,10 @@
 #            re-judge each other's stored responses for cross-judge
 #            agreement.
 #
+# Universal environment flags (set by all SLURM phases):
+#   VLLM_USE_FLASHINFER_SAMPLER=0
+#   VLLM_ALLREDUCE_USE_FLASHINFER=0
+#
 # vLLM launch flags per server (start at 8K, raise only if K needs more):
 #   --host 127.0.0.1   (no meaningful auth; keep local)
 #   --dtype bfloat16
@@ -46,12 +57,13 @@
 #
 # Prefix caching:
 #   - Llama-3.3-70B, Gemma-4-31B, Mistral-Small-3.2: --enable-prefix-caching
-#   - Qwen3.5-27B: NO prefix caching. Qwen3.5 is hybrid GDN/Mamba; vLLM
-#     prefix caching requires experimental mamba_cache_mode=align path.
-#     For a 48-conversation scientific benchmark, reproducibility beats
-#     the small throughput gain.
+#   - Qwen3.5-27B: --no-enable-prefix-caching
+#     Qwen3.5 is hybrid GDN/Mamba; prefix caching uses the experimental
+#     mamba_cache_mode=align path. For this scientific benchmark,
+#     reproducibility/predictability beats the small throughput gain.
 #
 # Qwen-specific flags (all Qwen3.5 launches):
+#   --no-enable-prefix-caching
 #   --reasoning-parser qwen3
 #   --language-model-only
 #   --default-chat-template-kwargs '{"enable_thinking": false}'
