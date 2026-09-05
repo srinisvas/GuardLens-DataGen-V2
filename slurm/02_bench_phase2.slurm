@@ -14,12 +14,9 @@
 #   Servers: Llama-3.3-70B (GPUs 0,1 TP=2), Qwen3.5-27B (GPU 2), Mistral-Small-3.2 (GPU 3)
 #   Runs:    model_bench.py --config-name config_b
 #
-# v2 corrections:
-#   - --host 127.0.0.1 for all servers
-#   - Qwen3.5 with thinking-mode suppression
-#   - Mistral with official --tokenizer_mode/config_format/load_format mistral
-#     + --language-model-only per Mistral's current serving guidance
-#   - HF_HUB_OFFLINE=1
+# v3 corrections:
+#   - Qwen3.5 launched WITHOUT --enable-prefix-caching (hybrid GDN/Mamba;
+#     prefix caching for it is experimental in vLLM 0.28).
 
 set -euo pipefail
 
@@ -58,14 +55,14 @@ CUDA_VISIBLE_DEVICES=0,1 \
         > logs/llama70b_phase2.log 2>&1 &
 LLAMA_PID=$!
 
-echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF)"
+# Qwen prefix caching intentionally OFF (see phase 1 note)
+echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=2 \
     vllm serve Qwen/Qwen3.5-27B \
         --host 127.0.0.1 --port 8002 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
-        --enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
@@ -133,7 +130,6 @@ python model_bench.py \
 echo ""
 echo "[$(date +%T)] Config B benchmark complete."
 echo "Report at: $RESULTS_DIR/bench_report_config_b.md"
-echo "Metrics at: $RESULTS_DIR/config_b/metrics.json"
 echo ""
 echo "Next: submit Phase 3:"
 echo "  sbatch slurm/03_bench_phase3.slurm"

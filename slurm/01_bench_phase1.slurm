@@ -14,13 +14,12 @@
 #   Servers: Llama-3.3-70B (GPUs 0,1 TP=2), Qwen3.5-27B (GPU 2), Gemma-4-31B (GPU 3)
 #   Runs:    model_bench.py --config-name config_a
 #
-# v2 corrections:
-#   - --host 127.0.0.1 (no need to expose these to compute-node network)
-#   - Qwen3.5 launched with --reasoning-parser qwen3 --language-model-only
-#     --default-chat-template-kwargs '{"enable_thinking": false}' to
-#     suppress thinking-mode reasoning traces from contaminating outputs.
-#   - HF_HUB_OFFLINE=1 so any missing model fails fast instead of hanging
-#     while trying to reach hf.co from a compute node.
+# v3 corrections:
+#   - Qwen3.5 launched WITHOUT --enable-prefix-caching. Qwen3.5 is a hybrid
+#     GDN/Mamba architecture; vLLM prefix caching for it requires the
+#     experimental mamba_cache_mode=align path. For a 48-conversation
+#     model-selection benchmark, reproducibility beats a small throughput
+#     gain. Keep prefix caching for Llama and Gemma.
 
 set -euo pipefail
 
@@ -30,7 +29,6 @@ RESULTS_DIR="$HOME/work/results/model_bench_2026"
 source ~/.bashrc
 conda activate dataset_gen
 
-# Offline HF mode: models must already be in the cache
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
@@ -38,7 +36,7 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Pre-flight: verify staged models exist
+# Pre-flight: verify staged models exist offline
 for m in "models--meta-llama--Llama-3.3-70B-Instruct" \
          "models--Qwen--Qwen3.5-27B" \
          "models--google--gemma-4-31B-it"; do
@@ -64,14 +62,17 @@ CUDA_VISIBLE_DEVICES=0,1 \
         > logs/llama70b_phase1.log 2>&1 &
 LLAMA_PID=$!
 
-echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF)"
+# NOTE: Qwen3.5-27B is intentionally launched WITHOUT --enable-prefix-caching.
+# Qwen3.5 is a hybrid GDN/Mamba architecture; prefix caching requires the
+# experimental mamba_cache_mode=align path in current vLLM. For the
+# scientific model-selection benchmark, reproducibility beats throughput.
+echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=2 \
     vllm serve Qwen/Qwen3.5-27B \
         --host 127.0.0.1 --port 8002 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
-        --enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
@@ -114,9 +115,6 @@ wait_for 8001 "Llama-3.3-70B"
 wait_for 8002 "Qwen3.5-27B"
 wait_for 8003 "Gemma-4-31B"
 
-# -----------------------------------------------------------
-# Smoke test (schema + judge contract + seed determinism)
-# -----------------------------------------------------------
 echo ""
 echo "[$(date +%T)] Running smoke test on Config A servers"
 python smoke_test_backends.py \
@@ -125,9 +123,6 @@ python smoke_test_backends.py \
     --output-json "$RESULTS_DIR/config_a_preflight.json" \
     || { echo "FATAL: smoke test failed. See output above. Aborting."; exit 1; }
 
-# -----------------------------------------------------------
-# Run benchmark
-# -----------------------------------------------------------
 echo ""
 echo "[$(date +%T)] Starting Config A benchmark (12 conversations per strategy)"
 python model_bench.py \

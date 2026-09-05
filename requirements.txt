@@ -12,40 +12,36 @@
 #
 # --- VERSION PINNING POLICY ---
 #
-# vLLM is pinned to a specific range because Qwen3.5 requires a recent
-# vLLM with the qwen3 reasoning parser and default_chat_template_kwargs
-# support. Older vLLM (<=0.20) does not have these.
+# vLLM is pinned to an EXACT version (0.28.0) because it is the only
+# component that both (a) requires the specific Qwen3.5 reasoning-parser
+# and default_chat_template_kwargs machinery this benchmark depends on,
+# and (b) has an aggressive dependency graph that will conflict with
+# anything we pin manually. Let vLLM pull its matching torch, transformers,
+# huggingface_hub, safetensors, protobuf, etc. We do NOT redundantly pin
+# those here.
 #
-# AFTER PHASE 1 PASSES with these pins, capture the exact resolved
+# Non-vLLM dependencies are floor-pinned only. These are packages vLLM
+# does not depend on, so there is no conflict risk.
+#
+# AFTER PHASE 1 PASSES with this file, capture the exact resolved
 # versions with:
 #     pip freeze > requirements.lock.txt
 # and treat requirements.lock.txt as the reproducible artifact for the
 # paper. Do not leave `>=` ranges in the frozen environment.
+#
+# If Phase 1 preflight (smoke test) reveals Qwen3.5 issues with 0.28.0,
+# switch to a pinned nightly build here rather than relaxing the pin.
 
-# ---- Core HTTP ----
+# ---- vLLM (pins torch, transformers, hf_hub, safetensors transitively) ----
+vllm==0.28.0
+
+# ---- HTTP client (used by every script that hits vLLM) ----
 requests>=2.31.0
-
-# ---- Model / tokenizer stack ----
-# torch 2.11 has CUDA 13.0 as PyPI default (stable since March 2026)
-torch>=2.11.0,<2.13.0
-transformers>=4.50.0,<5.0.0
-accelerate>=0.34.0
-sentencepiece>=0.2.0
-protobuf>=4.25.0
-safetensors>=0.4.5
-
-# ---- HF download ----
-huggingface_hub>=0.24.0
-
-# ---- vLLM ----
-# 0.28+ has the Qwen3.5 native implementation and reasoning-parser controls.
-# TODO after Phase 1: replace with exact pin from pip freeze.
-vllm>=0.28.0,<0.30.0
 
 # ---- Datasets ----
 datasets>=2.19.0
 
-# ---- Config ----
+# ---- Config parsing ----
 PyYAML>=6.0
 
 # ---- Contamination check ----
@@ -53,3 +49,9 @@ datasketch>=1.6.4
 numpy>=1.26.0
 sentence-transformers>=3.0.0
 tqdm>=4.66.0
+
+# ---- accelerate is pulled by vLLM but we use it directly too ----
+accelerate>=0.34.0
+
+# ---- sentencepiece is pulled by vLLM/transformers transitively ----
+# Not explicitly listed here to avoid pin conflict.

@@ -15,8 +15,9 @@
 #   Runs:    model_bench.py --cross-judge-only
 #
 # CRITICAL: launch flags MUST match the corresponding Phase 1/2 judge
-# launches exactly, so cross-judge scores come from the same inference
-# setup used for the original scores.
+# launches exactly so cross-judge scores come from the same inference
+# setup. That includes: Qwen prefix cache OFF, thinking OFF; Mistral with
+# native tokenizer/config/load.
 
 set -euo pipefail
 
@@ -33,7 +34,6 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 mkdir -p "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Verify Phase 1 and 2 outputs exist
 if [ ! -f "$RESULTS_DIR/config_a/raw_conversations.jsonl" ]; then
     echo "ERROR: $RESULTS_DIR/config_a/raw_conversations.jsonl missing. Run Phase 1 first."
     exit 1
@@ -43,14 +43,14 @@ if [ ! -f "$RESULTS_DIR/config_b/raw_conversations.jsonl" ]; then
     exit 1
 fi
 
-echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 0, port 8002 (thinking OFF)"
+# Qwen prefix caching intentionally OFF to match Phase 1/2 judge deployment
+echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 0, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=0 \
     vllm serve Qwen/Qwen3.5-27B \
         --host 127.0.0.1 --port 8002 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
-        --enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \

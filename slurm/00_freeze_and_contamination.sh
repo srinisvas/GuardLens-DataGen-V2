@@ -16,8 +16,8 @@ set -eu
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
 RESULTS_ROOT="$HOME/work/results"
-V11_SOURCE="${V11_SOURCE:-$REPO_ROOT/results-gen}"    # v12 correction: default matches actual location
-V11_FINAL_JSONL="${V11_FINAL_JSONL:-final_dataset.jsonl}"  # actual v11 filename
+V11_SOURCE="${V11_SOURCE:-$REPO_ROOT/results-gen}"
+V11_FINAL_JSONL="${V11_FINAL_JSONL:-final_dataset.jsonl}"
 
 REF_MHJ="$REPO_ROOT/mhj_conversations.jsonl"
 REF_HARMBENCH="${REF_HARMBENCH:-$HOME/data/harmbench/behaviors.jsonl}"
@@ -27,9 +27,30 @@ REF_WILDJB="${REF_WILDJB:-$HOME/data/wildjailbreak/eval.jsonl}"
 cd "$REPO_ROOT"
 
 # -----------------------------------------------------------
+# Disk-space sanity check for HF cache (used by prestage_v12.py later)
+# -----------------------------------------------------------
+HF_CACHE_PARENT="${HF_HUB_CACHE:-$HOME/work/hf_models/hub}"
+# Walk up to a directory that actually exists
+probe="$HF_CACHE_PARENT"
+while [ -n "$probe" ] && [ ! -d "$probe" ]; do
+    probe=$(dirname "$probe")
+done
+if [ -n "$probe" ]; then
+    free_gb=$(df -BG "$probe" 2>/dev/null | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
+    if [ -n "$free_gb" ]; then
+        echo "HF cache filesystem: $probe (${free_gb} GB free)"
+        if [ "$free_gb" -lt 400 ]; then
+            echo "  WARN: less than 400 GB free. Full v12 model stack needs ~313 GB."
+            echo "  If prestage fails on disk-full, free space or set HF_HUB_CACHE elsewhere."
+        fi
+    fi
+fi
+
+# -----------------------------------------------------------
 # Phase 0a: Freeze v11
 # -----------------------------------------------------------
 if [ "${SKIP_FREEZE:-0}" != "1" ]; then
+    echo ""
     echo "======================================================"
     echo "  Phase 0a: Freeze v11 (dry-run first)"
     echo "======================================================"
@@ -49,7 +70,7 @@ if [ "${SKIP_FREEZE:-0}" != "1" ]; then
             --source "$V11_SOURCE" \
             --dest "$RESULTS_ROOT" \
             --commit \
-            --overwrite   # in case a prior empty freeze exists
+            --overwrite
         (cd "$RESULTS_ROOT/dataset_v11_legacy" && python verify_manifest.py)
     else
         echo "Skipped freeze commit. Re-run this script when ready."
@@ -60,7 +81,7 @@ else
 fi
 
 # -----------------------------------------------------------
-# Phase 0b: Build reference list (skip missing corpora)
+# Phase 0b: Build reference list
 # -----------------------------------------------------------
 echo ""
 echo "======================================================"
@@ -89,8 +110,9 @@ echo "  Active references: ${#REFS[@]}"
 for r in "${REFS[@]}"; do echo "    $r"; done
 
 # -----------------------------------------------------------
-# Helper: run a command and treat exit codes explicitly.
-# Exit 0 = clean, exit 3 = quarantine (allowed), other non-zero = fatal
+# run_contamination: explicit exit-code handling.
+#   0 = clean, 3 = quarantine (allowed), 1 = hard contamination (abort),
+#   other = unexpected (abort)
 # -----------------------------------------------------------
 run_contamination() {
     local desc="$1"
@@ -155,17 +177,13 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ] && [ -f "$V11_MERGED" ]; then
     echo ""
     echo "======================================================"
     echo "  Phase 0e: v11 vs external evals (paper baseline)"
-    echo "  This runs on CPU and may take 10-15 min after v5 batching."
-    echo "  For a larger reference pool, consider a CPU SLURM allocation."
+    echo "  This runs on CPU. With v5 batching, ~10-15 min."
     echo "======================================================"
     EXT_REFS=()
     for r in "${REFS[@]}"; do
         [ "${r%%:*}" != "v11_legacy" ] && EXT_REFS+=("$r")
     done
     if [ ${#EXT_REFS[@]} -gt 0 ]; then
-        # For the v11 baseline we WANT to see and record any overlap, so
-        # semantic quarantine is fine here — the number gets reported in the
-        # paper regardless.
         run_contamination "v11_vs_external" \
             python contamination_check.py \
                 --candidate "$V11_MERGED" \
