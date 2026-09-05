@@ -28,7 +28,8 @@ RESULTS_DIR="$HOME/work/results/model_bench_2026"
 
 set +u
 source ~/.bashrc
-conda activate dataset_gen
+conda activate "$HOME/work/conda_envs/dataset_gen"
+
 set -u
 
 export HF_HUB_OFFLINE=1
