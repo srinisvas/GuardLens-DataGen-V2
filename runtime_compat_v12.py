@@ -12,19 +12,22 @@ It performs four checks/fixes before any model weights are loaded:
    ``array.array[int]`` in ``comm/fd_exchange.py``; on Python 3.11 that
    annotation is evaluated eagerly and crashes tensor-parallel startup.
    Upstream fixed it by adding ``from __future__ import annotations``.
-3. Verifies ``flashinfer.comm`` imports after the compatibility fix.
+3. Verifies ``flashinfer.comm`` and vLLM's FlashInfer communicator module can
+   import after the compatibility fix.
 4. Verifies the benchmark explicitly disabled FlashInfer sampling. The native
    vLLM sampler does not JIT-compile FlashInfer CUDA kernels and therefore does
    not require an external nvcc/CUDA_HOME on the compute node.
 
-The patch is idempotent and only modifies a file that contains the known
-problematic ``array.array[int]`` annotation. It prints package versions and the
-before/after file hash so the runtime modification is auditable.
+The source patch is idempotent, lock-protected for concurrent Slurm jobs that
+share one conda environment on GPFS, and only modifies a file that contains
+the known problematic ``array.array[int]`` annotation. Package versions and
+before/after hashes are printed so the runtime modification is auditable.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib
 import importlib.metadata
@@ -54,7 +57,7 @@ def _package_version(name: str) -> str:
         return "not-installed"
 
 
-def patch_flashinfer_python311() -> tuple[Path | None, bool]:
+def patch_flashinfer_python311() -> tuple[Path, bool]:
     """Apply FlashInfer's upstream postponed-annotations fix when required."""
     spec = importlib.util.find_spec("flashinfer")
     if spec is None or not spec.submodule_search_locations:
@@ -65,46 +68,69 @@ def patch_flashinfer_python311() -> tuple[Path | None, bool]:
     if not path.is_file():
         raise RuntimeError(f"FlashInfer compatibility file not found: {path}")
 
-    text = path.read_text(encoding="utf-8")
-    before = _sha256(path)
+    # Phase 1 and Phase 2 may start simultaneously on different nodes while
+    # sharing this conda environment over GPFS. Serialize the source check/
+    # patch so the jobs cannot race on the same installed file.
+    lock_path = path.parent / ".guardlens_fd_exchange.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
 
-    # Python 3.12+ supports array.array[int], so no source patch is necessary.
-    if sys.version_info >= (3, 12):
-        print(f"FlashInfer fd_exchange: Python {sys.version.split()[0]} needs no patch")
-        print(f"FlashInfer fd_exchange sha256: {before}")
-        return path, False
+        # Re-read only after acquiring the lock; another job may have patched
+        # the file while this process was waiting.
+        text = path.read_text(encoding="utf-8")
+        before = _sha256(path)
 
-    if _FUTURE_IMPORT in text:
-        print("FlashInfer fd_exchange: postponed annotations already present")
-        print(f"FlashInfer fd_exchange sha256: {before}")
-        return path, False
+        # Python 3.12+ supports array.array[int], so no source patch is needed.
+        if sys.version_info >= (3, 12):
+            print(
+                f"FlashInfer fd_exchange: Python {sys.version.split()[0]} "
+                "needs no compatibility patch"
+            )
+            print(f"FlashInfer fd_exchange sha256: {before}")
+            return path, False
 
-    if _PROBLEMATIC_ANNOTATION not in text:
-        # A future/backported build may have fixed the annotation another way.
-        print("FlashInfer fd_exchange: known Python 3.11 annotation bug not present")
-        print(f"FlashInfer fd_exchange sha256: {before}")
-        return path, False
+        if _FUTURE_IMPORT in text:
+            print("FlashInfer fd_exchange: postponed annotations already present")
+            print(f"FlashInfer fd_exchange sha256: {before}")
+            return path, False
 
-    needle = "\nimport array\n"
-    if needle not in text:
-        raise RuntimeError(
-            "Known FlashInfer annotation bug is present but expected 'import array' "
-            "location was not found; refusing to patch an unexpected source layout"
+        if _PROBLEMATIC_ANNOTATION not in text:
+            # A future/backported build may have fixed the annotation another way.
+            print("FlashInfer fd_exchange: known Python 3.11 annotation bug not present")
+            print(f"FlashInfer fd_exchange sha256: {before}")
+            return path, False
+
+        needle = "\nimport array\n"
+        if needle not in text:
+            raise RuntimeError(
+                "Known FlashInfer annotation bug is present but expected "
+                "'import array' location was not found; refusing to patch an "
+                "unexpected source layout"
+            )
+
+        # This is the exact semantic fix used upstream in FlashInfer 0.6.17.
+        patched = text.replace(
+            needle,
+            "\nfrom __future__ import annotations\n\nimport array\n",
+            1,
         )
 
-    # This is the exact semantic fix used upstream in FlashInfer 0.6.17.
-    text = text.replace(
-        needle,
-        "\nfrom __future__ import annotations\n\nimport array\n",
-        1,
-    )
-    path.write_text(text, encoding="utf-8")
-    after = _sha256(path)
+        # Atomic replacement prevents a partially-written module if a job is
+        # interrupted during the tiny compatibility edit.
+        tmp = path.parent / f".{path.name}.guardlens.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(patched, encoding="utf-8")
+            os.chmod(tmp, path.stat().st_mode & 0o777)
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
-    print("FlashInfer fd_exchange: applied Python <=3.11 postponed-annotations patch")
-    print(f"FlashInfer fd_exchange sha256 before: {before}")
-    print(f"FlashInfer fd_exchange sha256 after:  {after}")
-    return path, True
+        after = _sha256(path)
+        print("FlashInfer fd_exchange: applied Python <=3.11 postponed-annotations patch")
+        print(f"FlashInfer fd_exchange sha256 before: {before}")
+        print(f"FlashInfer fd_exchange sha256 after:  {after}")
+        return path, True
 
 
 def main() -> None:
@@ -138,17 +164,17 @@ def main() -> None:
     # change from altering the benchmark backend.
     fi_ar = os.environ.get("VLLM_ALLREDUCE_USE_FLASHINFER")
     if fi_ar != "0":
-        raise RuntimeError(
-            "VLLM_ALLREDUCE_USE_FLASHINFER must be explicitly set to 0"
-        )
+        raise RuntimeError("VLLM_ALLREDUCE_USE_FLASHINFER must be explicitly set to 0")
     print("VLLM_ALLREDUCE_USE_FLASHINFER=0")
 
     patch_flashinfer_python311()
 
-    # Import the exact module path that broke the Llama TP=2 worker. Do this
+    # Import the exact dependency/module chain that broke Llama TP=2. Do this
     # after patching and before allocating/loading model weights.
     importlib.import_module("flashinfer.comm")
     print("flashinfer.comm import: OK")
+    importlib.import_module("vllm.distributed.device_communicators.flashinfer_all_reduce")
+    print("vLLM FlashInfer communicator import: OK")
 
     import torch
     import vllm
