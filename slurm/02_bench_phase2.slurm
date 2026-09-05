@@ -17,14 +17,24 @@
 # v3 corrections:
 #   - Qwen3.5 launched WITHOUT --enable-prefix-caching (hybrid GDN/Mamba;
 #     prefix caching for it is experimental in vLLM 0.28).
+#   - Prefer the conda C/C++ runtime over the cluster GCC 11.2 runtime.
+#     The environment's ICU requires CXXABI_1.3.15, which GCC 11.2 lacks.
+#   - Fail fast on sqlite/CUDA/vLLM device detection before loading models.
 
-set -euo pipefail
+set -eo pipefail
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
 RESULTS_DIR="$HOME/work/results/model_bench_2026"
 
+set +u
 source ~/.bashrc
-conda activate dataset_gen
+conda activate "$HOME/work/conda_envs/dataset_gen"
+set -u
+
+# The cluster injects GCC 11.2 libstdc++ into LD_LIBRARY_PATH. Conda's ICU
+# requires CXXABI_1.3.15, so make the environment's matching C/C++ runtime
+# take precedence.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
@@ -32,6 +42,30 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
 mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
+
+# Fail before model loading if the Python/C++ runtime or Slurm GPU exposure
+# regresses. This specifically guards the ABI and login-node device issues
+# found during Phase 1 bring-up.
+echo "[$(date +%T)] Runtime/GPU preflight"
+python - <<'PY'
+import sqlite3
+import torch
+import vllm
+from vllm.platforms import current_platform
+
+print("sqlite:", sqlite3.sqlite_version)
+print("vLLM:", vllm.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("GPU count:", torch.cuda.device_count())
+print("vLLM device:", current_platform.device_type)
+if torch.cuda.is_available():
+    print("GPU 0:", torch.cuda.get_device_name(0))
+
+assert torch.cuda.is_available(), "CUDA is not visible inside this Slurm job"
+assert current_platform.device_type == "cuda", (
+    f"vLLM detected device={current_platform.device_type!r}, expected 'cuda'"
+)
+PY
 
 for m in "models--meta-llama--Llama-3.3-70B-Instruct" \
          "models--Qwen--Qwen3.5-27B" \
