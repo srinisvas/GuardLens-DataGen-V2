@@ -21,13 +21,15 @@
 #     model-selection benchmark, reproducibility beats a small throughput
 #     gain. Keep prefix caching for Llama and Gemma.
 
-set -euo pipefail
+set -eo pipefail
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
 RESULTS_DIR="$HOME/work/results/model_bench_2026"
 
+set +u
 source ~/.bashrc
 conda activate dataset_gen
+set -u
 
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
