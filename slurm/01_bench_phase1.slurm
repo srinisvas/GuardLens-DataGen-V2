@@ -14,15 +14,20 @@
 #   Servers: Llama-3.3-70B (GPUs 0,1 TP=2), Qwen3.5-27B (GPU 2), Gemma-4-31B (GPU 3)
 #   Runs:    model_bench.py --config-name config_a
 #
-# v3 corrections:
-#   - Qwen3.5 launched WITHOUT --enable-prefix-caching. Qwen3.5 is a hybrid
-#     GDN/Mamba architecture; vLLM prefix caching for it requires the
-#     experimental mamba_cache_mode=align path. For a 48-conversation
-#     model-selection benchmark, reproducibility beats a small throughput
-#     gain. Keep prefix caching for Llama and Gemma.
+# v4 runtime corrections:
 #   - Prefer the conda C/C++ runtime over the cluster GCC 11.2 runtime.
-#     The environment's ICU requires CXXABI_1.3.15, which GCC 11.2 lacks.
-#   - Fail fast on sqlite/CUDA/vLLM device detection before loading models.
+#   - Force vLLM's native sampler for every model. FlashInfer sampling JITs
+#     CUDA kernels and requires nvcc/CUDA_HOME, which is not available on the
+#     compute image. Native sampling is supported by vLLM and keeps the
+#     benchmark backend identical across model families.
+#   - Explicitly disable FlashInfer all-reduce. The pinned vLLM 0.28 default
+#     is already off, but locking it prevents environment/default drift.
+#   - Run runtime_compat_v12.py before loading weights. On Python 3.11 it
+#     applies the exact upstream FlashInfer postponed-annotations fix needed
+#     for TP communicator imports and then validates sqlite/CUDA/vLLM.
+#   - Qwen3.5 uses explicit --no-enable-prefix-caching. vLLM 0.28 defaults
+#     prefix caching ON, so merely omitting --enable-prefix-caching is not
+#     sufficient for the hybrid GDN/Mamba model.
 
 set -eo pipefail
 
@@ -39,6 +44,11 @@ set -u
 # take precedence.
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Universal vLLM runtime policy for this benchmark. Do not let optional
+# FlashInfer JIT paths introduce an nvcc dependency or model-specific sampler.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ALLREDUCE_USE_FLASHINFER=0
+
 export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
@@ -46,29 +56,10 @@ export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
 cd "$REPO_ROOT"
 
-# Fail before model loading if the Python/C++ runtime or Slurm GPU exposure
-# regresses. This specifically guards the ABI and login-node device issues
-# found during Phase 1 bring-up.
-echo "[$(date +%T)] Runtime/GPU preflight"
-python - <<'PY'
-import sqlite3
-import torch
-import vllm
-from vllm.platforms import current_platform
-
-print("sqlite:", sqlite3.sqlite_version)
-print("vLLM:", vllm.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
-print("vLLM device:", current_platform.device_type)
-if torch.cuda.is_available():
-    print("GPU 0:", torch.cuda.get_device_name(0))
-
-assert torch.cuda.is_available(), "CUDA is not visible inside this Slurm job"
-assert current_platform.device_type == "cuda", (
-    f"vLLM detected device={current_platform.device_type!r}, expected 'cuda'"
-)
-PY
+# Fail before model loading if the Python/C++ runtime, FlashInfer compatibility,
+# CUDA visibility, or Slurm GPU exposure regresses.
+echo "[$(date +%T)] Runtime/GPU compatibility preflight"
+python runtime_compat_v12.py --required-gpus 4
 
 # Pre-flight: verify staged models exist offline
 for m in "models--meta-llama--Llama-3.3-70B-Instruct" \
@@ -96,10 +87,7 @@ CUDA_VISIBLE_DEVICES=0,1 \
         > logs/llama70b_phase1.log 2>&1 &
 LLAMA_PID=$!
 
-# NOTE: Qwen3.5-27B is intentionally launched WITHOUT --enable-prefix-caching.
-# Qwen3.5 is a hybrid GDN/Mamba architecture; prefix caching requires the
-# experimental mamba_cache_mode=align path in current vLLM. For the
-# scientific model-selection benchmark, reproducibility beats throughput.
+# Qwen3.5 prefix caching is explicitly OFF. vLLM 0.28 defaults it ON.
 echo "[$(date +%T)] Launching Qwen3.5-27B on GPU 2, port 8002 (thinking OFF, prefix cache OFF)"
 CUDA_VISIBLE_DEVICES=2 \
     vllm serve Qwen/Qwen3.5-27B \
@@ -107,6 +95,7 @@ CUDA_VISIBLE_DEVICES=2 \
         --dtype bfloat16 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
+        --no-enable-prefix-caching \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
