@@ -32,7 +32,8 @@
 set -eo pipefail
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
-RESULTS_DIR="$HOME/work/results/model_bench_2026"
+RESULTS_DIR="${BENCH_RESULTS_DIR:-$HOME/work/results/model_bench_measurement_v1}"
+LOG_DIR="$RESULTS_DIR/server_logs"
 
 set +u
 source ~/.bashrc
@@ -53,7 +54,12 @@ export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
-mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
+# Fail before loading models or overwriting the previous preflight.
+if [ -e "$RESULTS_DIR/config_a" ] || [ -e "$RESULTS_DIR/config_a_preflight.json" ]; then
+    echo "ERROR: Existing config_a artifacts in $RESULTS_DIR. Choose a fresh BENCH_RESULTS_DIR."
+    exit 1
+fi
+mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs" "$LOG_DIR"
 cd "$REPO_ROOT"
 
 # Fail before model loading if the Python/C++ runtime, FlashInfer compatibility,
@@ -84,7 +90,7 @@ CUDA_VISIBLE_DEVICES=0,1 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
         --enable-prefix-caching \
-        > logs/llama70b_phase1.log 2>&1 &
+        > "$LOG_DIR/llama70b_phase1.log" 2>&1 &
 LLAMA_PID=$!
 
 # Qwen3.5 prefix caching is explicitly OFF. vLLM 0.28 defaults it ON.
@@ -99,7 +105,7 @@ CUDA_VISIBLE_DEVICES=2 \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
-        > logs/qwen27b_phase1.log 2>&1 &
+        > "$LOG_DIR/qwen27b_phase1.log" 2>&1 &
 QWEN_PID=$!
 
 echo "[$(date +%T)] Launching Gemma-4-31B on GPU 3, port 8003"
@@ -110,7 +116,7 @@ CUDA_VISIBLE_DEVICES=3 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
         --enable-prefix-caching \
-        > logs/gemma31b_phase1.log 2>&1 &
+        > "$LOG_DIR/gemma31b_phase1.log" 2>&1 &
 GEMMA_PID=$!
 
 cleanup() {

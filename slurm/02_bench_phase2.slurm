@@ -25,7 +25,8 @@
 set -eo pipefail
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
-RESULTS_DIR="$HOME/work/results/model_bench_2026"
+RESULTS_DIR="${BENCH_RESULTS_DIR:-$HOME/work/results/model_bench_measurement_v1}"
+LOG_DIR="$RESULTS_DIR/server_logs"
 
 set +u
 source ~/.bashrc
@@ -45,7 +46,12 @@ export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
-mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs"
+# Fail before loading models or overwriting the previous preflight.
+if [ -e "$RESULTS_DIR/config_b" ] || [ -e "$RESULTS_DIR/config_b_preflight.json" ]; then
+    echo "ERROR: Existing config_b artifacts in $RESULTS_DIR. Choose a fresh BENCH_RESULTS_DIR."
+    exit 1
+fi
+mkdir -p "$RESULTS_DIR" "$REPO_ROOT/logs" "$LOG_DIR"
 cd "$REPO_ROOT"
 
 echo "[$(date +%T)] Runtime/GPU compatibility preflight"
@@ -70,7 +76,7 @@ CUDA_VISIBLE_DEVICES=0,1 \
         --max-model-len 8192 \
         --gpu-memory-utilization 0.95 \
         --enable-prefix-caching \
-        > logs/llama70b_phase2.log 2>&1 &
+        > "$LOG_DIR/llama70b_phase2.log" 2>&1 &
 LLAMA_PID=$!
 
 # Qwen prefix caching explicitly OFF.
@@ -85,7 +91,7 @@ CUDA_VISIBLE_DEVICES=2 \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
-        > logs/qwen27b_phase2.log 2>&1 &
+        > "$LOG_DIR/qwen27b_phase2.log" 2>&1 &
 QWEN_PID=$!
 
 echo "[$(date +%T)] Launching Mistral-Small-3.2-24B on GPU 3, port 8004 (mistral tokenizer)"
@@ -100,7 +106,7 @@ CUDA_VISIBLE_DEVICES=3 \
         --tokenizer_mode mistral \
         --config_format mistral \
         --load_format mistral \
-        > logs/mistral24b_phase2.log 2>&1 &
+        > "$LOG_DIR/mistral24b_phase2.log" 2>&1 &
 MISTRAL_PID=$!
 
 cleanup() {

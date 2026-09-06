@@ -23,7 +23,8 @@
 set -eo pipefail
 
 REPO_ROOT="$HOME/projects/GuardLens-DataGen-V2"
-RESULTS_DIR="$HOME/work/results/model_bench_2026"
+RESULTS_DIR="${BENCH_RESULTS_DIR:-$HOME/work/results/model_bench_measurement_v1}"
+LOG_DIR="$RESULTS_DIR/server_logs"
 
 set +u
 source ~/.bashrc
@@ -43,7 +44,7 @@ export HF_HUB_OFFLINE=1
 export HF_HOME="$HOME/work/hf_models"
 export HF_HUB_CACHE="$HOME/work/hf_models/hub"
 
-mkdir -p "$REPO_ROOT/logs"
+mkdir -p "$REPO_ROOT/logs" "$LOG_DIR"
 cd "$REPO_ROOT"
 
 echo "[$(date +%T)] Runtime/GPU compatibility preflight"
@@ -70,7 +71,7 @@ CUDA_VISIBLE_DEVICES=0 \
         --reasoning-parser qwen3 \
         --language-model-only \
         --default-chat-template-kwargs '{"enable_thinking": false}' \
-        > logs/qwen27b_phase3.log 2>&1 &
+        > "$LOG_DIR/qwen27b_phase3.log" 2>&1 &
 QWEN_PID=$!
 
 echo "[$(date +%T)] Launching Mistral-Small-3.2 on GPU 1, port 8004 (mistral tokenizer)"
@@ -85,7 +86,7 @@ CUDA_VISIBLE_DEVICES=1 \
         --tokenizer_mode mistral \
         --config_format mistral \
         --load_format mistral \
-        > logs/mistral24b_phase3.log 2>&1 &
+        > "$LOG_DIR/mistral24b_phase3.log" 2>&1 &
 MISTRAL_PID=$!
 
 cleanup() {
