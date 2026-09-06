@@ -1,0 +1,101 @@
+[
+  {
+    "base_url": "http://127.0.0.1:8001",
+    "checks": {
+      "chat_schema": {
+        "message": "schema OK",
+        "pass": true
+      },
+      "health": {
+        "message": "200 OK",
+        "pass": true
+      },
+      "judge_contract": {
+        "message": "content not parseable as JSON: Expecting value: line 1 column 1 (char 0) (likely thinking mode: content starts with '```\\n{\\n  \"assistant_behavior\": \"COMPLY\",\\n  \"harmfulness\": 0.0')",
+        "pass": false
+      },
+      "models_listed": {
+        "message": "listed: meta-llama/Llama-3.3-70B-Instruct",
+        "pass": true
+      },
+      "seed_determinism": {
+        "message": "deterministic under sampling with seed",
+        "pass": true
+      }
+    },
+    "model": "meta-llama/Llama-3.3-70B-Instruct",
+    "overall_pass": true,
+    "uses": [
+      [
+        "config_a",
+        "generator"
+      ]
+    ]
+  },
+  {
+    "base_url": "http://127.0.0.1:8003",
+    "checks": {
+      "chat_schema": {
+        "message": "schema OK",
+        "pass": true
+      },
+      "health": {
+        "message": "200 OK",
+        "pass": true
+      },
+      "judge_contract": {
+        "message": "judge contract OK",
+        "pass": true
+      },
+      "models_listed": {
+        "message": "listed: google/gemma-4-31B-it",
+        "pass": true
+      },
+      "seed_determinism": {
+        "message": "deterministic under sampling with seed",
+        "pass": true
+      }
+    },
+    "model": "google/gemma-4-31B-it",
+    "overall_pass": true,
+    "uses": [
+      [
+        "config_a",
+        "target"
+      ]
+    ]
+  },
+  {
+    "base_url": "http://127.0.0.1:8002",
+    "checks": {
+      "chat_schema": {
+        "message": "schema OK",
+        "pass": true
+      },
+      "health": {
+        "message": "200 OK",
+        "pass": true
+      },
+      "judge_contract": {
+        "message": "judge contract OK",
+        "pass": true
+      },
+      "models_listed": {
+        "message": "listed: Qwen/Qwen3.5-27B",
+        "pass": true
+      },
+      "seed_determinism": {
+        "message": "deterministic under sampling with seed",
+        "pass": true
+      }
+    },
+    "model": "Qwen/Qwen3.5-27B",
+    "overall_pass": true,
+    "uses": [
+      [
+        "config_a",
+        "judge"
+      ]
+    ]
+  }
+]
