@@ -18,7 +18,9 @@ NOT_MEASURED = {
     "not_assessable_span_alignment",
     "not_assessable_missing_turn",
 }
-MEASURED = SUPPORTED | {"not_supported", "negative_control_supported", "negative_control_violated"}
+MEASURED = SUPPORTED | {
+    "not_supported", "negative_control_supported", "negative_control_violated"
+}
 
 
 def load_jsonl(path: str) -> List[Dict]:
@@ -35,7 +37,10 @@ def load_jsonl(path: str) -> List[Dict]:
 
 
 def n_user(record: Dict) -> int:
-    return sum(1 for t in record.get("turns", []) if str(t.get("role", "")).lower() == "user")
+    return sum(
+        1 for t in record.get("turns", [])
+        if str(t.get("role", "")).lower() == "user"
+    )
 
 
 def iter_spans(record: Dict) -> Iterable[Dict]:
@@ -45,7 +50,11 @@ def iter_spans(record: Dict) -> Iterable[Dict]:
 
 
 def is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def main() -> None:
@@ -61,6 +70,7 @@ def main() -> None:
     records = load_jsonl(args.input)
     errors, warnings = [], []
     evidence_statuses, tiers, analysis_statuses = Counter(), Counter(), Counter()
+    pivot_modes = Counter()
     seen_ids = set()
 
     for record in records:
@@ -73,8 +83,11 @@ def main() -> None:
         seen_ids.add(cid)
 
         tiers[record.get("supervision_tier", "unknown")] += 1
-        analysis_status = str(record.get("evidence_analysis", {}).get("status", "missing"))
+        analysis_status = str(
+            record.get("evidence_analysis", {}).get("status", "missing")
+        )
         analysis_statuses[analysis_status] += 1
+
         if is_malicious and record.get("validation_status") == "validated":
             if analysis_status == "error" and record.get("training_eligible", True):
                 errors.append(f"{cid}: evidence error record is still training eligible")
@@ -90,46 +103,82 @@ def main() -> None:
                 or repaired.get("independent_success", False)
             ):
                 errors.append(f"{cid}: prepared malicious record is supported only by legacy validation")
-            if record.get("supervision_tier") == "ignore" or not record.get("training_eligible", False):
+            if (
+                record.get("supervision_tier") == "ignore"
+                or not record.get("training_eligible", False)
+            ):
                 errors.append(f"{cid}: ineligible malicious record survived preparation")
 
         evidence_turns = set(int(x) for x in record.get("evidence_turn_ids", []))
         pivot = record.get("pivot_turn_id")
+        ignore_pivot = bool(record.get("pivot_supervision_ignore", False))
+
         if pivot is not None and int(pivot) not in evidence_turns:
             errors.append(f"{cid}: pivot_turn_id {pivot} is not supported by evidence_turn_ids")
+
+        if args.require_prepared:
+            if is_malicious:
+                if evidence_turns:
+                    pivot_modes["malicious_supported"] += 1
+                    if pivot is None:
+                        errors.append(f"{cid}: supported malicious record has no pivot_turn_id")
+                    if ignore_pivot:
+                        errors.append(f"{cid}: supported malicious pivot is incorrectly ignored")
+                else:
+                    pivot_modes["malicious_unknown_ignored"] += 1
+                    if pivot is not None:
+                        errors.append(f"{cid}: malicious record without evidence has a pivot")
+                    if not ignore_pivot:
+                        errors.append(
+                            f"{cid}: unknown malicious pivot must set pivot_supervision_ignore=true"
+                        )
+            else:
+                pivot_modes["benign_true_no_pivot"] += 1
+                if pivot is not None:
+                    errors.append(f"{cid}: prepared benign record should have no pivot")
+                if ignore_pivot:
+                    errors.append(f"{cid}: benign true no-pivot must remain supervised")
 
         for span in iter_spans(record):
             status = str(span.get("evidence_status", "unassessed"))
             delta = span.get("counterfactual_delta")
-            if is_malicious:
-                evidence_statuses[status] += 1
-                if status in NOT_MEASURED and delta is not None:
-                    errors.append(f"{cid}: status={status} must have null delta, got {delta!r}")
-                if status in MEASURED and not is_number(delta):
-                    errors.append(f"{cid}: measured status={status} has non-numeric delta={delta!r}")
-                if status == "supported_strong":
-                    if is_number(delta) and delta < args.strong_delta:
-                        errors.append(f"{cid}: strong evidence below threshold: {delta}")
-                    if span.get("causal_type") != "causal":
-                        errors.append(f"{cid}: strong supported span not legacy causal-compatible")
-                if status == "supported_weak":
-                    if is_number(delta) and not (args.weak_delta <= delta < args.strong_delta):
-                        errors.append(f"{cid}: weak evidence outside threshold band: {delta}")
-                    if span.get("causal_type") != "causal":
-                        errors.append(f"{cid}: weak supported span not legacy causal-compatible")
-                if status == "negative_control_supported":
-                    if is_number(delta) and abs(delta) >= args.negative_control_tolerance:
-                        errors.append(f"{cid}: negative control effect too large: {delta}")
-                    if span.get("causal_type") != "incidental":
-                        errors.append(f"{cid}: supported negative control not incidental")
+            if not is_malicious:
+                continue
 
-                if args.require_prepared:
-                    label = span.get("label", "")
-                    if status not in SUPPORTED and status != "negative_control_supported":
-                        if label != "EVIDENCE_CANDIDATE":
-                            errors.append(f"{cid}: unestablished span visible as {label!r} after prepare")
-                        if span.get("supervision_tier") != "ignore":
-                            errors.append(f"{cid}: unestablished span tier is not ignore after prepare")
+            evidence_statuses[status] += 1
+            if status in NOT_MEASURED and delta is not None:
+                errors.append(f"{cid}: status={status} must have null delta, got {delta!r}")
+            if status in MEASURED and not is_number(delta):
+                errors.append(f"{cid}: measured status={status} has non-numeric delta={delta!r}")
+            if status == "supported_strong":
+                if is_number(delta) and delta < args.strong_delta:
+                    errors.append(f"{cid}: strong evidence below threshold: {delta}")
+                if span.get("causal_type") != "causal":
+                    errors.append(f"{cid}: strong supported span not legacy causal-compatible")
+            if status == "supported_weak":
+                if is_number(delta) and not (
+                    args.weak_delta <= delta < args.strong_delta
+                ):
+                    errors.append(f"{cid}: weak evidence outside threshold band: {delta}")
+                if span.get("causal_type") != "causal":
+                    errors.append(f"{cid}: weak supported span not legacy causal-compatible")
+            if status == "negative_control_supported":
+                if is_number(delta) and abs(delta) >= args.negative_control_tolerance:
+                    errors.append(f"{cid}: negative control effect too large: {delta}")
+                if span.get("causal_type") != "incidental":
+                    errors.append(f"{cid}: supported negative control not incidental")
+
+            if args.require_prepared:
+                label = span.get("label", "")
+                if status not in SUPPORTED and status != "negative_control_supported":
+                    if label != "EVIDENCE_CANDIDATE":
+                        errors.append(
+                            f"{cid}: unestablished span visible as {label!r} after prepare"
+                        )
+                    if span.get("supervision_tier") != "ignore":
+                        errors.append(
+                            f"{cid}: unestablished span tier is not ignore after prepare"
+                        )
 
     malicious = [r for r in records if r.get("label") == 1]
     benign = [r for r in records if r.get("label") == 0]
@@ -142,15 +191,22 @@ def main() -> None:
     if args.require_prepared and malicious and benign and gap > args.max_length_gap:
         errors.append(f"mean user-turn gap {gap:.3f} exceeds {args.max_length_gap:.3f}")
     elif malicious and benign and gap > args.max_length_gap:
-        warnings.append(f"mean user-turn gap is {gap:.3f}; prepare length matching before training")
+        warnings.append(
+            f"mean user-turn gap is {gap:.3f}; prepare length matching before training"
+        )
 
     print("=== NAACL repaired dataset audit ===")
     print(f"Records: {len(records)}")
     print(f"Malicious: {len(malicious)}  Benign: {len(benign)}")
-    print(f"Mean user turns: malicious={mal_mean:.3f} benign={ben_mean:.3f} gap={gap:.3f}")
+    print(
+        f"Mean user turns: malicious={mal_mean:.3f} benign={ben_mean:.3f} "
+        f"gap={gap:.3f}"
+    )
     print(f"Evidence-analysis statuses: {dict(analysis_statuses)}")
     print(f"Malicious span statuses: {dict(evidence_statuses)}")
     print(f"Supervision tiers: {dict(tiers)}")
+    if args.require_prepared:
+        print(f"Pivot supervision modes: {dict(pivot_modes)}")
 
     for warning in warnings:
         print(f"WARN: {warning}")
@@ -159,7 +215,7 @@ def main() -> None:
         for error in errors[:100]:
             print(f"ERROR: {error}", file=sys.stderr)
         if len(errors) > 100:
-            print(f"... {len(errors)-100} additional errors", file=sys.stderr)
+            print(f"... {len(errors) - 100} additional errors", file=sys.stderr)
         sys.exit(2)
     print("VALIDITY AUDIT PASSED")
 
