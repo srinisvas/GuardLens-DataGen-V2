@@ -99,6 +99,7 @@ CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 export TMPDIR="$HOME/work/.tmp"
 export PIP_CACHE_DIR="$HOME/work/.pip_cache"
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" 2>/dev/null || true
