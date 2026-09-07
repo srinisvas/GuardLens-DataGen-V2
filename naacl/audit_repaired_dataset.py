@@ -51,7 +51,11 @@ def iter_spans(record: Dict) -> Iterable[Dict]:
 
 
 def is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def main() -> None:
@@ -60,7 +64,7 @@ def main() -> None:
     parser.add_argument(
         "--require-prepared",
         action="store_true",
-        help="Also enforce the post-prepare EVIDENCE_CANDIDATE masking invariants",
+        help="Also enforce post-prepare masking of unestablished malicious spans",
     )
     parser.add_argument(
         "--max-length-gap",
@@ -79,6 +83,8 @@ def main() -> None:
     seen_ids = set()
     for record in records:
         cid = str(record.get("conversation_id", ""))
+        is_malicious = record.get("label") == 1
+
         if not cid:
             errors.append("record missing conversation_id")
         elif cid in seen_ids:
@@ -90,42 +96,47 @@ def main() -> None:
         pivot = record.get("pivot_turn_id")
         if pivot is not None and evidence_turns and int(pivot) not in evidence_turns:
             errors.append(f"{cid}: pivot_turn_id {pivot} is not in evidence_turn_ids")
-        if pivot is not None and not evidence_turns and record.get("label") == 1:
+        if pivot is not None and not evidence_turns and is_malicious:
             errors.append(f"{cid}: malicious pivot exists without supported evidence turn")
 
         for span in iter_spans(record):
             status = str(span.get("evidence_status", "unassessed"))
-            evidence_statuses[status] += 1
+            if is_malicious:
+                evidence_statuses[status] += 1
             delta = span.get("counterfactual_delta")
 
-            if status in SUPPORTED:
-                if not is_number(delta):
-                    errors.append(f"{cid}: {status} span has non-numeric delta={delta!r}")
-                if span.get("causal_type") != "causal":
-                    errors.append(f"{cid}: supported span is not legacy causal-compatible")
-            elif status in NOT_MEASURED:
-                if delta is not None:
-                    errors.append(
-                        f"{cid}: unmeasured span status={status} must have null delta, got {delta!r}"
-                    )
-
-            if status == "negative_control_supported":
-                if span.get("causal_type") != "incidental":
-                    errors.append(f"{cid}: supported negative control is not incidental")
-                if not is_number(delta):
-                    errors.append(f"{cid}: supported negative control has no measured delta")
-
-            if args.require_prepared:
-                label = span.get("label", "")
-                if status not in SUPPORTED and status != "negative_control_supported":
-                    if label != "EVIDENCE_CANDIDATE":
+            # Evidence invariants apply to malicious attribution candidates.
+            # Benign spans may remain construction-derived explicit negatives.
+            if is_malicious:
+                if status in SUPPORTED:
+                    if not is_number(delta):
+                        errors.append(f"{cid}: {status} span has non-numeric delta={delta!r}")
+                    if span.get("causal_type") != "causal":
+                        errors.append(f"{cid}: supported span is not legacy causal-compatible")
+                elif status in NOT_MEASURED:
+                    if delta is not None:
                         errors.append(
-                            f"{cid}: unestablished span remains visible as label={label!r} after prepare"
+                            f"{cid}: unmeasured span status={status} must have null delta, got {delta!r}"
                         )
-                    if span.get("supervision_tier") != "ignore":
-                        errors.append(
-                            f"{cid}: unestablished span tier must be ignore after prepare"
-                        )
+
+                if status == "negative_control_supported":
+                    if span.get("causal_type") != "incidental":
+                        errors.append(f"{cid}: supported negative control is not incidental")
+                    if not is_number(delta):
+                        errors.append(f"{cid}: supported negative control has no measured delta")
+
+                if args.require_prepared:
+                    label = span.get("label", "")
+                    if status not in SUPPORTED and status != "negative_control_supported":
+                        if label != "EVIDENCE_CANDIDATE":
+                            errors.append(
+                                f"{cid}: unestablished malicious span remains visible "
+                                f"as label={label!r} after prepare"
+                            )
+                        if span.get("supervision_tier") != "ignore":
+                            errors.append(
+                                f"{cid}: unestablished malicious span tier must be ignore after prepare"
+                            )
 
     malicious = [r for r in records if r.get("label") == 1]
     benign = [r for r in records if r.get("label") == 0]
@@ -149,7 +160,7 @@ def main() -> None:
     print(f"Records: {len(records)}")
     print(f"Malicious: {len(malicious)}  Benign: {len(benign)}")
     print(f"Mean user turns: malicious={mal_mean:.3f} benign={ben_mean:.3f} gap={gap:.3f}")
-    print(f"Evidence statuses: {dict(evidence_statuses)}")
+    print(f"Malicious evidence statuses: {dict(evidence_statuses)}")
     print(f"Supervision tiers: {dict(tiers)}")
 
     if warnings:
