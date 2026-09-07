@@ -1,66 +1,61 @@
 # GuardLens NAACL validity repair
 
-This branch implements the **moderate** revision path. It does not rebuild the
-research project and it does not regenerate attacks.
+This branch implements the bounded NAACL revision path. It does not regenerate
+attacks and it does not rebuild the research project.
 
 Base commit: `b71238099e9baaf75f8e551fb500bb1fe60c768b`
 
-## Scope
+## Scientific scope
 
-The repair addresses the v11 validity problems that can directly undermine the
-paper's claims:
+The repaired paper should claim **counterfactual evidence localization** and
+**evidence-bearing turns/spans**, not causal identification.
 
-1. Revalidate the existing trajectories with an independent model family.
-2. Recompute counterfactual evidence with fresh paired baseline/intervention
-   replays.
-3. Remove stored-assistant contamination and the 12-message sliding window.
-4. Represent untested effects as `null`, never as measured zero.
-5. Test span interventions independently instead of gating them on pivot-CF
-   success.
-6. Hide construction-only spans from attribution supervision.
-7. Length-match benign examples for the primary train/dev/test distribution.
-8. Preserve the original untrimmed benign pool as an out-of-distribution stress
-   test.
+The repair addresses the validity issues found in v11:
 
-The model architecture is intentionally unchanged. The paper should be reframed
-around **counterfactual evidence localization**, **evidence-bearing turns**, and
-**evidence-bearing spans**, not causal identification.
+1. explicit independent-model behavioral validation;
+2. fresh paired baseline/intervention replays;
+3. no stored-assistant contamination;
+4. no position-dependent 12-message replay window;
+5. unmeasured effects represented as `null`, never zero;
+6. span tests are not gated on success of a historical pivot intervention;
+7. only supported evidence is exposed to attribution supervision;
+8. unknown malicious pivots are ignored by the pivot loss rather than trained as
+   a true no-pivot class;
+9. benign training trajectories are length controlled;
+10. the original untrimmed benign pool is retained as a stress set.
 
-## What is explicitly out of scope
+## Important protocol boundary
 
-Do not add a new attack generator, new architecture, new large model suite,
-Phase-2 construction gate, new objective taxonomy, or a full dataset rebuild
-unless the repaired experiment falsifies the original empirical story.
+The original interactive Llama outcomes were judged in-loop by the Qwen
+generator. They remain useful provenance, but a legacy Qwen-only target judgment
+is **not sufficient** for repaired training eligibility.
 
-## 0. Inputs to reuse
+The repaired behavioral gate requires at least one of:
 
-Prefer the existing pre-causal merged adversarial artifact, typically:
+- a fresh Llama replay that crosses the unsafe threshold under the Mistral judge;
+- successful independent Mistral transfer validation.
+
+The paired evidence experiment uses Llama to generate assistant responses and
+Mistral only to judge those responses. The separate Mistral validation pass is a
+behavioral transfer check, not attribution ground truth.
+
+## 0. Inputs
+
+Prefer the pre-causal adversarial artifact:
 
 ```bash
 $HOME/staging/dataset_gen_output/combined_dedup.jsonl
 ```
 
-It must contain the generated user trajectories and the original
-`llama_validation`. Using the old final malicious artifact is acceptable if the
-pre-causal file is unavailable because `evidence_analysis.py` archives and
-clears the old v11 evidence fields before recomputation.
-
-Also reuse the separately generated clean benign pool, typically:
+Reuse the separately generated clean benign pool:
 
 ```bash
 $HOME/staging/dataset_gen_output/benign_clean.jsonl
 ```
 
-Do **not** rerun adversarial generation.
+Do not rerun adversarial generation.
 
-## 1. Independent behavioral validation
-
-The old `merge_validations.py` treated the post-generation validation field as
-Qwen validation, despite the v11 README describing Mistral. For this repair,
-make the provenance explicit by rerunning the existing trajectories through
-Mistral.
-
-From the datagen repository:
+## 1. Independent Mistral behavioral validation
 
 ```bash
 INPUT_FILE=$HOME/staging/dataset_gen_output/combined_dedup.jsonl \
@@ -71,7 +66,7 @@ N_VAL_SHARDS=2 \
 sbatch launch_val.slurm
 ```
 
-Normalize the result:
+Normalize provenance and transfer tiers:
 
 ```bash
 python naacl/merge_independent_validation.py \
@@ -79,18 +74,13 @@ python naacl/merge_independent_validation.py \
   --output $HOME/staging/dataset_gen_output/naacl_independent_merged.jsonl
 ```
 
-Inspect the printed transfer-tier counts and confirm that the independent model
-is Mistral, not Qwen.
+Before continuing, inspect the printed model/provenance counts. The independent
+validator should be Mistral and validation failures must not be interpreted as
+negative outcomes.
 
 ## 2. Paired evidence replay
 
-This is the only substantial GPU repair. It uses two different model families:
-
-- GPU 0: `meta-llama/Meta-Llama-3-8B-Instruct` as the response-generating target
-- GPU 1: `mistralai/Mistral-7B-Instruct-v0.3` as the outcome judge
-
-Baseline and intervention replays use identical per-turn seed schedules and
-full history. Stored assistant turns are ignored.
+The hardened runner is `naacl/evidence_analysis_v3.py`, launched by:
 
 ```bash
 INPUT_FILE=$HOME/staging/dataset_gen_output/naacl_independent_merged.jsonl \
@@ -98,19 +88,41 @@ OUTPUT_FILE=$HOME/staging/dataset_gen_output/naacl_evidence.jsonl \
 sbatch naacl/launch_evidence.slurm
 ```
 
-The default compute cap tests at most six positive candidate spans and two
-negative-control spans per malicious record. This is intentionally bounded for
-the moderate revision. Raise it only if evidence coverage is clearly too sparse.
+Default roles:
 
-The Slurm job automatically runs the first validity audit when replay finishes.
-You can rerun it manually:
+- GPU 0: `meta-llama/Meta-Llama-3-8B-Instruct` response-generating target
+- GPU 1: `mistralai/Mistral-7B-Instruct-v0.3` outcome judge
+
+The runner derives its intervention anchor from the **fresh replay**, verifies
+span offsets before editing, prioritizes spans around the fresh unsafe
+transition, treats large effects on negative controls as violations using
+absolute delta, and fails closed on judge/runtime errors.
+
+The default cap is six positive candidate spans and two negative controls per
+malicious record.
+
+### Resume warning
+
+The default checkpoint is:
+
+```bash
+$HOME/staging/dataset_gen_output/naacl_evidence_v3.checkpoint.jsonl
+```
+
+Resume that checkpoint only with the same model, seed, thresholds and span caps.
+If you intentionally change the protocol, delete it or set a new
+`CHECKPOINT_FILE`. Do not mix results from different protocols.
+
+The Slurm job runs the first audit automatically. You can also run:
 
 ```bash
 python naacl/audit_repaired_dataset.py \
   --input $HOME/staging/dataset_gen_output/naacl_evidence.jsonl
 ```
 
-## 3. Prepare attribution supervision and length-match benign data
+Any evidence-analysis error must be fixed/rerun before dataset preparation.
+
+## 3. Prepare repaired supervision and benign length control
 
 ```bash
 python naacl/prepare_dataset.py \
@@ -122,7 +134,7 @@ python naacl/prepare_dataset.py \
   --seed 42
 ```
 
-Then enforce the post-prepare invariants:
+Then require the prepared-data invariants:
 
 ```bash
 python naacl/audit_repaired_dataset.py \
@@ -130,14 +142,19 @@ python naacl/audit_repaired_dataset.py \
   --require-prepared
 ```
 
-This step deliberately changes unestablished malicious span labels to
-`EVIDENCE_CANDIDATE` with `supervision_tier=ignore`. That prevents the existing
-Transformer loader's legacy label-name fallback from silently turning an
-untested `MALICIOUS_TRIGGER` into positive attribution ground truth.
+Preparation performs three important compatibility repairs:
+
+- unsupported malicious spans become `EVIDENCE_CANDIDATE` with ignored
+  attribution supervision;
+- annotated benign spans are explicit attribution negatives;
+- a malicious record with no established evidence-bearing turn sets
+  `pivot_supervision_ignore=true`. Benign `pivot_turn_id=None` remains a true
+  supervised no-pivot example.
 
 ## 4. Recreate splits
 
 ```bash
+rm -rf $HOME/staging/dataset_gen_output/naacl_splits
 python split_dataset.py \
   --input $HOME/staging/dataset_gen_output/naacl_dataset.jsonl \
   --output-dir $HOME/staging/dataset_gen_output/naacl_splits \
@@ -146,11 +163,12 @@ python split_dataset.py \
   --double-annotated 50
 ```
 
-Pair linkage and the existing stratification logic are retained.
+The Transformer training job independently checks conversation-ID and pair-ID
+leakage across splits before training.
 
-## 5. Retrain the unchanged model suite
+## 5. Retrain unchanged architecture/baselines
 
-Checkout the `naacl-validity-repair` branch in `GuardLens-Transformer` and run:
+On `GuardLens-Transformer`, branch `naacl-validity-repair`:
 
 ```bash
 SPLIT_DIR=$HOME/staging/dataset_gen_output/naacl_splits \
@@ -158,7 +176,11 @@ BASE_OUTPUT=$HOME/work/results/guardlens_naacl/checkpoints \
 sbatch train_naacl.slurm
 ```
 
-This retrains the same five existing variants:
+Before GPU training, `train_naacl.slurm` runs a **train/dev-only** length probe.
+The held-out test set is not used to decide whether preprocessing is acceptable.
+By default, dev length-only AUC above 0.65 stops training for investigation.
+
+The same five existing variants are retrained:
 
 - GuardLens
 - GuardLens-NoFusion
@@ -166,9 +188,7 @@ This retrains the same five existing variants:
 - turn-level classifier
 - ConversationDeBERTa
 
-Old v11 checkpoints are not overwritten.
-
-## 6. Run the targeted reviewer/validity evaluations
+## 6. Targeted evaluation
 
 ```bash
 SPLIT_DIR=$HOME/staging/dataset_gen_output/naacl_splits \
@@ -177,44 +197,42 @@ OUT_DIR=$HOME/work/results/guardlens_naacl/results \
 sbatch eval_naacl.slurm
 ```
 
-This produces:
+This runs, after the pipeline is frozen:
 
-- length-only shortcut probe
-- top-k evidence-bearing turn hit rate
-- leave-one-turn-out occlusion baseline
-- attribution intervention metrics by evidence tier
-- GuardLens vs surface-risk utility grid
+- held-out length-only shortcut probe;
+- top-k evidence-turn localization;
+- leave-one-turn-out baseline;
+- attribution intervention metrics and evidence-tier analysis;
+- utility grid;
+- NoCF attribution/utility ablation;
+- original untrimmed benign stress evaluation when the stress file exists.
 
-## 7. Evaluate the original untrimmed benign distribution
+Checkpoint loading falls back from `best_attribution.pt` to `best.pt` to
+`best_detection.pt`, so evaluation does not fail merely because attribution F1
+never exceeded the checkpoint-saving threshold.
 
-Do not report only the length-matched benign test set. Preserve the harder
-question of whether the repaired model still behaves well on the original long
-benign distribution:
+## 7. External MHJ
 
-```bash
-python -m guardlens.evaluation.eval_boundary_stress \
-  --boundary-files $HOME/staging/dataset_gen_output/naacl_benign_untrimmed_stress.jsonl \
-  --checkpoint $HOME/work/results/guardlens_naacl/checkpoints/guardlens/best.pt \
-  --output $HOME/work/results/guardlens_naacl/results/untrimmed_benign_stress.json \
-  --device cuda
-```
+If the NAACL manuscript retains the original MHJ generalization result, rerun
+MHJ with the **new repaired checkpoint** before reporting it. Do not copy the old
+v11 number into the revised paper. MHJ should be treated as external behavioral /
+intervention validation, not as repaired counterfactual evidence ground truth.
 
-Interpret the reported `false_positive_rate` as the key stress metric.
+## Go / no-go
 
-## Go / no-go decision
+Proceed to the manuscript rewrite only when all of the following hold:
 
-Proceed to the NAACL manuscript rewrite if all of the following are true:
+1. both dataset audits pass;
+2. no validated-malicious evidence jobs remain in error state;
+3. the dev shortcut preflight passes, and the final held-out length-only probe
+   is not a strong classifier;
+4. a meaningful subset of malicious trajectories has supported evidence;
+5. GuardLens retains the qualitative classification/localization/intervention
+   story relative to direct baselines;
+6. NoCF and LOTO comparisons do not erase the claimed contribution;
+7. false positives remain acceptable on the untrimmed benign stress set;
+8. every external result retained in the manuscript is rerun with repaired
+   checkpoints.
 
-1. Both dataset audits pass.
-2. The length-only probe is no longer a strong classifier. A test AUC close to
-   0.5 is ideal. If it remains above roughly 0.65, investigate the shortcut
-   before treating classification results as clean.
-3. A meaningful subset of malicious trajectories receives supported
-   counterfactual evidence. Do not invent a zero delta for unsupported or
-   unassessable cases.
-4. GuardLens retains the qualitative headline story on classification,
-   early/intervention utility, and localization relative to direct baselines.
-5. False positives on the untrimmed benign stress set remain acceptably low.
-
-If the repaired results preserve the central story, stop here and write the
-NAACL paper. Do not turn this branch into the full Phase-2 project.
+If those conditions hold, stop and write the NAACL paper. Do not expand this
+branch into the full Phase-2 rebuild.
