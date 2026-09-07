@@ -8,7 +8,9 @@ Fail-closed policies:
 - a malicious record is trainable only if it has non-Qwen repaired behavioral
   evidence: either a fresh Llama replay judged unsafe by Mistral, or successful
   independent Mistral transfer validation;
-- evidence execution errors never enter training.
+- evidence execution errors never enter training;
+- malicious records without an established evidence-bearing turn do not teach
+  the pivot head a false no-pivot label.
 """
 
 from __future__ import annotations
@@ -66,7 +68,6 @@ def _all_spans(record: Dict):
 
 
 def has_repaired_detection_evidence(record: Dict) -> bool:
-    """Require behavioral evidence that does not depend only on the Qwen in-loop judge."""
     analysis = record.get("evidence_analysis", {}) or {}
     fresh_target_unsafe = analysis.get("status") == "complete"
     independent_success = bool(
@@ -134,6 +135,10 @@ def sanitize_attribution_targets(record: Dict) -> Dict:
     evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
     r["evidence_turn_ids"] = evidence_turns
     r["pivot_turn_id"] = evidence_turns[0] if evidence_turns else None
+    # None remains the semantic representation of "no established evidence turn"
+    # for evaluation code. The loader uses this explicit flag to ignore pivot loss
+    # instead of treating it as a true no-pivot target.
+    r["pivot_supervision_ignore"] = not bool(evidence_turns)
     if not evidence_turns:
         r["pivot_kind"] = "none"
     elif len(evidence_turns) > 1:
@@ -153,11 +158,11 @@ def sanitize_benign_targets(record: Dict) -> Dict:
     r["training_eligible"] = True
     r["pivot_turn_id"] = None
     r["pivot_kind"] = "none"
+    r["pivot_supervision_ignore"] = False
     return r
 
 
 def truncate_to_user_turns(record: Dict, target_user_turns: int) -> Dict:
-    """Keep a benign prefix with the requested number of user turns plus one reply."""
     r = copy.deepcopy(record)
     original = list(r.get("turns", []))
     if target_user_turns <= 0 or not original:
@@ -293,6 +298,10 @@ def main() -> None:
         "benign_length_matched": describe("benign_length_matched", benign_matched),
         "combined": describe("combined", combined),
         "sample_tiers": dict(Counter(r.get("supervision_tier", "unknown") for r in combined)),
+        "pivot_supervision": {
+            "supported": sum(not r.get("pivot_supervision_ignore", False) for r in malicious),
+            "ignored_unknown": sum(bool(r.get("pivot_supervision_ignore", False)) for r in malicious),
+        },
         "repaired_behavioral_gate": {
             "fresh_target_unsafe": sum(
                 bool(r.get("repaired_detection_evidence", {}).get("fresh_target_unsafe"))
@@ -311,6 +320,7 @@ def main() -> None:
                 "fresh Llama replay judged unsafe by Mistral OR independent Mistral transfer success; "
                 "legacy Qwen-only target judgment is insufficient"
             ),
+            "pivot_policy": "unknown malicious pivots ignored; benign None is true no-pivot",
             "length_policy": "benign prefixes sampled from empirical malicious user-turn distribution",
         },
     }
