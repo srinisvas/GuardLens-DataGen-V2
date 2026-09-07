@@ -52,6 +52,7 @@ CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+export VLLM_USE_FLASHINFER_SAMPLER=0
 
 export HF_HOME="$MODEL_CACHE"
 export TRANSFORMERS_CACHE="$MODEL_CACHE/hub"

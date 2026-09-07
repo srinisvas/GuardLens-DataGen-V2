@@ -100,6 +100,7 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+export VLLM_USE_FLASHINFER_SAMPLER=0
 export TMPDIR="$HOME/work/.tmp"
 export PIP_CACHE_DIR="$HOME/work/.pip_cache"
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" 2>/dev/null || true
