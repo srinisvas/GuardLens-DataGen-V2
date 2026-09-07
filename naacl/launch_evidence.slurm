@@ -13,6 +13,10 @@
 # GPU 0: Llama target replay
 # GPU 1: Mistral outcome judge
 # No attack generation occurs in this job.
+#
+# Resume note: the default checkpoint is versioned for the v3 protocol. If any
+# model, seed, evidence threshold, or span-cap setting is changed deliberately,
+# use a new CHECKPOINT_FILE (or remove the old one) rather than mixing runs.
 
 set -euo pipefail
 
@@ -26,7 +30,7 @@ MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/naacl_independent_merged.jsonl}"
 OUTPUT_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/naacl_evidence.jsonl}"
-CHECKPOINT_FILE="${CHECKPOINT_FILE:-$OUTPUT_FILE.checkpoint.jsonl}"
+CHECKPOINT_FILE="${CHECKPOINT_FILE:-$OUTPUT_DIR/naacl_evidence_v3.checkpoint.jsonl}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
