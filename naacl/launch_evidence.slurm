@@ -93,7 +93,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m vllm.entrypoints.openai.api_server \
     --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.90 \
     --download-dir "$HF_HOME/hub" \
-    --disable-log-requests \
+    --no-enable-log-requests \
     --disable-log-stats \
     2>"$LOG_DIR/naacl_target_${SLURM_JOB_ID:-$$}.log" &
 PIDS+=($!)
@@ -105,7 +105,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m vllm.entrypoints.openai.api_server \
     --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.90 \
     --download-dir "$HF_HOME/hub" \
-    --disable-log-requests \
+    --no-enable-log-requests \
     --disable-log-stats \
     2>"$LOG_DIR/naacl_judge_${SLURM_JOB_ID:-$$}.log" &
 PIDS+=($!)

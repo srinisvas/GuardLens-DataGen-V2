@@ -231,7 +231,7 @@ for i in $(seq 0 $((N_VAL_SHARDS - 1))); do
         --max-model-len 8192 \
         --gpu-memory-utilization 0.92 \
         --download-dir "$HF_HOME/hub" \
-        --disable-log-requests \
+        --no-enable-log-requests \
         --disable-log-stats \
         2>"$LOG_DIR/vllm_val${i}_${SLURM_JOB_ID:-$$}.log" &
     ALL_PIDS+=($!)
