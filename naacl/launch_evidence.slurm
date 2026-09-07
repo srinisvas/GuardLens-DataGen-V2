@@ -12,7 +12,6 @@
 # Paired NAACL evidence replay.
 # GPU 0: Llama target replay
 # GPU 1: Mistral outcome judge
-#
 # No attack generation occurs in this job.
 
 set -euo pipefail
@@ -27,6 +26,7 @@ MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/naacl_independent_merged.jsonl}"
 OUTPUT_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/naacl_evidence.jsonl}"
+CHECKPOINT_FILE="${CHECKPOINT_FILE:-$OUTPUT_FILE.checkpoint.jsonl}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
@@ -34,6 +34,7 @@ LOG_DIR="$PROJECT_DIR/logs"
 MAX_POSITIVE_SPANS="${MAX_POSITIVE_SPANS:-6}"
 MAX_NEGATIVE_SPANS="${MAX_NEGATIVE_SPANS:-2}"
 SEED="${SEED:-42}"
+NEGATIVE_CONTROL_TOLERANCE="${NEGATIVE_CONTROL_TOLERANCE:-0.15}"
 
 mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
 
@@ -62,6 +63,7 @@ fi
 PIDS=()
 cleanup() {
     local code=$?
+    trap - EXIT INT TERM
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
@@ -74,8 +76,10 @@ echo "Target replay: $TARGET_MODEL on GPU 0, port $TARGET_PORT"
 echo "Judge:         $JUDGE_MODEL on GPU 1, port $JUDGE_PORT"
 echo "Input:         $INPUT_FILE"
 echo "Output:        $OUTPUT_FILE"
+echo "Checkpoint:    $CHECKPOINT_FILE"
 echo "Positive spans per record: $MAX_POSITIVE_SPANS"
 echo "Negative spans per record: $MAX_NEGATIVE_SPANS"
+echo "Negative-control tolerance: $NEGATIVE_CONTROL_TOLERANCE"
 
 CUDA_VISIBLE_DEVICES=0 python3 -m vllm.entrypoints.openai.api_server \
     --model "$TARGET_MODEL" \
@@ -86,7 +90,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m vllm.entrypoints.openai.api_server \
     --download-dir "$HF_HOME/hub" \
     --disable-log-requests \
     --disable-log-stats \
-    2>"$LOG_DIR/naacl_target_${SLURM_JOB_ID}.log" &
+    2>"$LOG_DIR/naacl_target_${SLURM_JOB_ID:-$$}.log" &
 PIDS+=($!)
 
 CUDA_VISIBLE_DEVICES=1 python3 -m vllm.entrypoints.openai.api_server \
@@ -98,7 +102,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m vllm.entrypoints.openai.api_server \
     --download-dir "$HF_HOME/hub" \
     --disable-log-requests \
     --disable-log-stats \
-    2>"$LOG_DIR/naacl_judge_${SLURM_JOB_ID}.log" &
+    2>"$LOG_DIR/naacl_judge_${SLURM_JOB_ID:-$$}.log" &
 PIDS+=($!)
 
 wait_ready() {
@@ -118,14 +122,16 @@ wait_ready() {
 wait_ready "$TARGET_PORT" "target"
 wait_ready "$JUDGE_PORT" "judge"
 
-python3 naacl/evidence_analysis.py \
+python3 naacl/evidence_analysis_v3.py \
     --input "$INPUT_FILE" \
     --output "$OUTPUT_FILE" \
+    --checkpoint "$CHECKPOINT_FILE" \
     --target-model "$TARGET_MODEL" \
     --target-base-url "http://localhost:$TARGET_PORT" \
     --judge-model "$JUDGE_MODEL" \
     --judge-base-url "http://localhost:$JUDGE_PORT" \
     --seed "$SEED" \
+    --negative-control-tolerance "$NEGATIVE_CONTROL_TOLERANCE" \
     --max-positive-spans "$MAX_POSITIVE_SPANS" \
     --max-negative-spans "$MAX_NEGATIVE_SPANS"
 
