@@ -3,8 +3,7 @@
 
 This script is intentionally separate from ``merge_validations.py`` because the
 v11 merge utility assumes the post-generation validator is Qwen. For the NAACL
-repair we want the generator family and the independent validator family to be
-distinct.
+repair we want explicit provenance and fail-closed handling of validator errors.
 
 Expected input
 --------------
@@ -14,13 +13,12 @@ trajectories through an independent validator such as
 ``llama_validation`` from interactive generation and contain the new validation
 result in ``causal_validation``.
 
-The output keeps the old fields for reproducibility but adds explicit,
-model-agnostic fields:
-
-- ``independent_validation``
-- ``independent_validation_model``
-- ``success_targets``
-- ``transfer_tier``
+Validity policy
+---------------
+A record is eligible for the repaired dataset only when both the original target
+trajectory and the new independent validation are structurally usable. Missing
+or failed validation is never interpreted as a safe outcome. The independent
+pass must use structured-judge results rather than the marker fallback.
 
 No counterfactual claim is made here. Counterfactual evidence is recomputed from
 fresh paired replays by ``naacl/evidence_analysis.py``.
@@ -33,7 +31,7 @@ import copy
 import json
 import os
 from collections import Counter
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 
 def load_jsonl(path: str) -> List[Dict]:
@@ -53,7 +51,49 @@ def write_jsonl(records: Iterable[Dict], path: str) -> None:
 
 
 def _jailbreak(validation: Dict) -> bool:
-    return bool(validation.get("validated") and validation.get("jailbreak_detected"))
+    return bool(validation.get("validated") is True and validation.get("jailbreak_detected"))
+
+
+def _trajectory(validation: Dict) -> List[Dict]:
+    trajectory = validation.get("compliance_trajectory", [])
+    return trajectory if isinstance(trajectory, list) else []
+
+
+def _target_quality(record: Dict, validation: Dict) -> Tuple[bool, str]:
+    """Check that the stored target trajectory is usable, without overfitting to judge details."""
+    if not isinstance(validation, dict) or validation.get("validated") is not True:
+        return False, "target_validation_missing_or_unvalidated"
+    if not _trajectory(validation):
+        return False, "target_validation_empty_trajectory"
+
+    # The interactive generator encodes backend failures directly into turn text.
+    # Such records must not enter training merely because the fallback judge gave
+    # the error string a benign-looking score.
+    for turn in record.get("turns", []):
+        text = str(turn.get("text", "")).strip().lower()
+        if text.startswith("[target_error:"):
+            return False, "target_backend_error_in_stored_turns"
+        if text.startswith("[generation_error:"):
+            return False, "generator_backend_error_in_stored_turns"
+    return True, "ok"
+
+
+def _independent_quality(validation: Dict) -> Tuple[bool, str]:
+    """Fail closed on missing responses, backend errors, or marker-fallback judging."""
+    if not isinstance(validation, dict) or validation.get("validated") is not True:
+        return False, "independent_validation_missing_or_unvalidated"
+    trajectory = _trajectory(validation)
+    if not trajectory:
+        return False, "independent_validation_empty_trajectory"
+
+    for item in trajectory:
+        snippet = str(item.get("response_snippet", "")).strip().lower()
+        if snippet.startswith("[validation_error:"):
+            return False, "independent_backend_error"
+        method = item.get("method")
+        if method != "structured_judge":
+            return False, f"independent_non_structured_judge:{method or 'missing'}"
+    return True, "ok"
 
 
 def normalize_record(record: Dict) -> Dict:
@@ -70,12 +110,15 @@ def normalize_record(record: Dict) -> Dict:
         or "independent_validator"
     )
 
+    target_ok, target_reason = _target_quality(r, target_val)
+    independent_ok, independent_reason = _independent_quality(independent_val)
+
     r["independent_validation"] = independent_val
     r["independent_validation_model"] = independent_model
     r["target_validation_model"] = target_model
 
-    target_success = _jailbreak(target_val)
-    independent_success = _jailbreak(independent_val)
+    target_success = target_ok and _jailbreak(target_val)
+    independent_success = independent_ok and _jailbreak(independent_val)
 
     successes: List[str] = []
     if target_success:
@@ -84,38 +127,55 @@ def normalize_record(record: Dict) -> Dict:
         successes.append("independent_validator")
     r["success_targets"] = successes
 
+    # Both validations must be usable because the stored conversation contains
+    # the original target responses and the repaired protocol explicitly asks for
+    # an independent behavioral check. Missing validation is not a negative vote.
+    both_usable = target_ok and independent_ok
+
     if r.get("label") == 1:
-        if target_success and independent_success:
+        if not both_usable:
+            r["transfer_tier"] = "validation_incomplete"
+            r["validation_status"] = "incomplete"
+            r["training_eligible"] = False
+        elif target_success and independent_success:
             r["transfer_tier"] = "transfer_success"
             r["validation_status"] = "validated"
+            r["training_eligible"] = True
         elif target_success:
             r["transfer_tier"] = "target_only"
             r["validation_status"] = "validated"
+            r["training_eligible"] = True
         elif independent_success:
             r["transfer_tier"] = "cross_only"
             r["validation_status"] = "validated"
+            r["training_eligible"] = True
         else:
             r["transfer_tier"] = "no_jailbreak"
             r["validation_status"] = "ambiguous"
             r["training_eligible"] = False
 
-        # Prefer the independent validator's behavioral transition as the
-        # candidate turn for later evidence testing. This is only a candidate,
-        # not attribution ground truth.
-        candidate_pivot = independent_val.get("pivot_turn_id")
-        if candidate_pivot is None:
-            candidate_pivot = target_val.get("pivot_turn_id")
-        r["candidate_evidence_turn_id"] = candidate_pivot
-
-        candidate_kind = independent_val.get("pivot_kind") or target_val.get("pivot_kind") or "none"
-        r["candidate_evidence_turn_kind"] = candidate_kind
-
-        r["training_eligible"] = r.get("validation_status") == "validated"
+        # Retain both historical candidate transitions for auditability. The
+        # paired evidence script derives its actual intervention anchor from its
+        # own fresh baseline replay rather than trusting either old pivot.
+        r["target_candidate_evidence_turn_id"] = target_val.get("pivot_turn_id")
+        r["independent_candidate_evidence_turn_id"] = independent_val.get("pivot_turn_id")
+        r["candidate_evidence_turn_id"] = (
+            target_val.get("pivot_turn_id")
+            if target_val.get("pivot_turn_id") is not None
+            else independent_val.get("pivot_turn_id")
+        )
+        r["candidate_evidence_turn_kind"] = (
+            target_val.get("pivot_kind")
+            or independent_val.get("pivot_kind")
+            or "none"
+        )
     else:
-        # Benign data is retained only when both behavioral validators agree
-        # that the trajectory did not produce an unsafe transition.
         r["transfer_tier"] = "benign"
-        if target_success or independent_success:
+        if not both_usable:
+            r["validation_status"] = "incomplete"
+            r["training_eligible"] = False
+            r["benign_status"] = "benign_validation_incomplete"
+        elif target_success or independent_success:
             r["validation_status"] = "rejected"
             r["training_eligible"] = False
             r["benign_status"] = "benign_boundary_rejected"
@@ -124,11 +184,13 @@ def normalize_record(record: Dict) -> Dict:
             r["training_eligible"] = True
             r.setdefault("benign_status", "validated_benign")
 
-    # Keep the old field so downstream legacy code still loads the record, but
-    # make provenance explicit instead of calling it cross-model evidence.
     r["validation_provenance"] = {
         "target_model": target_model,
         "independent_model": independent_model,
+        "target_usable": target_ok,
+        "independent_usable": independent_ok,
+        "target_quality_reason": target_reason,
+        "independent_quality_reason": independent_reason,
         "target_success": target_success,
         "independent_success": independent_success,
     }
@@ -141,12 +203,22 @@ def print_stats(records: List[Dict]) -> None:
     tiers = Counter(r.get("transfer_tier", "unknown") for r in records)
     status = Counter(r.get("validation_status", "unknown") for r in records)
     models = Counter(r.get("independent_validation_model", "unknown") for r in records)
+    quality = Counter(
+        (
+            r.get("validation_provenance", {}).get("target_quality_reason", "missing"),
+            r.get("validation_provenance", {}).get("independent_quality_reason", "missing"),
+        )
+        for r in records
+    )
 
     print(f"Records: {len(records)}")
     print(f"Labels: {dict(labels)}")
     print(f"Transfer tiers: {dict(tiers)}")
     print(f"Validation status: {dict(status)}")
     print(f"Independent validators: {dict(models)}")
+    print("Validation-quality pairs:")
+    for pair, count in quality.most_common():
+        print(f"  target={pair[0]} independent={pair[1]}: {count}")
 
     bad_same_family = 0
     for r in records:
