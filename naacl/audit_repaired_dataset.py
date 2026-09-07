@@ -81,6 +81,18 @@ def main() -> None:
             if analysis_status == "missing":
                 errors.append(f"{cid}: validated malicious record has no evidence analysis status")
 
+        if args.require_prepared and is_malicious:
+            repaired = record.get("repaired_detection_evidence", {}) or {}
+            if not repaired.get("eligible", False):
+                errors.append(f"{cid}: prepared malicious record lacks repaired behavioral evidence")
+            if not (
+                repaired.get("fresh_target_unsafe", False)
+                or repaired.get("independent_success", False)
+            ):
+                errors.append(f"{cid}: prepared malicious record is supported only by legacy validation")
+            if record.get("supervision_tier") == "ignore" or not record.get("training_eligible", False):
+                errors.append(f"{cid}: ineligible malicious record survived preparation")
+
         evidence_turns = set(int(x) for x in record.get("evidence_turn_ids", []))
         pivot = record.get("pivot_turn_id")
         if pivot is not None and int(pivot) not in evidence_turns:
