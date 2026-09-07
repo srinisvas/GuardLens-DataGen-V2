@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Prepare the repaired GuardLens dataset for NAACL training/evaluation.
 
-The preparation step is fail-closed. It recomputes sample-level supervision
-from repaired evidence statuses instead of trusting any legacy v11 tier and it
-prevents benign records from leaking positive attribution labels through the
-legacy Transformer label-name fallback.
+Fail-closed policies:
+- only repaired counterfactual-supported spans become positive attribution labels;
+- unestablished malicious spans are hidden from the legacy label-name fallback;
+- annotated benign spans are explicit negatives;
+- a malicious record is trainable only if it has non-Qwen repaired behavioral
+  evidence: either a fresh Llama replay judged unsafe by Mistral, or successful
+  independent Mistral transfer validation;
+- evidence execution errors never enter training.
 """
 
 from __future__ import annotations
@@ -18,12 +22,10 @@ import statistics
 from collections import Counter
 from typing import Dict, Iterable, List
 
-
 SUPPORTED_STRONG = "supported_strong"
 SUPPORTED_WEAK = "supported_weak"
 SUPPORTED = {SUPPORTED_STRONG, SUPPORTED_WEAK}
 NEGATIVE_SUPPORTED = {"negative_control_supported"}
-DETECTION_TIERS = {"transfer_success", "target_only", "cross_only"}
 LOSS_WEIGHTS = {
     "cf_strong": 1.00,
     "cf_weak": 0.70,
@@ -34,7 +36,7 @@ LOSS_WEIGHTS = {
 
 
 def load_jsonl(path: str) -> List[Dict]:
-    records: List[Dict] = []
+    records = []
     with open(path, "r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, 1):
             if not line.strip():
@@ -54,69 +56,7 @@ def write_jsonl(records: Iterable[Dict], path: str) -> None:
 
 
 def n_user_turns(record: Dict) -> int:
-    return sum(
-        1 for t in record.get("turns", [])
-        if str(t.get("role", "")).lower() == "user"
-    )
-
-
-def truncate_to_user_turns(record: Dict, target_user_turns: int) -> Dict:
-    """Keep a benign prefix containing target_user_turns user messages.
-
-    If an assistant response immediately follows the final retained user turn,
-    retain only that first assistant response and stop before the next user.
-    """
-    r = copy.deepcopy(record)
-    original = list(r.get("turns", []))
-    if target_user_turns <= 0 or not original:
-        return r
-
-    kept: List[Dict] = []
-    seen_users = 0
-    reached = False
-
-    for turn in original:
-        role = str(turn.get("role", "")).lower()
-        if role == "user":
-            if reached:
-                break
-            seen_users += 1
-            kept.append(turn)
-            if seen_users >= target_user_turns:
-                reached = True
-        else:
-            if not reached or kept:
-                kept.append(turn)
-
-    if reached:
-        last_user_index = max(
-            (
-                i for i, t in enumerate(kept)
-                if str(t.get("role", "")).lower() == "user"
-            ),
-            default=len(kept) - 1,
-        )
-        tail = kept[last_user_index + 1:]
-        kept = kept[:last_user_index + 1] + tail[:1]
-
-    r["turns"] = kept
-    r["conversation_length"] = len(kept)
-    r.setdefault("metadata", {})["naacl_length_match"] = {
-        "original_user_turns": n_user_turns(record),
-        "target_user_turns": target_user_turns,
-        "final_user_turns": n_user_turns(r),
-        "method": "benign_prefix_trim_to_malicious_empirical_distribution",
-    }
-    return r
-
-
-def choose_target_length(
-    rng: random.Random, malicious_lengths: List[int], benign_len: int
-) -> int:
-    feasible = [x for x in malicious_lengths if x <= benign_len]
-    if feasible:
-        return rng.choice(feasible)
-    return min(benign_len, min(malicious_lengths)) if malicious_lengths else benign_len
+    return sum(1 for t in record.get("turns", []) if str(t.get("role", "")).lower() == "user")
 
 
 def _all_spans(record: Dict):
@@ -125,19 +65,28 @@ def _all_spans(record: Dict):
             yield span
 
 
-def sanitize_attribution_targets(record: Dict) -> Dict:
-    """Expose only repaired, tested evidence to the legacy attribution loader."""
-    r = copy.deepcopy(record)
+def has_repaired_detection_evidence(record: Dict) -> bool:
+    """Require behavioral evidence that does not depend only on the Qwen in-loop judge."""
+    analysis = record.get("evidence_analysis", {}) or {}
+    fresh_target_unsafe = analysis.get("status") == "complete"
+    independent_success = bool(
+        record.get("validation_provenance", {}).get("independent_success", False)
+    )
+    return fresh_target_unsafe or independent_success
 
-    if r.get("evidence_analysis", {}).get("status") == "error":
+
+def sanitize_attribution_targets(record: Dict) -> Dict:
+    r = copy.deepcopy(record)
+    analysis_status = str(r.get("evidence_analysis", {}).get("status", "missing"))
+    if analysis_status in {"error", "missing"}:
         raise RuntimeError(
-            f"{r.get('conversation_id', '<missing>')}: evidence analysis error reached preparation"
+            f"{r.get('conversation_id', '<missing>')}: invalid evidence status {analysis_status}"
         )
 
     has_strong = False
     has_weak = False
     for span in _all_spans(r):
-        status = span.get("evidence_status", "unassessed")
+        status = str(span.get("evidence_status", "unassessed"))
         if status == SUPPORTED_STRONG:
             has_strong = True
             span["causal_type"] = "causal"
@@ -161,22 +110,25 @@ def sanitize_attribution_targets(record: Dict) -> Dict:
         if status.startswith("not_assessable") or status == "unassessed":
             span["counterfactual_delta"] = None
 
-    # Recompute sample-level supervision from repaired evidence rather than
-    # trusting any legacy tier that may have survived an interrupted old run.
+    detection_ok = has_repaired_detection_evidence(r)
     if has_strong:
         r["supervision_tier"] = "cf_strong"
     elif has_weak:
         r["supervision_tier"] = "cf_weak"
-    elif (
-        r.get("validation_status") == "validated"
-        and r.get("transfer_tier") in DETECTION_TIERS
-    ):
+    elif detection_ok:
         r["supervision_tier"] = "llm_confirmed"
     else:
         r["supervision_tier"] = "ignore"
 
     r["loss_weight"] = LOSS_WEIGHTS[r["supervision_tier"]]
     r["training_eligible"] = r["supervision_tier"] != "ignore"
+    r["repaired_detection_evidence"] = {
+        "fresh_target_unsafe": r.get("evidence_analysis", {}).get("status") == "complete",
+        "independent_success": bool(
+            r.get("validation_provenance", {}).get("independent_success", False)
+        ),
+        "eligible": detection_ok,
+    }
 
     r.setdefault("legacy_pre_naacl_pivot_turn_id", r.get("pivot_turn_id"))
     evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
@@ -186,12 +138,10 @@ def sanitize_attribution_targets(record: Dict) -> Dict:
         r["pivot_kind"] = "none"
     elif len(evidence_turns) > 1:
         r["pivot_kind"] = "distributed"
-
     return r
 
 
 def sanitize_benign_targets(record: Dict) -> Dict:
-    """Make any annotated benign span an explicit negative, never a positive fallback."""
     r = copy.deepcopy(record)
     for span in _all_spans(r):
         span["causal_type"] = "incidental"
@@ -206,14 +156,58 @@ def sanitize_benign_targets(record: Dict) -> Dict:
     return r
 
 
+def truncate_to_user_turns(record: Dict, target_user_turns: int) -> Dict:
+    """Keep a benign prefix with the requested number of user turns plus one reply."""
+    r = copy.deepcopy(record)
+    original = list(r.get("turns", []))
+    if target_user_turns <= 0 or not original:
+        return r
+
+    kept = []
+    seen_users = 0
+    reached = False
+    for turn in original:
+        role = str(turn.get("role", "")).lower()
+        if role == "user":
+            if reached:
+                break
+            seen_users += 1
+            kept.append(turn)
+            if seen_users >= target_user_turns:
+                reached = True
+        else:
+            kept.append(turn)
+
+    if reached:
+        last_user_index = max(
+            (i for i, t in enumerate(kept) if str(t.get("role", "")).lower() == "user"),
+            default=len(kept) - 1,
+        )
+        kept = kept[:last_user_index + 1] + kept[last_user_index + 1:last_user_index + 2]
+
+    r["turns"] = kept
+    r["conversation_length"] = len(kept)
+    r.setdefault("metadata", {})["naacl_length_match"] = {
+        "original_user_turns": n_user_turns(record),
+        "target_user_turns": target_user_turns,
+        "final_user_turns": n_user_turns(r),
+        "method": "benign_prefix_trim_to_malicious_empirical_distribution",
+    }
+    return r
+
+
+def choose_target_length(rng: random.Random, malicious_lengths: List[int], benign_len: int) -> int:
+    feasible = [x for x in malicious_lengths if 0 < x <= benign_len]
+    return rng.choice(feasible) if feasible else benign_len
+
+
 def describe(name: str, records: List[Dict]) -> Dict:
     user_lengths = [n_user_turns(r) for r in records]
     total_lengths = [len(r.get("turns", [])) for r in records]
-    labels = Counter(r.get("label", -1) for r in records)
     return {
         "name": name,
         "n": len(records),
-        "labels": dict(labels),
+        "labels": dict(Counter(r.get("label", -1) for r in records)),
         "user_turns": {
             "mean": statistics.mean(user_lengths) if user_lengths else 0.0,
             "median": statistics.median(user_lengths) if user_lengths else 0.0,
@@ -232,14 +226,10 @@ def describe(name: str, records: List[Dict]) -> Dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--evidence-input", required=True,
-                        help="Output of the repaired paired evidence analysis")
-    parser.add_argument("--benign-input", required=True,
-                        help="Clean benign pool validated by both model families")
-    parser.add_argument("--output", required=True,
-                        help="Combined repaired dataset before train/dev/test split")
-    parser.add_argument("--benign-stress-output", required=True,
-                        help="Untrimmed benign pool retained for length-stress evaluation")
+    parser.add_argument("--evidence-input", required=True)
+    parser.add_argument("--benign-input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--benign-stress-output", required=True)
     parser.add_argument("--stats-output", required=True)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -248,72 +238,80 @@ def main() -> None:
     evidence_errors = [
         r.get("conversation_id", "")
         for r in evidence_records
-        if r.get("evidence_analysis", {}).get("status") == "error"
+        if r.get("label") == 1
+        and r.get("validation_status") == "validated"
+        and str(r.get("evidence_analysis", {}).get("status", "missing")) in {"error", "missing"}
     ]
     if evidence_errors:
         raise RuntimeError(
-            f"Evidence analysis contains {len(evidence_errors)} errors. "
-            "Fix/rerun evidence analysis before preparing the dataset."
+            f"Evidence analysis contains {len(evidence_errors)} validated-malicious errors. "
+            "Fix/rerun those records before preparing the dataset."
         )
 
-    malicious = [
+    sanitized_malicious = [
         sanitize_attribution_targets(r)
         for r in evidence_records
         if r.get("label") == 1 and r.get("validation_status") == "validated"
     ]
+    malicious = [r for r in sanitized_malicious if r.get("training_eligible")]
+    excluded_malicious = [r for r in sanitized_malicious if not r.get("training_eligible")]
 
-    raw_benign = load_jsonl(args.benign_input)
     benign_original = [
         sanitize_benign_targets(r)
-        for r in raw_benign
-        if r.get("label") == 0 and r.get("validation_status", "validated") == "validated"
+        for r in load_jsonl(args.benign_input)
+        if r.get("label") == 0
+        and r.get("validation_status", "validated") == "validated"
+        and r.get("training_eligible", True)
     ]
 
     if not malicious:
-        raise RuntimeError("No validated malicious records were found")
+        raise RuntimeError("No malicious records survived repaired behavioral validation")
     if not benign_original:
         raise RuntimeError("No validated benign records were found")
 
     malicious_lengths = [n_user_turns(r) for r in malicious]
     rng = random.Random(args.seed)
-    benign_matched: List[Dict] = []
-
+    benign_matched = []
     for record in benign_original:
-        original_len = n_user_turns(record)
-        target = choose_target_length(rng, malicious_lengths, original_len)
+        target = choose_target_length(rng, malicious_lengths, n_user_turns(record))
         matched = truncate_to_user_turns(record, target)
         matched["benign_status"] = "clean_benign_length_matched"
-        matched["source_dataset"] = matched.get(
-            "source_dataset", "separate_benign_pool"
-        )
-        matched["supervision_tier"] = "benign_validated"
-        matched["loss_weight"] = LOSS_WEIGHTS["benign_validated"]
-        matched["training_eligible"] = True
-        matched["pivot_turn_id"] = None
-        matched["pivot_kind"] = "none"
+        matched["source_dataset"] = matched.get("source_dataset", "separate_benign_pool")
         benign_matched.append(matched)
 
     combined = malicious + benign_matched
     rng.shuffle(combined)
-
     write_jsonl(combined, args.output)
     write_jsonl(benign_original, args.benign_stress_output)
 
     stats = {
         "malicious": describe("malicious", malicious),
+        "malicious_excluded_no_repaired_behavioral_evidence": describe(
+            "malicious_excluded", excluded_malicious
+        ),
         "benign_original": describe("benign_original", benign_original),
         "benign_length_matched": describe("benign_length_matched", benign_matched),
         "combined": describe("combined", combined),
         "sample_tiers": dict(Counter(r.get("supervision_tier", "unknown") for r in combined)),
+        "repaired_behavioral_gate": {
+            "fresh_target_unsafe": sum(
+                bool(r.get("repaired_detection_evidence", {}).get("fresh_target_unsafe"))
+                for r in sanitized_malicious
+            ),
+            "independent_success": sum(
+                bool(r.get("repaired_detection_evidence", {}).get("independent_success"))
+                for r in sanitized_malicious
+            ),
+            "excluded": len(excluded_malicious),
+        },
         "method": {
             "seed": args.seed,
-            "attribution_policy": (
-                "counterfactual-supported malicious spans only; unestablished "
-                "candidates ignored; annotated benign spans are explicit negatives"
+            "attribution_policy": "counterfactual-supported malicious spans only",
+            "behavioral_policy": (
+                "fresh Llama replay judged unsafe by Mistral OR independent Mistral transfer success; "
+                "legacy Qwen-only target judgment is insufficient"
             ),
-            "length_policy": (
-                "benign prefixes sampled from empirical malicious user-turn distribution"
-            ),
+            "length_policy": "benign prefixes sampled from empirical malicious user-turn distribution",
         },
     }
     os.makedirs(os.path.dirname(args.stats_output) or ".", exist_ok=True)
