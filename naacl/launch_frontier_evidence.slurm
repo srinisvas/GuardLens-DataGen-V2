@@ -77,8 +77,8 @@ cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
 EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
-# Candidate materialization preserves Stage-B1 rollout provenance. Recheck it
-# before allocating four GPUs so evidence cannot run with a mismatched target envelope.
+# Candidate materialization preserves B1/B2 provenance. Recheck both before
+# allocating four GPUs so evidence cannot run on a stale target or judge envelope.
 python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
   --expected-records "$EXPECTED_RECORDS" \
@@ -86,6 +86,14 @@ python3 naacl/audit_frontier_rollout.py \
   --expected-max-tokens "$MAX_TOKENS" \
   --expected-max-model-len "$TARGET_MAX_MODEL_LEN" \
   --max-transcript-chars "$JUDGE_MAX_CONTEXT_CHARS"
+
+python3 naacl/audit_frontier_validation_protocol.py \
+  --input "$INPUT_FILE" \
+  --expected-records "$EXPECTED_RECORDS" \
+  --target-model "$TARGET_MODEL" \
+  --judge-model "$JUDGE_MODEL" \
+  --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
+  --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS"
 
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL" "$JUDGE_MODEL"
