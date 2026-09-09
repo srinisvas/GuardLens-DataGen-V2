@@ -2,9 +2,10 @@
 """Fail-closed audit for the frontier standalone hard-benign stress set.
 
 These records are scientifically useful as hard benign/FPR stress cases but are
-excluded from primary training because their five-turn construction creates a
-source-level length shortcut. This audit prevents them from drifting back into
-training or acquiring positive pivot/span supervision.
+excluded from primary training because their standalone construction can carry
+length/style shortcuts relative to the paired primary corpus. This audit prevents
+them from drifting back into training or acquiring positive pivot/span
+supervision.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import sys
 from collections import Counter
 
 from frontier_common import load_jsonl
+from prepare_frontier_dataset import assert_expected_provenance
 
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
@@ -86,24 +88,24 @@ def main() -> None:
 
         if r.get("validation_status") != "validated":
             errors.append(f"{cid}: stress record is not independently validated")
-        rollout = r.get("rollout_provenance", {}) or {}
-        validation = r.get("frontier_behavioral_validation", {}) or {}
-        if rollout.get("target_model") != args.expected_target_model:
-            errors.append(f"{cid}: unexpected stress rollout target")
-        if validation.get("judge_model") != args.expected_judge_model:
-            errors.append(f"{cid}: unexpected stress judge")
-        if rollout.get("authoring_metadata_exposed_to_target") is not False:
-            errors.append(f"{cid}: target metadata-exposure provenance is not false")
-        if validation.get("authoring_metadata_exposed_to_judge") is not False:
-            errors.append(f"{cid}: judge metadata-exposure provenance is not false")
+        try:
+            assert_expected_provenance(
+                r,
+                expected_target=args.expected_target_model,
+                expected_judge=args.expected_judge_model,
+                require_evidence=False,
+            )
+        except Exception as exc:
+            errors.append(f"{cid}: protocol-chain provenance invalid: {exc}")
+
         if r.get("canonical_target_model") != args.expected_target_model:
             errors.append(f"{cid}: canonical target model marker mismatch")
         if r.get("canonical_judge_model") != args.expected_judge_model:
             errors.append(f"{cid}: canonical judge model marker mismatch")
 
-        # sanitize_benign resolves the benign record semantics before marking the
-        # stress record non-trainable. Keep those resolved semantics intact while
-        # making the training exclusion explicit.
+        # sanitize_benign resolves benign semantics before marking the stress
+        # record non-trainable. Keep those semantics intact while making the
+        # training exclusion explicit.
         if r.get("supervision_tier") != "benign_validated":
             errors.append(f"{cid}: expected benign_validated supervision semantics")
         weight = r.get("loss_weight")
