@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Fail-closed audit for Stage-B1 frontier target rollouts.
+
+A scientifically usable rollout must contain every requested record and every
+assistant response must terminate naturally with ``finish_reason=stop``. The
+OpenAI-compatible server's completion-token count is persisted and checked so a
+length-capped response cannot masquerade as a complete trajectory.
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import statistics
+import sys
+from collections import Counter
+
+from frontier_common import load_jsonl
+
+COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
+
+
+def percentile(values, q: float):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * q
+    lo = math.floor(index)
+    hi = math.ceil(index)
+    if lo == hi:
+        return float(ordered[lo])
+    weight = index - lo
+    return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--expected-records", type=int, default=0)
+    parser.add_argument("--expected-model", default=None)
+    parser.add_argument("--expected-max-tokens", type=int, default=0)
+    parser.add_argument("--near-cap-fraction", type=float, default=0.90)
+    args = parser.parse_args()
+
+    if args.expected_records < 0:
+        raise ValueError("expected-records must be nonnegative")
+    if args.expected_max_tokens < 0:
+        raise ValueError("expected-max-tokens must be nonnegative")
+    if not (0.0 < args.near_cap_fraction <= 1.0):
+        raise ValueError("near-cap-fraction must be in (0,1]")
+
+    records = load_jsonl(args.input)
+    errors = []
+    warnings = []
+    seen = set()
+    statuses = Counter()
+    finish_reasons = Counter()
+    completion_tokens = []
+    near_cap = []
+
+    if args.expected_records and len(records) != args.expected_records:
+        errors.append(
+            f"expected {args.expected_records} records, got {len(records)}"
+        )
+
+    for record in records:
+        cid = str(record.get("conversation_id", ""))
+        if not cid:
+            errors.append("record missing conversation_id")
+            continue
+        if cid in seen:
+            errors.append(f"duplicate conversation_id: {cid}")
+        seen.add(cid)
+
+        status = str(record.get("rollout_status", "missing"))
+        statuses[status] += 1
+        if status != "complete":
+            errors.append(
+                f"{cid}: rollout_status={status!r}; error={record.get('rollout_error')!r}"
+            )
+            continue
+
+        rollout = record.get("rollout_provenance", {}) or {}
+        target_model = rollout.get("target_model")
+        if args.expected_model and target_model != args.expected_model:
+            errors.append(
+                f"{cid}: target_model={target_model!r} != expected {args.expected_model!r}"
+            )
+        if rollout.get("completion_contract") != COMPLETION_CONTRACT:
+            errors.append(f"{cid}: missing/invalid completion contract")
+
+        max_tokens = rollout.get("max_tokens")
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+            errors.append(f"{cid}: invalid rollout max_tokens={max_tokens!r}")
+            continue
+        if args.expected_max_tokens and max_tokens != args.expected_max_tokens:
+            errors.append(
+                f"{cid}: rollout max_tokens={max_tokens} != expected {args.expected_max_tokens}"
+            )
+
+        turns = record.get("turns", [])
+        if len(turns) != int(record.get("conversation_length", -1)):
+            errors.append(f"{cid}: conversation_length does not match physical turns")
+        ids = [int(t.get("turn_id", -1)) for t in turns]
+        if ids != list(range(len(turns))):
+            errors.append(f"{cid}: realized turn IDs are not contiguous 0..N-1")
+
+        users = [t for t in turns if str(t.get("role", "")).lower() == "user"]
+        assistants = [t for t in turns if str(t.get("role", "")).lower() == "assistant"]
+        if not (
+            len(users)
+            == len(assistants)
+            == int(record.get("user_turn_count", -1))
+            == int(record.get("assistant_turn_count", -1))
+        ):
+            errors.append(f"{cid}: realized user/assistant counts are inconsistent")
+
+        for turn in assistants:
+            tid = int(turn.get("turn_id", -1))
+            generation = turn.get("generation_provenance", {}) or {}
+            finish = generation.get("finish_reason")
+            finish_reasons[str(finish)] += 1
+            if finish != "stop":
+                errors.append(
+                    f"{cid}: assistant turn {tid} finish_reason={finish!r}"
+                )
+            if generation.get("model") != target_model:
+                errors.append(f"{cid}: assistant turn {tid} model provenance mismatch")
+            if generation.get("max_tokens") != max_tokens:
+                errors.append(f"{cid}: assistant turn {tid} max_tokens provenance mismatch")
+
+            tokens = generation.get("completion_tokens")
+            if (
+                isinstance(tokens, bool)
+                or not isinstance(tokens, int)
+                or tokens <= 0
+            ):
+                errors.append(
+                    f"{cid}: assistant turn {tid} invalid completion_tokens={tokens!r}"
+                )
+                continue
+            if tokens > max_tokens:
+                errors.append(
+                    f"{cid}: assistant turn {tid} completion_tokens={tokens} exceeds max_tokens={max_tokens}"
+                )
+            completion_tokens.append(tokens)
+            if tokens >= args.near_cap_fraction * max_tokens:
+                near_cap.append((cid, tid, tokens, max_tokens))
+
+    print("=== Frontier rollout completion audit ===")
+    print(f"Records: {len(records)}")
+    print(f"Rollout statuses: {dict(statuses)}")
+    print(f"Assistant finish reasons: {dict(finish_reasons)}")
+    if completion_tokens:
+        print(
+            "Completion tokens: "
+            f"n={len(completion_tokens)} min={min(completion_tokens)} "
+            f"median={statistics.median(completion_tokens):.1f} "
+            f"p95={percentile(completion_tokens, 0.95):.1f} "
+            f"max={max(completion_tokens)} "
+            f"mean={statistics.mean(completion_tokens):.1f}"
+        )
+    print(
+        f"Near-cap assistant turns (>= {args.near_cap_fraction:.0%} of max_tokens): "
+        f"{len(near_cap)}"
+    )
+    if near_cap:
+        for cid, tid, tokens, max_tokens in near_cap[:20]:
+            warnings.append(
+                f"{cid} turn {tid}: completion_tokens={tokens}/{max_tokens}"
+            )
+        for warning in warnings:
+            print(f"WARN: {warning}")
+
+    if errors:
+        print("ROLLOUT AUDIT FAILED", file=sys.stderr)
+        for error in errors[:100]:
+            print(f"ERROR: {error}", file=sys.stderr)
+        if len(errors) > 100:
+            print(f"... {len(errors)-100} additional errors", file=sys.stderr)
+        sys.exit(2)
+    print("ROLLOUT AUDIT PASSED")
+
+
+if __name__ == "__main__":
+    main()
