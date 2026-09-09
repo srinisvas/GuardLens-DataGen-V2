@@ -28,8 +28,12 @@ from frontier_common import (
     json_fingerprint,
     load_completed,
     load_jsonl,
-    stable_record_seed,
     write_jsonl,
+)
+from frontier_seed_policy import (
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
 )
 
 PROTOCOL = "frontier_fixed_user_rollout_v2"
@@ -43,6 +47,7 @@ def rollout_config(*, model: str, base_seed: int, max_tokens: int, max_model_len
         "protocol": PROTOCOL,
         "target_model": model,
         "base_seed": int(base_seed),
+        "seed_policy": SEED_POLICY,
         "temperature": 0.0,
         "max_tokens": int(max_tokens),
         "max_model_len": int(max_model_len),
@@ -57,6 +62,7 @@ def finalize_partial_rollout(
     assistant_count: int,
     cfg,
     record_seed: int,
+    seed_key: str,
     input_fp: str,
     status: str,
     error: str,
@@ -71,6 +77,7 @@ def finalize_partial_rollout(
     r["rollout_provenance"] = {
         **cfg,
         "record_seed": record_seed,
+        "seed_key": seed_key,
         "input_fingerprint": input_fp,
         "config_fingerprint": config_fingerprint(cfg),
         "authoring_metadata_exposed_to_target": False,
@@ -97,7 +104,8 @@ def rollout_record(
     assert_frontier_source_record(record)
     r = copy.deepcopy(record)
     cid = str(r["conversation_id"])
-    record_seed = stable_record_seed(base_seed, cid)
+    record_seed = experiment_record_seed(base_seed, r)
+    seed_key = experiment_seed_key(r)
     input_fp = json_fingerprint(record)
     cfg = rollout_config(
         model=client.model,
@@ -173,6 +181,7 @@ def rollout_record(
                 assistant_count=user_index,
                 cfg=cfg,
                 record_seed=record_seed,
+                seed_key=seed_key,
                 input_fp=input_fp,
                 status="instrumentation_incomplete",
                 error=(
@@ -188,6 +197,7 @@ def rollout_record(
                 assistant_count=user_index,
                 cfg=cfg,
                 record_seed=record_seed,
+                seed_key=seed_key,
                 input_fp=input_fp,
                 status="incomplete_generation",
                 error=(
@@ -212,6 +222,7 @@ def rollout_record(
     r["rollout_provenance"] = {
         **cfg,
         "record_seed": record_seed,
+        "seed_key": seed_key,
         "input_fingerprint": input_fp,
         "config_fingerprint": config_fingerprint(cfg),
         "authoring_metadata_exposed_to_target": False,
@@ -232,14 +243,19 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
     if not cached or cached.get("rollout_status") != "complete":
         return False
     provenance = cached.get("rollout_provenance", {}) or {}
+    expected_seed = experiment_record_seed(cfg["base_seed"], source_record)
+    expected_key = experiment_seed_key(source_record)
     if not (
         provenance.get("protocol") == PROTOCOL
+        and provenance.get("seed_policy") == SEED_POLICY
         and provenance.get("completion_contract") == COMPLETION_CONTRACT
         and provenance.get("input_fingerprint") == json_fingerprint(source_record)
         and provenance.get("config_fingerprint") == config_fingerprint(cfg)
         and provenance.get("target_model") == cfg["target_model"]
         and provenance.get("max_tokens") == cfg["max_tokens"]
         and provenance.get("max_model_len") == cfg["max_model_len"]
+        and provenance.get("record_seed") == expected_seed
+        and provenance.get("seed_key") == expected_key
         and provenance.get("authoring_metadata_exposed_to_target") is False
     ):
         return False
@@ -249,9 +265,10 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
     ]
     if len(assistant_turns) != int(source_record.get("user_turn_count", -1)):
         return False
-    for turn in assistant_turns:
+    for user_index, turn in enumerate(assistant_turns):
         generation = turn.get("generation_provenance", {}) or {}
         tokens = generation.get("completion_tokens")
+        expected_response_seed = expected_seed + 1009 * (user_index + 1)
         if generation.get("finish_reason") != "stop":
             return False
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
@@ -261,6 +278,8 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
         if generation.get("max_model_len") != cfg["max_model_len"]:
             return False
         if generation.get("model") != cfg["target_model"]:
+            return False
+        if generation.get("seed") != expected_response_seed:
             return False
     return True
 
@@ -334,6 +353,8 @@ def main() -> None:
                 out["training_eligible"] = False
                 out["rollout_provenance"] = {
                     **cfg,
+                    "record_seed": experiment_record_seed(args.seed, record),
+                    "seed_key": experiment_seed_key(record),
                     "input_fingerprint": json_fingerprint(record),
                     "config_fingerprint": config_fingerprint(cfg),
                     "authoring_metadata_exposed_to_target": False,
