@@ -28,9 +28,10 @@ CHECKPOINT_PREFIX="${CHECKPOINT_PREFIX:-$OUTPUT_DIR/frontier_qwen32_rollout}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
+SOURCE_PREFLIGHT_MODE="${SOURCE_PREFLIGHT_MODE:-auto}"  # auto|strict|schema|skip
 
-if [[ "$N_SHARDS" -gt 2 ]]; then
-  echo "ERROR: this job requests 2 GPUs; N_SHARDS must be <=2 unless sbatch --gres is overridden"
+if [[ "$N_SHARDS" -lt 1 || "$N_SHARDS" -gt 2 ]]; then
+  echo "ERROR: this job requests 2 GPUs; require 1 <= N_SHARDS <= 2"
   exit 2
 fi
 mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
@@ -44,6 +45,36 @@ export TRANSFORMERS_CACHE="$MODEL_CACHE/hub"
 export HF_HUB_CACHE="$MODEL_CACHE/hub"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 cd "$PROJECT_DIR"
+
+[[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
+python3 naacl/check_frontier_environment.py \
+  --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL"
+
+case "$SOURCE_PREFLIGHT_MODE" in
+  strict)
+    python3 naacl/audit_frontier_source.py --input "$INPUT_FILE"
+    ;;
+  schema)
+    python3 naacl/audit_frontier_source.py --input "$INPUT_FILE" --schema-only
+    ;;
+  auto)
+    RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
+    if [[ "$RECORDS" -eq 1500 ]]; then
+      python3 naacl/audit_frontier_source.py --input "$INPUT_FILE"
+    else
+      python3 naacl/audit_frontier_source.py --input "$INPUT_FILE" --schema-only
+    fi
+    ;;
+  skip)
+    echo "WARN: SOURCE_PREFLIGHT_MODE=skip; source audit explicitly bypassed"
+    ;;
+  *)
+    echo "ERROR: SOURCE_PREFLIGHT_MODE must be auto|strict|schema|skip"
+    exit 2
+    ;;
+esac
+
+nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
 cleanup(){ code=$?; trap - EXIT INT TERM; for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; exit "$code"; }
