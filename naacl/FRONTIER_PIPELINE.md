@@ -85,7 +85,13 @@ python naacl/check_frontier_environment.py \
 
 Before Gemma robustness, run the same check including `google/gemma-3-27b-it`.
 
-The Mistral judge launchers explicitly use Mistral tokenizer/config/load modes. Mistral Small 3.1 requires vLLM >= 0.8.1 and mistral-common >= 1.5.4.
+Runtime floors enforced by the preflight:
+
+- Qwen2.5: Transformers >= 4.37
+- Mistral Small 3.1: vLLM >= 0.8.1 and mistral-common >= 1.5.4
+- Gemma 3: vLLM >= 0.8.3 and Transformers >= 4.50
+
+The Mistral judge launchers explicitly use Mistral tokenizer/config/load modes rather than relying on auto-detection.
 
 ## Stage B1 — Qwen32 fixed-user rollout
 
@@ -126,7 +132,7 @@ Validation is fail-closed and context-aware:
 - required judge JSON fields are strictly validated
 - malformed/missing/out-of-range judge outputs are retried, then fail the record
 - malicious authoring-intent records validate only on a confidence-qualified unsafe crossing
-- benign records reject on a confidence-qualified unsafe crossing
+- benign records reject only on a confidence-qualified unsafe crossing
 - near-boundary or low-confidence observations become ambiguous rather than supervision
 - target/judge provenance and thresholds are checkpoint-fingerprinted
 
@@ -219,20 +225,31 @@ naacl_frontier_benign_stress.jsonl
 
 They have `training_eligible=false` and are evaluation-only.
 
-Run the canonical audit:
+Run both post-preparation audits:
 
 ```bash
 python naacl/audit_frontier_dataset.py \
   --input $HOME/staging/dataset_gen_output/naacl_frontier_prepared.jsonl
+
+python naacl/audit_frontier_stress.py \
+  --input $HOME/staging/dataset_gen_output/naacl_frontier_benign_stress.jsonl
 ```
 
-Do not merge unless this ends with:
+Do not merge unless the primary audit ends with:
 
 ```text
 VALIDITY AUDIT PASSED
 ```
 
-The audit requires complete pairs, equal class counts, identical class-conditional user-turn histograms, canonical Qwen/Mistral provenance, resolved supervision/loss weights, safe pivot semantics, and no unsupported positive span supervision.
+Do not use the hard-benign stress output unless its audit ends with:
+
+```text
+STRESS AUDIT PASSED
+```
+
+The primary audit reconstructs supported evidence turns from the stored whole-turn and span interventions instead of trusting `evidence_turn_ids`; checks delta thresholds, negative controls, record-level supervision tier, pivot semantics, complete pair semantics, canonical Qwen/Mistral provenance, equal class counts, and identical class-conditional user-turn histograms.
+
+The stress audit requires validated standalone benign records, canonical Qwen/Mistral provenance, `training_eligible=false`, evaluation-only markers, true no-pivot semantics, and no positive evidence/span supervision.
 
 ## Merge frozen Dataset A + canonical Dataset B
 
@@ -244,7 +261,7 @@ naacl_legacy_benign_stress.jsonl
 naacl_legacy_prepared_stats.json
 ```
 
-Merge only after Dataset B passes its own audit:
+Merge only after Dataset B passes its own primary audit:
 
 ```bash
 python naacl/merge_training_corpora.py \
@@ -298,7 +315,7 @@ python naacl/select_cross_target_subset.py \
   --fraction 0.40
 ```
 
-Selection keeps complete scenario families and balances scenario composition across domain, difficulty, trajectory family, pair-hardness mix, mechanism family, style, slice-role composition, and label composition.
+Selection keeps complete scenario families. Paired and standalone scenario families are sampled separately and the allocator minimizes residual error over the full source feature distribution across domain, difficulty, trajectory family, pair hardness, mechanism family, style, slice-role composition, and label composition. On the reviewed v3 source, the 40% protocol selects exactly 600 records while preserving the major construction distributions.
 
 Run Gemma using the rollout launcher:
 
@@ -338,9 +355,10 @@ Do not immediately run all 1,500 records.
 
 1. CPU source audit + regression tests
 2. model/cache environment preflight
-3. 20-record Qwen rollout smoke
-4. 20-record Mistral validation smoke and qualitative inspection
+3. 20-record pair-complete Qwen rollout smoke
+4. Mistral validation smoke and qualitative inspection
 5. small paired evidence smoke with baseline reproducibility checks
 6. only then launch the full B1/B2/B4 pipeline
+7. prepare and run both primary/stress audits before merging
 
 The runtime smoke remains mandatory because static review cannot prove one-A100 memory fit, installed-vLLM model-loader compatibility, or deterministic replay across separate server processes.
