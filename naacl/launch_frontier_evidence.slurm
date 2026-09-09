@@ -16,10 +16,10 @@ set -euo pipefail
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
-TARGET_MAX_MODEL_LEN="${TARGET_MAX_MODEL_LEN:-8192}"
+TARGET_MAX_MODEL_LEN="${TARGET_MAX_MODEL_LEN:-16384}"
 JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-16384}"
 JUDGE_MAX_CONTEXT_CHARS="${JUDGE_MAX_CONTEXT_CHARS:-40000}"
-MAX_TOKENS="${MAX_TOKENS:-640}"
+MAX_TOKENS="${MAX_TOKENS:-1280}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/frontier_qwen32_candidates.jsonl}"
@@ -57,12 +57,13 @@ cd "$PROJECT_DIR"
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
 EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
 # Candidate materialization preserves Stage-B1 rollout provenance. Recheck it
-# before allocating four GPUs so evidence cannot run with a mismatched target cap.
+# before allocating four GPUs so evidence cannot run with a mismatched target envelope.
 python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
   --expected-records "$EXPECTED_RECORDS" \
   --expected-model "$TARGET_MODEL" \
   --expected-max-tokens "$MAX_TOKENS" \
+  --expected-max-model-len "$TARGET_MAX_MODEL_LEN" \
   --max-transcript-chars "$JUDGE_MAX_CONTEXT_CHARS"
 
 python3 naacl/check_frontier_environment.py \
