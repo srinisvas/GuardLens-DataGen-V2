@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
-"""Throughput-preserving wrapper for Stage B4 evidence analysis.
+"""Throughput-preserving production wrapper for Stage B4 evidence analysis.
 
-This wrapper does not change the scientific counterfactual. Stage B4 still runs a
-fresh full baseline first and requires exact B1/B2 reproducibility. After that
-baseline has passed, counterfactual replays reuse the already-proven identical
-conversation prefix before the intervention turn and regenerate/judge only the
-intervention turn and its downstream suffix.
+Scientific semantics remain those of ``frontier_evidence_analysis.py``. The
+wrapper adds only fail-closed execution/provenance controls:
 
-The optimization removes redundant target decoding and judge calls for turns that
-occur strictly before the intervention and therefore cannot have changed. Prefix
-reuse is additionally guarded inside this class: if fresh baseline target-response
-fingerprints do not exactly match the stored B1 assistant texts, optimized replay
-is disabled and the implementation falls back to a full counterfactual replay.
+1. B4 record seeds are taken from the already-audited B1 rollout provenance, so
+   malicious/benign twins retain the locked pair-shared seed policy.
+2. The target/judge runtime context windows and execution optimization are added
+   to the B4 configuration fingerprint.
+3. A fresh full baseline still runs first. Prefix reuse is enabled only when the
+   fresh baseline response fingerprints exactly match stored B1 assistant text;
+   otherwise counterfactuals fall back to the original full replay.
 """
 from __future__ import annotations
 
+import argparse
 import copy
+import sys
 from typing import Dict, Optional, Sequence
 
 import frontier_evidence_analysis as fea
+from frontier_seed_policy import (
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
+)
+
+EXECUTION_OPTIMIZATION = "verified_identical_prefix_reuse_v1"
+RECORD_SEED_SOURCE = "stage_b1_rollout_provenance"
 
 
 class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
@@ -204,12 +213,95 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
         }
 
 
+def build_record_seed_map(records, *, expected_base_seed: int) -> Dict[str, int]:
+    seed_map: Dict[str, int] = {}
+    for record in records:
+        cid = str(record.get("conversation_id", ""))
+        if not cid or cid in seed_map:
+            raise RuntimeError(f"invalid/duplicate conversation_id in B4 input: {cid!r}")
+        rollout = record.get("rollout_provenance", {}) or {}
+        if rollout.get("seed_policy") != SEED_POLICY:
+            raise RuntimeError(f"{cid}: B4 input seed policy mismatch")
+        if int(rollout.get("base_seed", -1)) != int(expected_base_seed):
+            raise RuntimeError(f"{cid}: B4 seed differs from B1 base seed")
+        expected = experiment_record_seed(expected_base_seed, record)
+        if rollout.get("record_seed") != expected:
+            raise RuntimeError(f"{cid}: B1 record seed violates paired seed policy")
+        if rollout.get("seed_key") != experiment_seed_key(record):
+            raise RuntimeError(f"{cid}: B1 seed key violates paired seed policy")
+        validation = record.get("frontier_behavioral_validation", {}) or {}
+        if validation.get("seed_policy") != SEED_POLICY:
+            raise RuntimeError(f"{cid}: B2 seed policy mismatch")
+        if validation.get("record_seed") != expected:
+            raise RuntimeError(f"{cid}: B2 record seed differs from B1")
+        seed_map[cid] = expected
+    return seed_map
+
+
+def _cli_value(args, flag: str, default=None):
+    for idx, value in enumerate(args):
+        if value == flag:
+            if idx + 1 >= len(args):
+                raise RuntimeError(f"missing value for {flag}")
+            return args[idx + 1]
+        prefix = flag + "="
+        if value.startswith(prefix):
+            return value[len(prefix):]
+    return default
+
+
 def main() -> None:
-    # The original main() resolves FrontierEvidenceValidator from its module
-    # globals at runtime. Patch only for executable use, not on import, so unit
-    # tests and other modules do not receive an unexpected global side effect.
+    # Parse wrapper-only runtime provenance flags, then remove them before handing
+    # the remaining CLI to the original evidence engine.
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--target-max-model-len", type=int, default=16384)
+    parser.add_argument("--judge-max-model-len", type=int, default=16384)
+    runtime, remaining = parser.parse_known_args(sys.argv[1:])
+    if runtime.target_max_model_len <= 0 or runtime.judge_max_model_len <= 0:
+        raise ValueError("runtime model context windows must be positive")
+
+    input_path = _cli_value(remaining, "--input")
+    if not input_path:
+        raise RuntimeError("B4 wrapper requires --input")
+    base_seed = int(_cli_value(remaining, "--seed", 42))
+    records = fea.load_jsonl(input_path)
+    seed_map = build_record_seed_map(records, expected_base_seed=base_seed)
+
+    original_seed_fn = fea.stable_record_seed
+    original_config_fn = fea.evidence_config
+
+    def rollout_bound_seed(requested_base_seed: int, conversation_id: str) -> int:
+        if int(requested_base_seed) != base_seed:
+            raise RuntimeError(
+                f"B4 requested base_seed={requested_base_seed} != audited B1 seed={base_seed}"
+            )
+        cid = str(conversation_id)
+        if cid not in seed_map:
+            raise RuntimeError(f"B4 seed requested for unknown conversation_id={cid}")
+        return seed_map[cid]
+
+    def production_evidence_config(**kwargs):
+        cfg = original_config_fn(**kwargs)
+        cfg.update(
+            {
+                "seed_policy": SEED_POLICY,
+                "record_seed_source": RECORD_SEED_SOURCE,
+                "target_max_model_len": int(runtime.target_max_model_len),
+                "judge_max_model_len": int(runtime.judge_max_model_len),
+                "execution_optimization": EXECUTION_OPTIMIZATION,
+            }
+        )
+        return cfg
+
+    fea.stable_record_seed = rollout_bound_seed
+    fea.evidence_config = production_evidence_config
     fea.FrontierEvidenceValidator = PrefixReuseEvidenceValidator
-    fea.main()
+    sys.argv = [sys.argv[0], *remaining]
+    try:
+        fea.main()
+    finally:
+        fea.stable_record_seed = original_seed_fn
+        fea.evidence_config = original_config_fn
 
 
 if __name__ == "__main__":
