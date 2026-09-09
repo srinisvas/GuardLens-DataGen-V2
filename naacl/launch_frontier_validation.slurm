@@ -11,6 +11,8 @@
 
 # Stage B2. Two context-aware Mistral-Small-3.1-24B judge shards.
 set -euo pipefail
+TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
+TARGET_MAX_TOKENS="${TARGET_MAX_TOKENS:-640}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
 PORT_BASE="${PORT_BASE:-8120}"
@@ -45,6 +47,13 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
+EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
+python3 naacl/audit_frontier_rollout.py \
+  --input "$INPUT_FILE" \
+  --expected-records "$EXPECTED_RECORDS" \
+  --expected-model "$TARGET_MODEL" \
+  --expected-max-tokens "$TARGET_MAX_TOKENS"
+
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$JUDGE_MODEL"
 
