@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """CPU-only preflight audit for GuardLensSourceTrajectory/v3.
 
-The strict mode verifies the complete 1,500-record construction contract. Use
-``--schema-only`` for smoke-test or preselected robustness subsets; that mode
-still validates every source record and uniqueness but intentionally skips full-
-corpus pair/scenario/count expectations.
+Strict mode verifies a complete construction contract using parameterized expected
+counts, so it can audit either one 1,500-record author corpus or the merged
+3,000-record multi-author source. ``--schema-only`` is reserved for smoke-test
+or preselected robustness subsets.
 """
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ def main() -> None:
     )
     if all_auc > args.max_primary_length_auc:
         warnings.append(
-            f"full-source user-turn length AUC={all_auc:.4f}; expected because standalone hard-benign stress records are shorter. "
+            f"full-source user-turn length AUC={all_auc:.4f}; standalone hard-benign stress records have a different construction distribution. "
             "They must remain evaluation-only and must not enter primary training."
         )
 
