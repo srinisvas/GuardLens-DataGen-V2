@@ -77,6 +77,8 @@ cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
 EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
+# Candidate materialization preserves Stage-B1 rollout provenance. Recheck it
+# before allocating four GPUs so evidence cannot run with a mismatched target envelope.
 python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
   --expected-records "$EXPECTED_RECORDS" \
@@ -91,7 +93,7 @@ python3 naacl/check_frontier_environment.py \
 echo "B4 topology: target_gpus=$TARGET_GPU_COUNT workers_per_target=$WORKERS_PER_TARGET logical_shards=$N_SHARDS shared_judge_gpu=$JUDGE_GPU"
 echo "Evidence config: target=$TARGET_MODEL judge=$JUDGE_MODEL max_tokens=$MAX_TOKENS unsafe=$UNSAFE_THRESHOLD min_confidence=$MIN_CONFIDENCE weak=$WEAK_DELTA strong=$STRONG_DELTA"
 echo "Context windows: target=$TARGET_MAX_MODEL_LEN judge=$JUDGE_MAX_MODEL_LEN; judge full-prefix budget=$JUDGE_MAX_CONTEXT_CHARS chars"
-echo "Replay optimization: full fresh baseline once, then proven-identical prefix reuse before each intervention"
+echo "Replay optimization: full fresh baseline once, then prefix reuse only after fresh response fingerprints match the stored B1 prefix"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
@@ -156,20 +158,10 @@ for i in $(seq 0 $((N_SHARDS-1))); do
 done
 for p in "${WORKERS[@]}"; do wait "$p"; done
 
-python3 - "$INPUT_FILE" "$OUTPUT_FILE" "$N_SHARDS" <<'PY'
-import json,sys
-src,out,n=sys.argv[1],sys.argv[2],int(sys.argv[3]); merged={}
-for i in range(n):
-    p=out[:-6]+f'.shard{i}.jsonl'
-    for line in open(p,encoding='utf-8'):
-        if line.strip():
-            r=json.loads(line); merged[str(r['conversation_id'])]=r
-source=[json.loads(x) for x in open(src,encoding='utf-8') if x.strip()]
-missing=[r['conversation_id'] for r in source if str(r['conversation_id']) not in merged]
-if missing: raise SystemExit(f'missing {len(missing)} evidence records')
-with open(out,'w',encoding='utf-8') as f:
-    for r in source:f.write(json.dumps(merged[str(r['conversation_id'])],ensure_ascii=False)+'\n')
-print('merged',len(source),'records ->',out)
-PY
+python3 naacl/merge_stage_shards.py \
+  --source "$INPUT_FILE" \
+  --output "$OUTPUT_FILE" \
+  --num-shards "$N_SHARDS" \
+  --shard-pattern "${OUTPUT_FILE%.jsonl}.shard{i}.jsonl"
 
 echo "Frontier evidence complete: $OUTPUT_FILE"
