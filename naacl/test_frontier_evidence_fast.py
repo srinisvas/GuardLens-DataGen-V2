@@ -11,6 +11,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 
+import frontier_evidence_analysis as fea  # noqa: E402
 from frontier_evidence_fast import PrefixReuseEvidenceValidator  # noqa: E402
 
 
@@ -23,13 +24,30 @@ class StubTarget:
     def chat(self, messages, *, seed, temperature, max_tokens):
         self.calls.append(
             {
-                "messages": list(messages),
+                "messages": [dict(m) for m in messages],
                 "seed": seed,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
         )
         return f"fresh-response-{len(self.calls)}"
+
+
+class DeterministicTarget:
+    model = "Qwen/Qwen2.5-32B-Instruct"
+
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, messages, *, seed, temperature, max_tokens):
+        snapshot = [dict(m) for m in messages]
+        self.calls.append(snapshot)
+        user_messages = [m for m in snapshot if m["role"] == "user"]
+        idx = len(user_messages) - 1
+        last_user = user_messages[-1]["content"]
+        if last_user == f"u{idx}":
+            return f"a{idx}"
+        return f"cf{idx}:{last_user}"
 
 
 class StubJudge:
@@ -46,6 +64,12 @@ def judgment(score):
     }
 
 
+def deterministic_judgment(_judge, prefix, *, seed, max_context_chars):
+    text = "\n".join(str(m.get("content", "")) for m in prefix)
+    score = 0.8 if "changed-u1" in text else 0.2
+    return judgment(score)
+
+
 class PrefixReuseTests(unittest.TestCase):
     def setUp(self):
         self.turns = [
@@ -58,9 +82,24 @@ class PrefixReuseTests(unittest.TestCase):
         ]
         self.baseline = {
             "trajectory": [
-                {"user_turn_id": 0, **judgment(0.1), "response_fingerprint": "x0", "response_snippet": "a0"},
-                {"user_turn_id": 2, **judgment(0.2), "response_fingerprint": "x1", "response_snippet": "a1"},
-                {"user_turn_id": 4, **judgment(0.3), "response_fingerprint": "x2", "response_snippet": "a2"},
+                {
+                    "user_turn_id": 0,
+                    **judgment(0.1),
+                    "response_fingerprint": fea.json_fingerprint("a0"),
+                    "response_snippet": "a0",
+                },
+                {
+                    "user_turn_id": 2,
+                    **judgment(0.2),
+                    "response_fingerprint": fea.json_fingerprint("a1"),
+                    "response_snippet": "a1",
+                },
+                {
+                    "user_turn_id": 4,
+                    **judgment(0.3),
+                    "response_fingerprint": fea.json_fingerprint("a2"),
+                    "response_snippet": "a2",
+                },
             ],
             "max_unsafe_score": 0.3,
             "final_unsafe_score": 0.3,
@@ -71,6 +110,7 @@ class PrefixReuseTests(unittest.TestCase):
         validator = PrefixReuseEvidenceValidator(target, StubJudge(), max_tokens=2048)
         validator._baseline_key = validator._turns_key(self.turns)
         validator._baseline = self.baseline
+        validator._baseline_prefix_safe = True
 
         with patch(
             "frontier_evidence_fast.fea.judge_assistant_response",
@@ -103,11 +143,56 @@ class PrefixReuseTests(unittest.TestCase):
             validator.replay(self.turns, seed=5, replacements={2: "changed-u1"})
         self.assertEqual(len(target.calls), 3)
 
+    def test_fresh_baseline_mismatch_disables_prefix_reuse(self):
+        target = StubTarget()
+        validator = PrefixReuseEvidenceValidator(target, StubJudge(), max_tokens=2048)
+        with patch(
+            "frontier_evidence_fast.fea.judge_assistant_response",
+            side_effect=[judgment(0.1)] * 6,
+        ):
+            validator.replay(self.turns, seed=5)
+            self.assertFalse(validator._baseline_prefix_safe)
+            validator.replay(self.turns, seed=5, replacements={2: "changed-u1"})
+        # Three calls for baseline + three more for fail-closed full replay.
+        self.assertEqual(len(target.calls), 6)
+
+    def test_fast_replay_is_identical_to_full_replay_when_prefix_is_proven(self):
+        full_target = DeterministicTarget()
+        fast_target = DeterministicTarget()
+        full = fea.FrontierEvidenceValidator(full_target, StubJudge(), max_tokens=2048)
+        fast = PrefixReuseEvidenceValidator(fast_target, StubJudge(), max_tokens=2048)
+
+        with patch(
+            "frontier_evidence_fast.fea.judge_assistant_response",
+            side_effect=deterministic_judgment,
+        ):
+            baseline = fast.replay(self.turns, seed=100)
+            self.assertTrue(fast._baseline_prefix_safe)
+            self.assertEqual(
+                [x["response_fingerprint"] for x in baseline["trajectory"]],
+                [fea.json_fingerprint("a0"), fea.json_fingerprint("a1"), fea.json_fingerprint("a2")],
+            )
+            optimized = fast.replay(
+                self.turns,
+                seed=100,
+                replacements={2: "changed-u1"},
+            )
+            reference = full.replay(
+                self.turns,
+                seed=100,
+                replacements={2: "changed-u1"},
+            )
+
+        self.assertEqual(optimized, reference)
+        self.assertEqual(len(fast_target.calls), 5)  # 3 baseline + 2 suffix
+        self.assertEqual(len(full_target.calls), 3)
+
     def test_missing_intervention_turn_fails_closed(self):
         target = StubTarget()
         validator = PrefixReuseEvidenceValidator(target, StubJudge(), max_tokens=2048)
         validator._baseline_key = validator._turns_key(self.turns)
         validator._baseline = self.baseline
+        validator._baseline_prefix_safe = True
         with self.assertRaises(RuntimeError):
             validator.replay(self.turns, seed=5, replacements={99: "missing"})
 
