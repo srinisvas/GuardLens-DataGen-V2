@@ -16,7 +16,9 @@ set -euo pipefail
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+TARGET_MAX_MODEL_LEN="${TARGET_MAX_MODEL_LEN:-8192}"
+JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-16384}"
+JUDGE_MAX_CONTEXT_CHARS="${JUDGE_MAX_CONTEXT_CHARS:-40000}"
 MAX_TOKENS="${MAX_TOKENS:-640}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
@@ -66,6 +68,7 @@ python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL" "$JUDGE_MODEL"
 
 echo "Evidence config: target=$TARGET_MODEL judge=$JUDGE_MODEL max_tokens=$MAX_TOKENS unsafe=$UNSAFE_THRESHOLD min_confidence=$MIN_CONFIDENCE weak=$WEAK_DELTA strong=$STRONG_DELTA"
+echo "Context windows: target=$TARGET_MAX_MODEL_LEN judge=$JUDGE_MAX_MODEL_LEN; judge full-prefix budget=$JUDGE_MAX_CONTEXT_CHARS chars"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
@@ -76,14 +79,14 @@ for i in $(seq 0 $((N_SHARDS-1))); do
   tgpu=$((2*i)); jgpu=$((2*i+1)); tport=$((8200+2*i)); jport=$((8201+2*i))
   CUDA_VISIBLE_DEVICES=$tgpu python3 -m vllm.entrypoints.openai.api_server \
     --model "$TARGET_MODEL" --port "$tport" --dtype bfloat16 \
-    --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization 0.92 \
+    --max-model-len "$TARGET_MAX_MODEL_LEN" --gpu-memory-utilization 0.92 \
     --download-dir "$HF_HOME/hub" --no-enable-log-requests --disable-log-stats \
     2>"$LOG_DIR/front_ev_target${i}_${SLURM_JOB_ID:-$$}.log" &
   PIDS+=($!)
   CUDA_VISIBLE_DEVICES=$jgpu python3 -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" --port "$jport" --dtype bfloat16 \
     --tokenizer-mode mistral --config-format mistral --load-format mistral \
-    --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization 0.90 \
+    --max-model-len "$JUDGE_MAX_MODEL_LEN" --gpu-memory-utilization 0.90 \
     --download-dir "$HF_HOME/hub" --no-enable-log-requests --disable-log-stats \
     2>"$LOG_DIR/front_ev_judge${i}_${SLURM_JOB_ID:-$$}.log" &
   PIDS+=($!)
