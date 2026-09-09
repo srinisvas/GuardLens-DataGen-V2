@@ -20,6 +20,7 @@ import time
 from collections import Counter
 
 from frontier_common import (
+    DEFAULT_TARGET_MAX_TOKENS,
     VLLMClient,
     assert_frontier_source_record,
     config_fingerprint,
@@ -31,7 +32,8 @@ from frontier_common import (
 )
 
 PROTOCOL = "frontier_fixed_user_rollout_v2"
-DEFAULT_MAX_TOKENS = 640
+DEFAULT_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
+COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
 def rollout_config(*, model: str, base_seed: int, max_tokens: int):
@@ -41,7 +43,7 @@ def rollout_config(*, model: str, base_seed: int, max_tokens: int):
         "base_seed": int(base_seed),
         "temperature": 0.0,
         "max_tokens": int(max_tokens),
-        "completion_contract": "finish_reason=stop and completion_tokens recorded",
+        "completion_contract": COMPLETION_CONTRACT,
     }
 
 
@@ -144,7 +146,11 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
         realized_turns.append(assistant_turn)
         user_index += 1
 
-        if completion_tokens is None:
+        if (
+            isinstance(completion_tokens, bool)
+            or not isinstance(completion_tokens, int)
+            or completion_tokens <= 0
+        ):
             return finalize_partial_rollout(
                 r,
                 realized_turns=realized_turns,
@@ -154,8 +160,9 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
                 input_fp=input_fp,
                 status="instrumentation_incomplete",
                 error=(
-                    f"assistant turn {assistant_turn_id} missing usage.completion_tokens; "
-                    "trajectory is not scientifically complete"
+                    f"assistant turn {assistant_turn_id} has invalid "
+                    f"usage.completion_tokens={completion_tokens!r}; trajectory is not "
+                    "scientifically complete"
                 ),
             )
         if finish_reason != "stop":
@@ -210,24 +217,32 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
         return False
     provenance = cached.get("rollout_provenance", {}) or {}
     if not (
-        provenance.get("input_fingerprint") == json_fingerprint(source_record)
+        provenance.get("protocol") == PROTOCOL
+        and provenance.get("completion_contract") == COMPLETION_CONTRACT
+        and provenance.get("input_fingerprint") == json_fingerprint(source_record)
         and provenance.get("config_fingerprint") == config_fingerprint(cfg)
         and provenance.get("target_model") == cfg["target_model"]
+        and provenance.get("authoring_metadata_exposed_to_target") is False
     ):
         return False
     assistant_turns = [
         t for t in cached.get("turns", [])
         if str(t.get("role", "")).lower() == "assistant"
     ]
-    if not assistant_turns:
+    if len(assistant_turns) != int(source_record.get("user_turn_count", -1)):
         return False
-    return all(
-        (t.get("generation_provenance", {}) or {}).get("finish_reason") == "stop"
-        and isinstance(
-            (t.get("generation_provenance", {}) or {}).get("completion_tokens"), int
-        )
-        for t in assistant_turns
-    )
+    for turn in assistant_turns:
+        generation = turn.get("generation_provenance", {}) or {}
+        tokens = generation.get("completion_tokens")
+        if generation.get("finish_reason") != "stop":
+            return False
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            return False
+        if generation.get("max_tokens") != cfg["max_tokens"]:
+            return False
+        if generation.get("model") != cfg["target_model"]:
+            return False
+    return True
 
 
 def main() -> None:
@@ -313,7 +328,7 @@ def main() -> None:
             provenance = turn.get("generation_provenance", {}) or {}
             finish_reasons[str(provenance.get("finish_reason", "missing"))] += 1
             value = provenance.get("completion_tokens")
-            if isinstance(value, int) and not isinstance(value, bool):
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 completion_tokens.append(value)
 
     print(f"Shard {args.shard_index}/{args.num_shards}: {len(ordered)} records")
