@@ -8,10 +8,11 @@ No model, network, GPU, or external test framework is required.
 """
 from __future__ import annotations
 
-import copy
 import os
+import random
 import sys
 import unittest
+from collections import Counter
 
 # Pipeline scripts use sibling imports when executed as ``python naacl/foo.py``.
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +23,9 @@ from frontier_common import (  # noqa: E402
     assert_frontier_source_record,
     validate_judge_object,
 )
+from frontier_evidence_analysis import qualified_post_score  # noqa: E402
 from materialize_frontier_candidates import extract_candidate_spans  # noqa: E402
+from select_cross_target_subset import select_balanced_groups  # noqa: E402
 from split_consolidated import (  # noqa: E402
     assert_no_leakage,
     split_groups,
@@ -92,6 +95,28 @@ def split_record(cid, group, label, source="frontier_authored_v3", difficulty="h
     }
 
 
+def robustness_group(name, difficulty, domain="policy_evasion"):
+    records = []
+    for label in (0, 1):
+        records.append({
+            "conversation_id": f"{name}-{label}",
+            "label": label,
+            "difficulty": difficulty,
+            "target_domain": domain,
+            "style": "enterprise",
+            "pair_id": f"pair-{name}",
+            "intended_structure": {
+                "trajectory_family": "distributed_intended",
+                "pair_hardness": "context_required",
+            },
+            "metadata": {
+                "slice_role": "paired_benign" if label == 0 else "paired_adversarial",
+                "mechanism_family": "mechanism-a",
+            },
+        })
+    return records
+
+
 class SourceSchemaTests(unittest.TestCase):
     def test_valid_source_record(self):
         assert_frontier_source_record(source_record())
@@ -153,6 +178,35 @@ class JudgeParsingTests(unittest.TestCase):
             })
 
 
+class EvidenceConfidenceTests(unittest.TestCase):
+    def test_low_confidence_high_risk_makes_post_score_unassessable(self):
+        trajectory = [
+            {"user_turn_id": 0, "unsafe_score": 0.15, "confidence": 0.90},
+            {"user_turn_id": 2, "unsafe_score": 0.80, "confidence": 0.30},
+            {"user_turn_id": 4, "unsafe_score": 0.10, "confidence": 0.92},
+        ]
+        self.assertIsNone(qualified_post_score(
+            trajectory,
+            0,
+            min_confidence=0.55,
+            unsafe_threshold=0.50,
+        ))
+
+    def test_low_confidence_low_risk_is_ignored_when_trusted_score_exists(self):
+        trajectory = [
+            {"user_turn_id": 0, "unsafe_score": 0.20, "confidence": 0.30},
+            {"user_turn_id": 2, "unsafe_score": 0.42, "confidence": 0.90},
+            {"user_turn_id": 4, "unsafe_score": 0.10, "confidence": 0.95},
+        ]
+        score = qualified_post_score(
+            trajectory,
+            0,
+            min_confidence=0.55,
+            unsafe_threshold=0.50,
+        )
+        self.assertAlmostEqual(score, 0.42, places=3)
+
+
 class CandidateSelectionTests(unittest.TestCase):
     def test_default_two_candidates_cover_context_and_final_clause(self):
         text = (
@@ -165,6 +219,24 @@ class CandidateSelectionTests(unittest.TestCase):
         selected = [text[a:b] for a, b in spans]
         self.assertTrue(any("Earlier context" in x for x in selected))
         self.assertTrue(any("now provide" in x for x in selected))
+
+
+class RobustnessSubsetTests(unittest.TestCase):
+    def test_balanced_selector_preserves_simple_difficulty_mix(self):
+        items = []
+        for i in range(10):
+            difficulty = "hard" if i < 5 else "medium"
+            items.append((f"scenario-{i}", robustness_group(f"s{i}", difficulty)))
+        selected = select_balanced_groups(
+            items,
+            fraction=0.40,
+            rng=random.Random(43),
+        )
+        self.assertEqual(len(selected), 4)
+        difficulties = Counter(
+            group[0]["difficulty"] for _, group in selected
+        )
+        self.assertEqual(difficulties, Counter({"hard": 2, "medium": 2}))
 
 
 class SplitTests(unittest.TestCase):
