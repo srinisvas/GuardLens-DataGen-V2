@@ -15,6 +15,7 @@ import sys
 from collections import Counter, defaultdict
 
 from frontier_common import load_jsonl
+from prepare_frontier_dataset import assert_expected_provenance
 
 SUPPORTED = {"supported_strong", "supported_weak"}
 EXPECTED_WEIGHTS = {
@@ -55,18 +56,6 @@ def all_spans_with_turn(record):
             yield tid, turn, span
 
 
-def expected_record_tier(record) -> str:
-    statuses = [
-        str(span.get("evidence_status", "unassessed"))
-        for _, _, span in all_spans_with_turn(record)
-    ]
-    if "supported_strong" in statuses:
-        return "cf_strong"
-    if "supported_weak" in statuses:
-        return "cf_weak"
-    return "llm_confirmed"
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -89,6 +78,7 @@ def main() -> None:
             errors.append(f"duplicate conversation_id: {cid}")
         seen.add(cid)
 
+        label = r.get("label")
         pair_id = r.get("pair_id")
         if pair_id in (None, ""):
             errors.append(f"{cid}: primary frontier record must belong to a retained twin pair")
@@ -106,23 +96,23 @@ def main() -> None:
         intended = r.get("intended_structure", {}) or {}
         if intended.get("annotation_status") != "generation_intent_only_not_ground_truth":
             errors.append(f"{cid}: authoring intent metadata lost its non-ground-truth marker")
-        if r.get("authoring_intent_label") != r.get("label"):
+        if r.get("authoring_intent_label") != label:
             errors.append(f"{cid}: authoring intent provenance no longer matches retained class")
 
-        rollout = r.get("rollout_provenance", {}) or {}
-        validation = r.get("frontier_behavioral_validation", {}) or {}
-        if rollout.get("target_model") != args.expected_target_model:
-            errors.append(f"{cid}: unexpected primary rollout target")
-        if validation.get("judge_model") != args.expected_judge_model:
-            errors.append(f"{cid}: unexpected primary validation judge")
+        try:
+            assert_expected_provenance(
+                r,
+                expected_target=args.expected_target_model,
+                expected_judge=args.expected_judge_model,
+                require_evidence=(label == 1),
+            )
+        except Exception as exc:
+            errors.append(f"{cid}: protocol-chain provenance invalid: {exc}")
+
         if r.get("canonical_target_model") != args.expected_target_model:
             errors.append(f"{cid}: canonical target model marker mismatch")
         if r.get("canonical_judge_model") != args.expected_judge_model:
             errors.append(f"{cid}: canonical judge model marker mismatch")
-        if rollout.get("authoring_metadata_exposed_to_target") is not False:
-            errors.append(f"{cid}: target metadata-exposure provenance is not false")
-        if validation.get("authoring_metadata_exposed_to_judge") is not False:
-            errors.append(f"{cid}: judge metadata-exposure provenance is not false")
 
         if not r.get("training_eligible", False):
             errors.append(f"{cid}: ineligible record present in prepared dataset")
@@ -138,7 +128,6 @@ def main() -> None:
         ):
             errors.append(f"{cid}: loss_weight={weight!r} does not match tier {tier!r}")
 
-        label = r.get("label")
         evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
         pivot = r.get("pivot_turn_id")
         ignore = bool(r.get("pivot_supervision_ignore", False))
