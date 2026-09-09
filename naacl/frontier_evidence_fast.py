@@ -166,10 +166,13 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
         }
 
 
-# The original main() resolves FrontierEvidenceValidator from its module globals at
-# runtime. Replacing that symbol keeps all parsing, checkpointing, evidence logic,
-# thresholds, and provenance code unchanged while only optimizing replay execution.
-fea.FrontierEvidenceValidator = PrefixReuseEvidenceValidator
+def main() -> None:
+    # The original main() resolves FrontierEvidenceValidator from its module
+    # globals at runtime. Patch only for executable use, not on import, so unit
+    # tests and other modules do not receive an unexpected global side effect.
+    fea.FrontierEvidenceValidator = PrefixReuseEvidenceValidator
+    fea.main()
+
 
 if __name__ == "__main__":
-    fea.main()
+    main()
