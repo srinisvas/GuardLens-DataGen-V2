@@ -14,7 +14,7 @@ import statistics
 import sys
 from collections import Counter
 
-from frontier_common import load_jsonl
+from frontier_common import load_jsonl, transcript_text
 
 ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
@@ -39,6 +39,7 @@ def main() -> None:
     parser.add_argument("--expected-records", type=int, default=0)
     parser.add_argument("--expected-model", default=None)
     parser.add_argument("--expected-max-tokens", type=int, default=0)
+    parser.add_argument("--max-transcript-chars", type=int, default=0)
     parser.add_argument("--near-cap-fraction", type=float, default=0.90)
     args = parser.parse_args()
 
@@ -46,6 +47,8 @@ def main() -> None:
         raise ValueError("expected-records must be nonnegative")
     if args.expected_max_tokens < 0:
         raise ValueError("expected-max-tokens must be nonnegative")
+    if args.max_transcript_chars < 0:
+        raise ValueError("max-transcript-chars must be nonnegative")
     if not (0.0 < args.near_cap_fraction <= 1.0):
         raise ValueError("near-cap-fraction must be in (0,1]")
 
@@ -57,6 +60,7 @@ def main() -> None:
     finish_reasons = Counter()
     completion_tokens = []
     near_cap = []
+    transcript_lengths = []
 
     if args.expected_records and len(records) != args.expected_records:
         errors.append(
@@ -139,6 +143,24 @@ def main() -> None:
         ):
             errors.append(f"{cid}: realized user/assistant counts are inconsistent")
 
+        observable = [
+            {
+                "role": str(t.get("role", "")).lower(),
+                "content": str(t.get("text", "")),
+            }
+            for t in turns
+            if str(t.get("role", "")).lower() in {"user", "assistant"}
+        ]
+        if args.max_transcript_chars:
+            try:
+                rendered = transcript_text(
+                    observable,
+                    max_chars=args.max_transcript_chars,
+                )
+                transcript_lengths.append(len(rendered))
+            except Exception as exc:
+                errors.append(f"{cid}: judge transcript budget failure: {exc}")
+
         for assistant_index, turn in enumerate(assistants):
             tid = int(turn.get("turn_id", -1))
             generation = turn.get("generation_provenance", {}) or {}
@@ -192,6 +214,13 @@ def main() -> None:
             f"p95={percentile(completion_tokens, 0.95):.1f} "
             f"max={max(completion_tokens)} "
             f"mean={statistics.mean(completion_tokens):.1f}"
+        )
+    if args.max_transcript_chars and transcript_lengths:
+        print(
+            "Full observable transcript chars: "
+            f"max={max(transcript_lengths)} "
+            f"p95={percentile(transcript_lengths, 0.95):.1f} "
+            f"budget={args.max_transcript_chars}"
         )
     print(
         f"Near-cap assistant turns (>= {args.near_cap_fraction:.0%} of max_tokens): "
