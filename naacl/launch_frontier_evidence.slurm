@@ -73,6 +73,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
   PIDS+=($!)
   CUDA_VISIBLE_DEVICES=$jgpu python3 -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" --port "$jport" --dtype bfloat16 \
+    --tokenizer-mode mistral --config-format mistral --load-format mistral \
     --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization 0.90 \
     --download-dir "$HF_HOME/hub" --no-enable-log-requests --disable-log-stats \
     2>"$LOG_DIR/front_ev_judge${i}_${SLURM_JOB_ID:-$$}.log" &
