@@ -62,7 +62,8 @@ python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
   --expected-records "$EXPECTED_RECORDS" \
   --expected-model "$TARGET_MODEL" \
-  --expected-max-tokens "$MAX_TOKENS"
+  --expected-max-tokens "$MAX_TOKENS" \
+  --max-transcript-chars "$JUDGE_MAX_CONTEXT_CHARS"
 
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL" "$JUDGE_MODEL"
