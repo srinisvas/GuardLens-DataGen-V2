@@ -29,6 +29,10 @@ CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
 SOURCE_PREFLIGHT_MODE="${SOURCE_PREFLIGHT_MODE:-auto}"  # auto|strict|schema|skip
+SOURCE_EXPECTED_RECORDS="${SOURCE_EXPECTED_RECORDS:-}"
+SOURCE_EXPECTED_PAIRS="${SOURCE_EXPECTED_PAIRS:-}"
+SOURCE_EXPECTED_STANDALONE="${SOURCE_EXPECTED_STANDALONE:-}"
+SOURCE_EXPECTED_SCENARIOS="${SOURCE_EXPECTED_SCENARIOS:-}"
 
 if [[ "$N_SHARDS" -lt 1 || "$N_SHARDS" -gt 2 ]]; then
   echo "ERROR: this job requests 2 GPUs; require 1 <= N_SHARDS <= 2"
@@ -50,17 +54,47 @@ cd "$PROJECT_DIR"
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL"
 
+run_strict_source_audit() {
+  local records="$1"
+  local expected_records="$SOURCE_EXPECTED_RECORDS"
+  local expected_pairs="$SOURCE_EXPECTED_PAIRS"
+  local expected_standalone="$SOURCE_EXPECTED_STANDALONE"
+  local expected_scenarios="$SOURCE_EXPECTED_SCENARIOS"
+
+  if [[ -z "$expected_records" ]]; then
+    if [[ "$records" -eq 1500 ]]; then
+      expected_records=1500; expected_pairs=600; expected_standalone=300; expected_scenarios=300
+    elif [[ "$records" -eq 3000 ]]; then
+      expected_records=3000; expected_pairs=1200; expected_standalone=600; expected_scenarios=600
+    else
+      echo "ERROR: strict source audit does not know construction counts for $records records."
+      echo "Set SOURCE_EXPECTED_RECORDS/PAIRS/STANDALONE/SCENARIOS explicitly."
+      exit 2
+    fi
+  fi
+
+  : "${expected_pairs:?SOURCE_EXPECTED_PAIRS required for explicit strict audit}"
+  : "${expected_standalone:?SOURCE_EXPECTED_STANDALONE required for explicit strict audit}"
+  : "${expected_scenarios:?SOURCE_EXPECTED_SCENARIOS required for explicit strict audit}"
+  python3 naacl/audit_frontier_source.py \
+    --input "$INPUT_FILE" \
+    --expected-records "$expected_records" \
+    --expected-pairs "$expected_pairs" \
+    --expected-standalone "$expected_standalone" \
+    --expected-scenarios "$expected_scenarios"
+}
+
+RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
 case "$SOURCE_PREFLIGHT_MODE" in
   strict)
-    python3 naacl/audit_frontier_source.py --input "$INPUT_FILE"
+    run_strict_source_audit "$RECORDS"
     ;;
   schema)
     python3 naacl/audit_frontier_source.py --input "$INPUT_FILE" --schema-only
     ;;
   auto)
-    RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
-    if [[ "$RECORDS" -eq 1500 ]]; then
-      python3 naacl/audit_frontier_source.py --input "$INPUT_FILE"
+    if [[ "$RECORDS" -eq 1500 || "$RECORDS" -eq 3000 ]]; then
+      run_strict_source_audit "$RECORDS"
     else
       python3 naacl/audit_frontier_source.py --input "$INPUT_FILE" --schema-only
     fi
