@@ -129,4 +129,12 @@ python3 naacl/merge_stage_shards.py \
   --num-shards "$N_SHARDS" \
   --shard-pattern "${OUTPUT_FILE%.jsonl}.shard{i}.jsonl"
 
-echo "Frontier validation complete: $OUTPUT_FILE"
+python3 naacl/audit_frontier_validation_protocol.py \
+  --input "$OUTPUT_FILE" \
+  --expected-records "$EXPECTED_RECORDS" \
+  --target-model "$TARGET_MODEL" \
+  --judge-model "$JUDGE_MODEL" \
+  --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
+  --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS"
+
+echo "Frontier validation complete and protocol-audited: $OUTPUT_FILE"
