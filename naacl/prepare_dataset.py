@@ -145,6 +145,61 @@ def sanitize_attribution_targets(record: Dict) -> Dict:
         r["pivot_kind"] = "distributed"
     return r
 
+def match_benign_to_malicious_lengths(
+    rng: random.Random,
+    benign_records: List[Dict],
+    malicious_lengths: List[int],
+) -> List[Dict]:
+    """
+    Select one distinct benign record for every malicious target length.
+
+    Matching is performed longest-target-first. For each target, choose the
+    shortest remaining benign conversation capable of supporting that length.
+    Ties are deterministically randomized by seed.
+
+    The resulting benign user-turn histogram exactly matches the malicious
+    histogram.
+    """
+    available = [
+        (n_user_turns(record), rng.random(), record)
+        for record in benign_records
+    ]
+    available.sort(key=lambda x: (x[0], x[1]))
+
+    matched = []
+
+    for target in sorted(malicious_lengths, reverse=True):
+        selected_idx = None
+
+        for idx, (benign_len, _, _) in enumerate(available):
+            if benign_len >= target:
+                selected_idx = idx
+                break
+
+        if selected_idx is None:
+            raise RuntimeError(
+                f"Cannot length-match malicious target of {target} user turns "
+                f"with remaining benign pool"
+            )
+
+        original_len, _, record = available.pop(selected_idx)
+        trimmed = truncate_to_user_turns(record, target)
+
+        final_len = n_user_turns(trimmed)
+        if final_len != target:
+            raise RuntimeError(
+                f"Length matching failed: target={target}, final={final_len}, "
+                f"original={original_len}, "
+                f"conversation_id={record.get('conversation_id')}"
+            )
+
+        trimmed["benign_status"] = "clean_benign_exact_length_matched"
+        trimmed["source_dataset"] = record.get(
+            "source_dataset", "separate_benign_pool"
+        )
+        matched.append(trimmed)
+
+    return matched
 
 def sanitize_benign_targets(record: Dict) -> Dict:
     r = copy.deepcopy(record)
@@ -275,14 +330,14 @@ def main() -> None:
         raise RuntimeError("No validated benign records were found")
 
     malicious_lengths = [n_user_turns(r) for r in malicious]
+
     rng = random.Random(args.seed)
-    benign_matched = []
-    for record in benign_original:
-        target = choose_target_length(rng, malicious_lengths, n_user_turns(record))
-        matched = truncate_to_user_turns(record, target)
-        matched["benign_status"] = "clean_benign_length_matched"
-        matched["source_dataset"] = matched.get("source_dataset", "separate_benign_pool")
-        benign_matched.append(matched)
+
+    benign_matched = match_benign_to_malicious_lengths(
+        rng,
+        benign_original,
+        malicious_lengths,
+    )
 
     combined = malicious + benign_matched
     rng.shuffle(combined)
