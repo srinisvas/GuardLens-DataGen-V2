@@ -17,7 +17,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import requests
 
-DEFAULT_TARGET_MAX_TOKENS = 1280
+DEFAULT_TARGET_MAX_TOKENS = 2048
 DEFAULT_TARGET_MAX_MODEL_LEN = 16384
 DEFAULT_JUDGE_MAX_CONTEXT_CHARS = 40000
 JUDGE_MAX_TOKENS = 180
@@ -138,7 +138,7 @@ class VLLMClient:
             f"{self.base_url}/v1/chat/completions",
             headers=self.headers,
             json=payload,
-            timeout=240,
+            timeout=600,
         )
         response.raise_for_status()
         return parse_chat_completion_data(
