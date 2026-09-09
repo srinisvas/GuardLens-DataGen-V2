@@ -4,8 +4,8 @@
 Primary Dataset B is pair-complete by construction: a paired malicious/benign
 twin enters only when both sides pass their respective gates. Standalone hard
 benign records are retained as a separately validated stress set rather than
-entering primary training, preventing the five-turn hard-negative slice from
-becoming a label-length shortcut.
+entering primary training, preventing their distinct construction distribution
+from becoming a label/length shortcut.
 """
 from __future__ import annotations
 
@@ -28,6 +28,13 @@ LOSS_WEIGHTS = {
 }
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
+VALIDATION_PROTOCOL = "frontier_context_judge_v3"
+EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v4"
+COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
+CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
+EXPECTED_TARGET_MAX_TOKENS = 640
+EXPECTED_JUDGE_MAX_CONTEXT_CHARS = 40000
 
 
 def iter_spans(record: Dict):
@@ -50,30 +57,73 @@ def assert_expected_provenance(
     expected_judge: str,
     require_evidence: bool,
 ) -> None:
+    """Require the exact reviewed B1→B4 protocol chain for every prepared record."""
     cid = str(record.get("conversation_id", ""))
     rollout = record.get("rollout_provenance", {}) or {}
     validation = record.get("frontier_behavioral_validation", {}) or {}
+    analysis = record.get("frontier_evidence_analysis", {}) or {}
+
+    if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+        raise ValueError(f"{cid}: unsupported rollout protocol {rollout.get('protocol')!r}")
+    if rollout.get("completion_contract") != COMPLETION_CONTRACT:
+        raise ValueError(f"{cid}: rollout completion contract mismatch")
     if rollout.get("target_model") != expected_target:
         raise ValueError(
             f"{cid}: rollout target {rollout.get('target_model')!r} != expected {expected_target!r}"
+        )
+    if int(rollout.get("max_tokens", -1)) != EXPECTED_TARGET_MAX_TOKENS:
+        raise ValueError(
+            f"{cid}: rollout max_tokens={rollout.get('max_tokens')!r} != "
+            f"expected {EXPECTED_TARGET_MAX_TOKENS}"
+        )
+    if rollout.get("authoring_metadata_exposed_to_target") is not False:
+        raise ValueError(f"{cid}: target metadata-exposure provenance is not fail-closed")
+
+    if validation.get("protocol") != VALIDATION_PROTOCOL:
+        raise ValueError(
+            f"{cid}: unsupported validation protocol {validation.get('protocol')!r}"
         )
     if validation.get("judge_model") != expected_judge:
         raise ValueError(
             f"{cid}: validation judge {validation.get('judge_model')!r} != expected {expected_judge!r}"
         )
+    if int(validation.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
+        raise ValueError(
+            f"{cid}: judge context budget={validation.get('judge_max_context_chars')!r} != "
+            f"expected {EXPECTED_JUDGE_MAX_CONTEXT_CHARS}"
+        )
+    if validation.get("context_policy") != CONTEXT_POLICY:
+        raise ValueError(f"{cid}: validation context policy mismatch")
     if validation.get("authoring_metadata_exposed_to_judge") is not False:
         raise ValueError(f"{cid}: judge metadata-exposure provenance is not fail-closed")
-    if rollout.get("authoring_metadata_exposed_to_target") is not False:
-        raise ValueError(f"{cid}: target metadata-exposure provenance is not fail-closed")
+
+    # B4 writes an evidence envelope for every record, including benign records
+    # for which the scientific status is not_applicable. Requiring that envelope
+    # prevents stale pre-B4 or pre-v3 benign records from entering preparation.
+    if analysis.get("protocol") != EVIDENCE_PROTOCOL:
+        raise ValueError(f"{cid}: unsupported evidence protocol {analysis.get('protocol')!r}")
+    if analysis.get("target_model") != expected_target:
+        raise ValueError(f"{cid}: evidence target differs from primary target")
+    if analysis.get("judge_model") != expected_judge:
+        raise ValueError(f"{cid}: evidence judge differs from primary judge")
+    if int(analysis.get("max_tokens", -1)) != EXPECTED_TARGET_MAX_TOKENS:
+        raise ValueError(f"{cid}: evidence target token cap mismatch")
+    if int(analysis.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
+        raise ValueError(f"{cid}: evidence judge context budget mismatch")
+    if analysis.get("context_policy") != CONTEXT_POLICY:
+        raise ValueError(f"{cid}: evidence context policy mismatch")
 
     if require_evidence:
-        analysis = record.get("frontier_evidence_analysis", {}) or {}
-        if analysis.get("target_model") != expected_target:
-            raise ValueError(f"{cid}: evidence target differs from primary target")
-        if analysis.get("judge_model") != expected_judge:
-            raise ValueError(f"{cid}: evidence judge differs from primary judge")
+        if analysis.get("status") != "complete":
+            raise ValueError(f"{cid}: malicious evidence analysis is not complete")
         if analysis.get("baseline_reproduced_stored_rollout") is not True:
             raise ValueError(f"{cid}: paired baseline did not reproduce stored rollout")
+    else:
+        if analysis.get("status") != "not_applicable":
+            raise ValueError(
+                f"{cid}: benign evidence envelope status={analysis.get('status')!r}, "
+                "expected not_applicable"
+            )
 
 
 def sanitize_malicious(
@@ -350,13 +400,19 @@ def main() -> None:
         "method": {
             "authoring_intent_is_ground_truth": False,
             "malicious_gate": "validated Qwen rollout AND reproducible fresh paired evidence baseline remains unsafe",
-            "benign_gate": "independent context-aware Mistral judge validates safe Qwen trajectory",
+            "benign_gate": "independent full-prefix context-aware Mistral judge validates safe Qwen trajectory",
             "primary_pair_policy": "retain complete validated malicious/benign twins only",
             "standalone_hard_benign_policy": "validated standalones are evaluation-only stress records",
             "pivot_policy": "only counterfactually supported evidence turns populate pivot_turn_id",
             "span_policy": "only counterfactually supported spans receive positive attribution supervision",
             "expected_target_model": args.expected_target_model,
             "expected_judge_model": args.expected_judge_model,
+            "rollout_protocol": ROLLOUT_PROTOCOL,
+            "validation_protocol": VALIDATION_PROTOCOL,
+            "evidence_protocol": EVIDENCE_PROTOCOL,
+            "target_max_tokens": EXPECTED_TARGET_MAX_TOKENS,
+            "judge_max_context_chars": EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
+            "judge_context_policy": CONTEXT_POLICY,
         },
     }
     os.makedirs(os.path.dirname(args.stats_output) or ".", exist_ok=True)
