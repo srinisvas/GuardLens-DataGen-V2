@@ -24,8 +24,12 @@ from frontier_common import (
     judge_assistant_response,
     load_completed,
     load_jsonl,
-    stable_record_seed,
     write_jsonl,
+)
+from frontier_seed_policy import (
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
 )
 
 PROTOCOL = "frontier_context_judge_v3"
@@ -48,6 +52,7 @@ def validation_config(
         "protocol": PROTOCOL,
         "judge_model": judge_model,
         "base_seed": int(base_seed),
+        "seed_policy": SEED_POLICY,
         "unsafe_threshold": float(unsafe_threshold),
         "ambiguous_threshold": float(ambiguous_threshold),
         "min_confidence_threshold": float(min_confidence),
@@ -79,6 +84,8 @@ def assert_realized_rollout(record) -> None:
     rollout = record.get("rollout_provenance", {}) or {}
     if rollout.get("completion_contract") != COMPLETION_CONTRACT:
         raise RuntimeError(f"{cid}: rollout lacks the v2 completion contract")
+    if rollout.get("seed_policy") != SEED_POLICY:
+        raise RuntimeError(f"{cid}: rollout seed policy mismatch")
     if rollout.get("authoring_metadata_exposed_to_target") is not False:
         raise RuntimeError(f"{cid}: rollout target metadata-exposure marker is not false")
     rollout_max_tokens = rollout.get("max_tokens")
@@ -91,7 +98,17 @@ def assert_realized_rollout(record) -> None:
         or rollout_max_model_len <= 0
     ):
         raise RuntimeError(f"{cid}: rollout max_model_len provenance is missing/invalid")
+    base_seed = rollout.get("base_seed")
+    if isinstance(base_seed, bool) or not isinstance(base_seed, int):
+        raise RuntimeError(f"{cid}: rollout base_seed provenance is missing/invalid")
+    expected_record_seed = experiment_record_seed(base_seed, record)
+    expected_seed_key = experiment_seed_key(record)
+    if rollout.get("record_seed") != expected_record_seed:
+        raise RuntimeError(f"{cid}: rollout record_seed does not match locked seed policy")
+    if rollout.get("seed_key") != expected_seed_key:
+        raise RuntimeError(f"{cid}: rollout seed_key does not match locked seed policy")
 
+    assistant_index = 0
     for turn in turns:
         if str(turn.get("role", "")).lower() != "assistant":
             continue
@@ -123,6 +140,12 @@ def assert_realized_rollout(record) -> None:
             raise RuntimeError(
                 f"{cid}: assistant turn {tid} completion_tokens exceeds max_tokens"
             )
+        expected_turn_seed = expected_record_seed + 1009 * (assistant_index + 1)
+        if generation.get("seed") != expected_turn_seed:
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} seed differs from locked paired schedule"
+            )
+        assistant_index += 1
 
 
 def validate_record(
@@ -164,7 +187,10 @@ def validate_record(
         return r
 
     assert_realized_rollout(r)
-    record_seed = stable_record_seed(base_seed, cid)
+    rollout_provenance = r.get("rollout_provenance", {}) or {}
+    if int(rollout_provenance.get("base_seed", -1)) != int(base_seed):
+        raise RuntimeError(f"{cid}: B2 base seed differs from B1 rollout base seed")
+    record_seed = int(rollout_provenance["record_seed"])
     prefix = []
     trajectory = []
     last_user_turn_id = None
@@ -209,9 +235,7 @@ def validate_record(
         raise RuntimeError(f"{cid}: no assistant responses to validate")
 
     raw_unsafe = [x for x in trajectory if x["unsafe_score"] >= unsafe_threshold]
-    confident_unsafe = [
-        x for x in raw_unsafe if x["confidence"] >= min_confidence
-    ]
+    confident_unsafe = [x for x in raw_unsafe if x["confidence"] >= min_confidence]
     earliest_raw_unsafe = raw_unsafe[0]["user_turn_id"] if raw_unsafe else None
     earliest_unsafe = confident_unsafe[0]["user_turn_id"] if confident_unsafe else None
     max_risk_item = max(trajectory, key=lambda x: x["unsafe_score"])
@@ -245,11 +269,11 @@ def validate_record(
 
     r["validation_status"] = status
     r["judge_confidence"] = round(max_risk_confidence, 3)
-    rollout_provenance = r.get("rollout_provenance", {}) or {}
     r["frontier_behavioral_validation"] = {
         "status": status,
         **cfg,
         "target_model": rollout_provenance.get("target_model"),
+        "record_seed": record_seed,
         "input_fingerprint": input_fp,
         "config_fingerprint": config_fingerprint(cfg),
         "max_unsafe_score": round(max_unsafe, 3),
@@ -276,11 +300,14 @@ def cached_validation_is_reusable(cached, input_record, cfg) -> bool:
     if not cached or cached.get("validation_status") not in TERMINAL_STATUSES:
         return False
     validation = cached.get("frontier_behavioral_validation", {}) or {}
+    rollout = input_record.get("rollout_provenance", {}) or {}
     return (
         validation.get("input_fingerprint") == json_fingerprint(input_record)
         and validation.get("config_fingerprint") == config_fingerprint(cfg)
         and validation.get("judge_model") == cfg["judge_model"]
         and validation.get("judge_max_model_len") == cfg["judge_max_model_len"]
+        and validation.get("seed_policy") == SEED_POLICY
+        and validation.get("record_seed") == rollout.get("record_seed")
     )
 
 
