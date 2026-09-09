@@ -5,8 +5,8 @@ Selection is outcome-blind and occurs from the source corpus. Complete scenario
 families are indivisible. Paired scenario families and standalone hard-benign
 families are sampled separately so the robustness subset preserves the source
 construction mix. Within each construction type, a deterministic greedy allocator
-minimizes residual error over the full scenario-feature distribution rather than
-scoring only features present in the candidate group.
+minimizes residual error over the full scenario-feature distribution, including
+author corpus for multi-author sources.
 """
 from __future__ import annotations
 
@@ -17,6 +17,16 @@ from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
 
 from frontier_common import load_jsonl, write_jsonl
+
+
+def author_corpus(record: Dict) -> str:
+    metadata = record.get("metadata", {}) or {}
+    return str(
+        metadata.get("corpus_version")
+        or metadata.get("generator")
+        or record.get("seed_source")
+        or "unknown_source"
+    )
 
 
 def group_kind(group: List[Dict]) -> str:
@@ -33,6 +43,7 @@ def feature_counter(group: List[Dict]) -> Counter:
     for r in group:
         metadata = r.get("metadata", {}) or {}
         intended = r.get("intended_structure", {}) or {}
+        c[("author_corpus", author_corpus(r))] += 1
         c[("label", str(r.get("label")))] += 1
         c[("domain", str(r.get("target_domain", "unknown")))] += 1
         c[("difficulty", str(r.get("difficulty", "unknown")))] += 1
@@ -94,6 +105,7 @@ def select_balanced_groups(
 def summarize(records: List[Dict]) -> Dict:
     return {
         "records": len(records),
+        "author_corpora": dict(Counter(author_corpus(r) for r in records)),
         "labels": dict(Counter(str(r.get("label")) for r in records)),
         "difficulty": dict(Counter(str(r.get("difficulty")) for r in records)),
         "domains": dict(Counter(str(r.get("target_domain")) for r in records)),
@@ -175,8 +187,8 @@ def main() -> None:
         "selected_distribution": summarize(selected),
         "policy": (
             "source-only outcome-blind selection; complete scenario families; paired and standalone "
-            "families sampled separately; full normalized residual minimized across domain, difficulty, "
-            "trajectory family, pair hardness, slice role, mechanism family, style, and label"
+            "families sampled separately; full normalized residual minimized across author corpus, domain, "
+            "difficulty, trajectory family, pair hardness, slice role, mechanism family, style, and label"
         ),
         "target_model": "google/gemma-3-27b-it",
         "seed": args.seed,
