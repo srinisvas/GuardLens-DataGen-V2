@@ -28,6 +28,7 @@ from frontier_common import (
 
 PROTOCOL = "frontier_context_judge_v2"
 TERMINAL_STATUSES = {"validated", "rejected", "ambiguous"}
+COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
 def validation_config(
@@ -66,6 +67,41 @@ def assert_realized_rollout(record) -> None:
     assistants = sum(str(t.get("role", "")).lower() == "assistant" for t in turns)
     if users != assistants or users != int(record.get("user_turn_count", -1)):
         raise RuntimeError(f"{cid}: realized user/assistant counts are inconsistent")
+
+    rollout = record.get("rollout_provenance", {}) or {}
+    if rollout.get("completion_contract") != COMPLETION_CONTRACT:
+        raise RuntimeError(f"{cid}: rollout lacks the v2 completion contract")
+    rollout_max_tokens = rollout.get("max_tokens")
+    if not isinstance(rollout_max_tokens, int) or isinstance(rollout_max_tokens, bool):
+        raise RuntimeError(f"{cid}: rollout max_tokens provenance is missing/invalid")
+
+    for turn in turns:
+        if str(turn.get("role", "")).lower() != "assistant":
+            continue
+        tid = int(turn.get("turn_id", -1))
+        generation = turn.get("generation_provenance", {}) or {}
+        if generation.get("finish_reason") != "stop":
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} is not naturally complete: "
+                f"finish_reason={generation.get('finish_reason')!r}"
+            )
+        completion_tokens = generation.get("completion_tokens")
+        if (
+            isinstance(completion_tokens, bool)
+            or not isinstance(completion_tokens, int)
+            or completion_tokens <= 0
+        ):
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} missing/invalid completion_tokens"
+            )
+        if generation.get("max_tokens") != rollout_max_tokens:
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} max_tokens differs from rollout protocol"
+            )
+        if completion_tokens > rollout_max_tokens:
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} completion_tokens exceeds max_tokens"
+            )
 
 
 def validate_record(
