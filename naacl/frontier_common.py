@@ -50,6 +50,58 @@ REQUIRED_JUDGE_KEYS = {
 }
 
 
+def parse_chat_completion_data(
+    data: Dict,
+    *,
+    require_stop: bool = True,
+    require_usage: bool = False,
+) -> Dict:
+    """Parse a non-streaming OpenAI-compatible chat completion fail-closed.
+
+    Target generations used as scientific trajectories must terminate naturally.
+    ``finish_reason=length`` is therefore never silently treated as a complete
+    answer. Rollout code can request ``require_stop=False`` so it can persist the
+    partial response and diagnostic metadata before marking the record incomplete.
+    """
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError("vLLM returned no choices")
+    choice = choices[0]
+    content = choice.get("message", {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("vLLM returned an empty response")
+
+    finish_reason = choice.get("finish_reason")
+    if not isinstance(finish_reason, str) or not finish_reason:
+        raise RuntimeError("vLLM response missing finish_reason")
+
+    usage = data.get("usage") or {}
+    completion_tokens = usage.get("completion_tokens")
+    if completion_tokens is not None:
+        if isinstance(completion_tokens, bool) or not isinstance(completion_tokens, int):
+            raise RuntimeError(
+                f"vLLM completion_tokens is not an integer: {completion_tokens!r}"
+            )
+        if completion_tokens < 0:
+            raise RuntimeError(
+                f"vLLM completion_tokens is negative: {completion_tokens!r}"
+            )
+    elif require_usage:
+        raise RuntimeError("vLLM response missing usage.completion_tokens")
+
+    if require_stop and finish_reason != "stop":
+        raise RuntimeError(
+            f"vLLM generation did not terminate naturally: "
+            f"finish_reason={finish_reason!r}, completion_tokens={completion_tokens!r}"
+        )
+
+    return {
+        "content": content.strip(),
+        "finish_reason": finish_reason,
+        "completion_tokens": completion_tokens,
+    }
+
+
 class VLLMClient:
     def __init__(self, model: str, base_url: str, api_key: str = "EMPTY"):
         self.model = model
@@ -59,14 +111,16 @@ class VLLMClient:
             "Authorization": f"Bearer {api_key}",
         }
 
-    def chat(
+    def chat_result(
         self,
         messages: Sequence[Dict],
         *,
         seed: int,
         temperature: float = 0.0,
         max_tokens: int = 320,
-    ) -> str:
+        require_stop: bool = True,
+        require_usage: bool = False,
+    ) -> Dict:
         payload = {
             "model": self.model,
             "messages": list(messages),
@@ -82,14 +136,29 @@ class VLLMClient:
             timeout=240,
         )
         response.raise_for_status()
-        data = response.json()
-        choices = data.get("choices") or []
-        if not choices:
-            raise RuntimeError("vLLM returned no choices")
-        content = choices[0].get("message", {}).get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("vLLM returned an empty response")
-        return content.strip()
+        return parse_chat_completion_data(
+            response.json(),
+            require_stop=require_stop,
+            require_usage=require_usage,
+        )
+
+    def chat(
+        self,
+        messages: Sequence[Dict],
+        *,
+        seed: int,
+        temperature: float = 0.0,
+        max_tokens: int = 320,
+    ) -> str:
+        result = self.chat_result(
+            messages,
+            seed=seed,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            require_stop=True,
+            require_usage=False,
+        )
+        return result["content"]
 
     def health_check(self) -> bool:
         for endpoint in ("/health", "/v1/models"):
