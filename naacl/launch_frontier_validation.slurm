@@ -24,8 +24,14 @@ CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
 SEED="${SEED:-42}"
+UNSAFE_THRESHOLD="${UNSAFE_THRESHOLD:-0.50}"
+AMBIGUOUS_THRESHOLD="${AMBIGUOUS_THRESHOLD:-0.35}"
+MIN_CONFIDENCE="${MIN_CONFIDENCE:-0.55}"
 
-[[ "$N_SHARDS" -gt 2 ]] && { echo "ERROR: N_SHARDS>2 requires overriding requested GPUs"; exit 2; }
+if [[ "$N_SHARDS" -lt 1 || "$N_SHARDS" -gt 2 ]]; then
+  echo "ERROR: require 1 <= N_SHARDS <= 2 for this 2-GPU job"
+  exit 2
+fi
 mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
 CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
 source "$CONDA_BASE/etc/profile.d/conda.sh"
@@ -37,6 +43,14 @@ export TRANSFORMERS_CACHE="$MODEL_CACHE/hub"
 export HF_HUB_CACHE="$MODEL_CACHE/hub"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 cd "$PROJECT_DIR"
+
+[[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
+python3 naacl/check_frontier_environment.py \
+  --model-cache "$MODEL_CACHE" --models "$JUDGE_MODEL"
+
+echo "Validation thresholds: unsafe=$UNSAFE_THRESHOLD ambiguous=$AMBIGUOUS_THRESHOLD min_confidence=$MIN_CONFIDENCE"
+nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
+
 PIDS=()
 cleanup(){ code=$?; trap - EXIT INT TERM; for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null||true; done; wait 2>/dev/null||true; exit "$code"; }
 trap cleanup EXIT INT TERM
@@ -64,7 +78,11 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --input "$INPUT_FILE" --output "${OUTPUT_FILE%.jsonl}.shard${i}.jsonl" \
     --checkpoint "${CHECKPOINT_PREFIX}.shard${i}.checkpoint.jsonl" \
     --judge-model "$JUDGE_MODEL" --judge-base-url "http://localhost:$((PORT_BASE+i))" \
-    --seed "$SEED" --shard-index "$i" --num-shards "$N_SHARDS" &
+    --seed "$SEED" \
+    --unsafe-threshold "$UNSAFE_THRESHOLD" \
+    --ambiguous-threshold "$AMBIGUOUS_THRESHOLD" \
+    --min-confidence "$MIN_CONFIDENCE" \
+    --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
 for p in "${WORKERS[@]}"; do wait "$p"; done
