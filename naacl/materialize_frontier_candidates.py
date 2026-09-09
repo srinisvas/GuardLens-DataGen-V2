@@ -17,6 +17,8 @@ from frontier_common import load_jsonl, write_jsonl
 
 MIN_SPAN_CHARS = 18
 MIN_SPAN_WORDS = 4
+PROTOCOL = "frontier_candidate_materialization_v2"
+CANDIDATE_LABELS = {"EVIDENCE_CANDIDATE", "CONTROL_CANDIDATE"}
 
 
 def user_turns(record: Dict) -> List[Dict]:
@@ -35,7 +37,7 @@ def _trimmed_span(text: str, start: int, end: int):
     return start, end
 
 
-def extract_candidate_spans(text: str, max_spans: int = 2) -> List[Tuple[int, int]]:
+def _raw_clause_spans(text: str) -> List[Tuple[int, int]]:
     candidates: List[Tuple[int, int]] = []
     for match in re.finditer(r"[^,;:!?\.]+(?:[,;:!?\.]|$)", text):
         span = _trimmed_span(text, match.start(), match.end())
@@ -52,8 +54,58 @@ def extract_candidate_spans(text: str, max_spans: int = 2) -> List[Tuple[int, in
         span = _trimmed_span(text, words[start_word].start(), words[-1].end())
         if span:
             candidates.append(span)
-    unique = sorted(set(candidates), key=lambda x: (-x[1], -(x[1] - x[0])))
-    return unique[:max_spans]
+
+    # Exact offset de-duplication, preserving source order.
+    seen = set()
+    ordered = []
+    for span in sorted(candidates):
+        if span not in seen:
+            seen.add(span)
+            ordered.append(span)
+    return ordered
+
+
+def extract_candidate_spans(text: str, max_spans: int = 2) -> List[Tuple[int, int]]:
+    """Choose position-diverse deterministic clauses rather than only late text.
+
+    With the default two candidates, test the final request-bearing clause plus
+    the longest earlier clause, which often carries contextual qualification.
+    This avoids a systematic last-clause-only shortcut while keeping intervention
+    count bounded.
+    """
+    if max_spans <= 0:
+        return []
+    candidates = _raw_clause_spans(text)
+    if len(candidates) <= max_spans:
+        return candidates
+    if max_spans == 1:
+        return [candidates[-1]]
+
+    selected = [candidates[-1]]
+    prior = candidates[:-1]
+    longest_prior = max(
+        prior,
+        key=lambda x: (x[1] - x[0], -x[0]),
+    )
+    selected.append(longest_prior)
+
+    if max_spans > 2:
+        remaining = [x for x in candidates if x not in selected]
+        # Fill additional slots by maximizing distance from already-selected
+        # clause centers, yielding deterministic positional coverage.
+        while remaining and len(selected) < max_spans:
+            centers = [(a + b) / 2 for a, b in selected]
+            chosen = max(
+                remaining,
+                key=lambda x: (
+                    min(abs((x[0] + x[1]) / 2 - c) for c in centers),
+                    x[1] - x[0],
+                    -x[0],
+                ),
+            )
+            selected.append(chosen)
+            remaining.remove(chosen)
+    return sorted(selected)
 
 
 def candidate_turn_ids(record: Dict, max_turns: int = 4):
@@ -65,6 +117,8 @@ def candidate_turn_ids(record: Dict, max_turns: int = 4):
     if observed_anchor is None:
         return [], {}
     observed_anchor = int(observed_anchor)
+    if observed_anchor not in valid_ids:
+        raise RuntimeError("observed unsafe anchor is not a realized user turn")
     origins = {observed_anchor: "observed_unsafe_anchor"}
     ordered = [observed_anchor]
 
@@ -87,13 +141,28 @@ def candidate_turn_ids(record: Dict, max_turns: int = 4):
     return ordered[:max_turns], origins
 
 
+def _remove_old_candidates(turn: Dict) -> None:
+    turn["span_annotations"] = [
+        s for s in turn.get("span_annotations", [])
+        if s.get("label") not in CANDIDATE_LABELS
+    ]
+
+
 def materialize_record(record: Dict, *, max_turn_candidates: int, spans_per_turn: int, controls: int) -> Dict:
     r = copy.deepcopy(record)
+    for turn in r.get("turns", []):
+        _remove_old_candidates(turn)
+
     if r.get("label") != 1 or r.get("validation_status") != "validated":
-        r["candidate_materialization"] = {"status": "not_applicable"}
+        r["candidate_materialization"] = {
+            "status": "not_applicable",
+            "protocol": PROTOCOL,
+        }
         return r
 
     turn_ids, origins = candidate_turn_ids(r, max_turn_candidates)
+    if not turn_ids:
+        raise RuntimeError("validated malicious record has no observed unsafe anchor")
     turn_map = {int(t.get("turn_id", -1)): t for t in user_turns(r)}
     span_count = 0
     for tid in turn_ids:
@@ -122,11 +191,18 @@ def materialize_record(record: Dict, *, max_turn_candidates: int, spans_per_turn
     control_turn_ids = []
     if turn_ids:
         anchor = turn_ids[0]
-        pool = [
-            int(t.get("turn_id", -1))
-            for t in user_turns(r)
-            if int(t.get("turn_id", -1)) < anchor and int(t.get("turn_id", -1)) not in turn_ids
-        ]
+        # Closest preceding user turns that were not selected as evidence
+        # candidates provide stringent controls. They are never treated as
+        # incidental unless paired replay confirms a sub-tolerance effect.
+        pool = sorted(
+            (
+                int(t.get("turn_id", -1))
+                for t in user_turns(r)
+                if int(t.get("turn_id", -1)) < anchor
+                and int(t.get("turn_id", -1)) not in turn_ids
+            ),
+            reverse=True,
+        )
         for tid in pool[:controls]:
             turn = turn_map[tid]
             text = str(turn.get("text", ""))
@@ -152,11 +228,12 @@ def materialize_record(record: Dict, *, max_turn_candidates: int, spans_per_turn
 
     r["candidate_materialization"] = {
         "status": "complete",
-        "protocol": "frontier_candidate_materialization_v1",
+        "protocol": PROTOCOL,
         "candidate_turn_ids": turn_ids,
         "candidate_turn_origins": {str(k): v for k, v in origins.items() if k in turn_ids},
         "control_turn_ids": control_turn_ids,
         "evidence_candidate_spans": span_count,
+        "span_selection_policy": "final request-bearing clause plus position-diverse contextual clause(s)",
         "author_intended_pivots_used_as_ground_truth": False,
         "author_intended_pivots_used_for_candidate_proposal": True,
     }
@@ -173,8 +250,17 @@ def main() -> None:
     parser.add_argument("--spans-per-turn", type=int, default=2)
     parser.add_argument("--controls", type=int, default=2)
     args = parser.parse_args()
+    if args.max_turn_candidates <= 0:
+        raise ValueError("max-turn-candidates must be positive")
+    if args.spans_per_turn <= 0:
+        raise ValueError("spans-per-turn must be positive")
+    if args.controls < 0:
+        raise ValueError("controls must be nonnegative")
 
     records = load_jsonl(args.input)
+    ids = [str(r.get("conversation_id", "")) for r in records]
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("input contains duplicate conversation_id values")
     output = [
         materialize_record(
             r,
