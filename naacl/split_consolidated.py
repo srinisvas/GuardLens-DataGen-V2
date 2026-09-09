@@ -2,8 +2,9 @@
 """Leakage-safe train/dev/test split for merged GuardLens corpora.
 
 Primary grouping uses ``metadata.consolidated_split_group``. Frontier records are
-therefore grouped by scenario_family, keeping all twins and scenario variants in
-a single partition. Legacy records retain pair linkage when available.
+therefore grouped by complete scenario_family; legacy records retain pair linkage
+when available. Allocation softly balances class/source and the v3 experimental
+axes without ever breaking a group.
 """
 from __future__ import annotations
 
@@ -31,11 +32,28 @@ def group_records(records: List[Dict]) -> Dict[str, List[Dict]]:
 
 
 def group_signature(group: List[Dict]) -> Counter:
+    """Return soft-balancing features for one indivisible split group."""
     c = Counter()
     for r in group:
-        c[("label", str(r.get("label")))] += 1
-        c[("source", str(r.get("corpus_source")))] += 1
-        c[("difficulty", str(r.get("difficulty", "unknown")))] += 1
+        source = str(r.get("corpus_source", "unknown"))
+        label = str(r.get("label"))
+        difficulty = str(r.get("difficulty", "unknown"))
+        c[("label", label)] += 1
+        c[("source", source)] += 1
+        c[("source_label", source, label)] += 1
+        c[("source_difficulty", source, difficulty)] += 1
+
+        if source == "frontier_authored_v3":
+            metadata = r.get("metadata", {}) or {}
+            intended = r.get("intended_structure", {}) or {}
+            c[("frontier_domain", str(r.get("target_domain", "unknown")))] += 1
+            c[("frontier_slice_role", str(metadata.get("slice_role", "unknown")))] += 1
+            c[("frontier_pair_hardness", str(intended.get("pair_hardness", "none")))] += 1
+            c[("frontier_trajectory_family", str(intended.get("trajectory_family", "unknown")))] += 1
+            c[("frontier_mechanism_family", str(metadata.get("mechanism_family", "unknown")))] += 1
+            c[("frontier_style", str(r.get("style", "unknown")))] += 1
+        else:
+            c[("legacy_family", str(r.get("family", "unknown")))] += 1
     return c
 
 
@@ -65,8 +83,6 @@ def split_groups(groups: Dict[str, List[Dict]], fractions: Dict[str, float], see
         best_split = None
         best_score = None
         for split_name in SPLITS:
-            # Fill-ratio minimization remains stable with unequal target
-            # fractions. Signature fill is a soft secondary balance constraint.
             total_fill = (counts[split_name] + len(group)) / max(target_total[split_name], 1.0)
             signature_fills = []
             for key, amount in gsig.items():
@@ -77,7 +93,10 @@ def split_groups(groups: Dict[str, List[Dict]], fractions: Dict[str, float], see
                 sum(signature_fills) / len(signature_fills)
                 if signature_fills else total_fill
             )
-            score = 0.80 * total_fill + 0.20 * signature_fill + rng.random() * 1e-9
+            # Group-size ratio drives the allocation; signature balance is a
+            # meaningful but secondary constraint. Tiny seeded noise resolves
+            # otherwise exact ties reproducibly.
+            score = 0.72 * total_fill + 0.28 * signature_fill + rng.random() * 1e-9
             if best_score is None or score < best_score:
                 best_score = score
                 best_split = split_name
@@ -95,31 +114,87 @@ def split_groups(groups: Dict[str, List[Dict]], fractions: Dict[str, float], see
 def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
     owner = {}
     ids = set()
+    pair_owner = {}
+    scenario_owner = {}
     for split_name, records in splits.items():
         for r in records:
             cid = str(r.get("conversation_id", ""))
             if cid in ids:
                 raise RuntimeError(f"duplicate conversation_id across split material: {cid}")
             ids.add(cid)
-            group = str((r.get("metadata", {}) or {}).get("consolidated_split_group", ""))
+            metadata = r.get("metadata", {}) or {}
+            group = str(metadata.get("consolidated_split_group", ""))
             previous = owner.setdefault(group, split_name)
             if previous != split_name:
                 raise RuntimeError(f"split leakage: group {group} appears in {previous} and {split_name}")
 
+            pair_id = r.get("pair_id")
+            if pair_id not in (None, ""):
+                key = (str(r.get("corpus_source")), str(pair_id))
+                previous = pair_owner.setdefault(key, split_name)
+                if previous != split_name:
+                    raise RuntimeError(f"pair leakage: {key} appears in {previous} and {split_name}")
+
+            if r.get("corpus_source") == "frontier_authored_v3":
+                scenario = str(metadata.get("scenario_family", ""))
+                previous = scenario_owner.setdefault(scenario, split_name)
+                if previous != split_name:
+                    raise RuntimeError(
+                        f"frontier scenario leakage: {scenario} appears in {previous} and {split_name}"
+                    )
+
 
 def describe(records: List[Dict]) -> Dict:
+    frontier = [r for r in records if r.get("corpus_source") == "frontier_authored_v3"]
     return {
         "n": len(records),
         "labels": dict(Counter(str(r.get("label")) for r in records)),
         "sources": dict(Counter(str(r.get("corpus_source")) for r in records)),
+        "source_label": dict(Counter(
+            f"{r.get('corpus_source')}|{r.get('label')}" for r in records
+        )),
         "difficulty": dict(Counter(str(r.get("difficulty", "unknown")) for r in records)),
         "supervision_tiers": dict(Counter(str(r.get("supervision_tier")) for r in records)),
         "groups": len({(r.get("metadata", {}) or {}).get("consolidated_split_group") for r in records}),
         "frontier_scenario_families": len({
-            (r.get("metadata", {}) or {}).get("scenario_family")
-            for r in records if r.get("corpus_source") == "frontier_authored_v3"
+            (r.get("metadata", {}) or {}).get("scenario_family") for r in frontier
+        }),
+        "frontier_domains": dict(Counter(str(r.get("target_domain", "unknown")) for r in frontier)),
+        "frontier_slice_roles": dict(Counter(
+            str((r.get("metadata", {}) or {}).get("slice_role", "unknown")) for r in frontier
+        )),
+        "frontier_pair_hardness": dict(Counter(
+            str((r.get("intended_structure", {}) or {}).get("pair_hardness", "none")) for r in frontier
+        )),
+        "frontier_trajectory_family": dict(Counter(
+            str((r.get("intended_structure", {}) or {}).get("trajectory_family", "unknown")) for r in frontier
+        )),
+        "frontier_mechanism_families": len({
+            (r.get("metadata", {}) or {}).get("mechanism_family") for r in frontier
         }),
     }
+
+
+def assert_size_tolerance(
+    splits: Dict[str, List[Dict]],
+    fractions: Dict[str, float],
+    max_group_size: int,
+) -> None:
+    total = sum(len(v) for v in splits.values())
+    if total == 0:
+        raise RuntimeError("cannot split an empty dataset")
+    # Indivisible groups limit exact ratio matching. Allow one maximum-size group
+    # plus 0.5 percentage points of numerical/greedy slack.
+    tolerance = max_group_size / total + 0.005
+    for name in SPLITS:
+        if not splits[name]:
+            raise RuntimeError(f"split {name} is empty")
+        actual = len(splits[name]) / total
+        if abs(actual - fractions[name]) > tolerance:
+            raise RuntimeError(
+                f"split {name} ratio {actual:.4f} differs from target "
+                f"{fractions[name]:.4f} beyond tolerance {tolerance:.4f}"
+            )
 
 
 def main() -> None:
@@ -135,12 +210,15 @@ def main() -> None:
     total_fraction = args.train_frac + args.dev_frac + args.test_frac
     if not math.isclose(total_fraction, 1.0, abs_tol=1e-8):
         raise ValueError("train/dev/test fractions must sum to 1")
+    if min(args.train_frac, args.dev_frac, args.test_frac) <= 0:
+        raise ValueError("all train/dev/test fractions must be positive")
     fractions = {"train": args.train_frac, "dev": args.dev_frac, "test": args.test_frac}
 
     records = load_jsonl(args.input)
     groups = group_records(records)
     splits = split_groups(groups, fractions, args.seed)
     assert_no_leakage(splits)
+    assert_size_tolerance(splits, fractions, max(len(g) for g in groups.values()))
 
     os.makedirs(args.output_dir, exist_ok=True)
     for name, subset in splits.items():
@@ -152,8 +230,13 @@ def main() -> None:
         "seed": args.seed,
         "fractions": fractions,
         "group_policy": "metadata.consolidated_split_group; frontier scenario_family and legacy pairs never cross partitions",
+        "balance_policy": (
+            "soft balance on label, source, source×label, source×difficulty, and for frontier: "
+            "target_domain, slice_role, pair_hardness, trajectory_family, mechanism_family, style"
+        ),
         "splits": {name: describe(subset) for name, subset in splits.items()},
         "leakage_check": "passed",
+        "ratio_tolerance_check": "passed",
     }
     with open(os.path.join(args.output_dir, "split_metadata.json"), "w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, sort_keys=True)
