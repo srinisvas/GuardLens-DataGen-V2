@@ -33,7 +33,8 @@ The reviewed primary protocol is:
 - B1 rollout: `frontier_fixed_user_rollout_v2`
 - B2 judge: `frontier_context_judge_v3`
 - B4 evidence: `frontier_context_paired_counterfactual_v4`
-- Qwen target generation cap: `640` tokens
+- Qwen target generation cap: `1280` tokens
+- Qwen target runtime context: `16384` tokens
 - target completion contract: `finish_reason=stop` with positive
   `completion_tokens` recorded
 - Mistral runtime context window: `16384` tokens
@@ -42,17 +43,23 @@ The reviewed primary protocol is:
   truncation is permitted
 
 Every target assistant generation persists `finish_reason`, `completion_tokens`,
-and `max_tokens=640`. A response ending with `finish_reason=length` is retained
-only for diagnosis. The trajectory stops immediately, later fixed user turns are
-not executed, and the record cannot enter behavioral validation.
+`max_tokens=1280`, and `max_model_len=16384`. A response ending with
+`finish_reason=length` is retained only for diagnosis. The trajectory stops
+immediately, later fixed user turns are not executed, and the record cannot enter
+behavioral validation.
+
+The target token/context envelope is part of the B1 configuration fingerprint.
+Old 320/640-token and 8K-context checkpoints are therefore not reusable even
+though the semantic rollout protocol identifier remains v2.
 
 The judge never silently removes early context. If a full observable conversation
 prefix exceeds the explicit 40K-character protocol budget, the record fails
 closed instead of being judged on a suffix.
 
 Preparation and post-preparation audits require the exact reviewed protocol chain
-for malicious, paired-benign, and standalone-benign records. Old 320-token,
-14K-context, judge-v2, or evidence-v3 artifacts are rejected.
+for malicious, paired-benign, and standalone-benign records. Old 640-token,
+8K-target-context, 14K-judge-context, judge-v2, or evidence-v3 artifacts are
+rejected.
 
 ## 1. CPU audits and merge
 
@@ -120,15 +127,17 @@ from each corpus.
 
 ## 3. Qwen2.5-32B smoke rollout
 
-Keep the old 320-token smoke artifacts untouched. The reviewed smoke uses distinct
-v2/640 output names:
+The earlier 320- and 640-token smoke artifacts are diagnostic history and must not
+be overwritten. The 640-token smoke showed substantial censoring by the output
+budget, so the reviewed rerun uses 1280 output tokens and a 16K target context.
 
 ```bash
 N_SHARDS=1 \
-MAX_TOKENS=640 \
+MAX_TOKENS=1280 \
+MAX_MODEL_LEN=16384 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640 \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_1280_16k \
 SOURCE_PREFLIGHT_MODE=schema \
 sbatch --gres=gpu:1 naacl/launch_frontier_rollout.slurm
 ```
@@ -136,7 +145,8 @@ sbatch --gres=gpu:1 naacl/launch_frontier_rollout.slurm
 The launcher runs `audit_frontier_rollout.py` after merging shards. Do not proceed
 unless all 20 records are complete, every assistant turn has `finish_reason=stop`,
 completion-token usage is present, and the near-cap count is acceptably small.
-The audit prints min/median/p95/max completion-token statistics.
+The audit verifies both `max_tokens=1280` and `max_model_len=16384` and prints
+min/median/p95/max completion-token statistics.
 
 ## 4. Mistral-24B smoke validation
 
@@ -144,45 +154,47 @@ Only after B1 passes and the locked Mistral 3.1 model cache is ready:
 
 ```bash
 N_SHARDS=1 \
-TARGET_MAX_TOKENS=640 \
+TARGET_MAX_TOKENS=1280 \
+TARGET_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_CONTEXT_CHARS=40000 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated_v3.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated_v3 \
+INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_1280_16k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_1280_16k \
 sbatch --gres=gpu:1 naacl/launch_frontier_validation.slurm
 ```
 
-Before the judge server is loaded, the launcher re-audits B1 and verifies that the
-entire realized transcript fits the 40K-character full-prefix judge budget.
-Review validation-status counts, confidence, unsafe anchors, and representative
-realized conversations from both authors before evidence replay.
+Before the judge server is loaded, the launcher re-audits B1 and verifies the
+1280/16K target envelope plus the entire realized transcript against the 40K-
+character full-prefix judge budget. Review validation-status counts, confidence,
+unsafe anchors, and representative realized conversations from both authors
+before evidence replay.
 
 ## 5. Candidate materialization and paired-evidence smoke
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_smoke_qwen32_validated_v3.jsonl \
-  --output $OUT/frontier_multi_author_smoke_qwen32_candidates_v3.jsonl \
+  --input $OUT/frontier_multi_author_smoke_qwen32_validated_v3_1280_16k.jsonl \
+  --output $OUT/frontier_multi_author_smoke_qwen32_candidates_v3_1280_16k.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
 
 N_SHARDS=1 \
-MAX_TOKENS=640 \
-TARGET_MAX_MODEL_LEN=8192 \
+MAX_TOKENS=1280 \
+TARGET_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_CONTEXT_CHARS=40000 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates_v3.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4 \
+INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates_v3_1280_16k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_1280_16k \
 sbatch --gres=gpu:2 naacl/launch_frontier_evidence.slurm
 ```
 
 The evidence launcher rechecks that the candidate file came from a complete
-640-token Qwen rollout and fits the same full-prefix judge budget. The shared vLLM
-client rejects any counterfactual target generation whose finish reason is not
-`stop`, so a clipped intervention cannot produce an evidence delta.
+1280-token / 16K-context Qwen rollout and fits the same full-prefix judge budget.
+The shared vLLM client rejects any counterfactual target generation whose finish
+reason is not `stop`, so a clipped intervention cannot produce an evidence delta.
 
 The evidence smoke must demonstrate exact B1 target-response replay and B2 judge
 replay across behavior, harmfulness, refusal strength, unsafe score, and
@@ -194,28 +206,30 @@ Only after the smoke passes:
 
 ```bash
 N_SHARDS=2 \
-MAX_TOKENS=640 \
+MAX_TOKENS=1280 \
+MAX_MODEL_LEN=16384 \
 INPUT_FILE="$MERGED_SOURCE" \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_640.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_rollout_v2_640 \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_rollout_v2_1280_16k \
 SOURCE_PREFLIGHT_MODE=strict \
 sbatch naacl/launch_frontier_rollout.slurm
 ```
 
 The launcher recognizes 3,000 records and automatically runs strict expectations
 for 1,200 pairs, 600 standalone records, and 600 scenarios, followed by the target
-completion audit.
+completion/context audit.
 
 ## 7. Full independent validation
 
 ```bash
 N_SHARDS=2 \
-TARGET_MAX_TOKENS=640 \
+TARGET_MAX_TOKENS=1280 \
+TARGET_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_CONTEXT_CHARS=40000 \
-INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_640.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated_v3.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated_v3 \
+INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_1280_16k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated_v3_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated_v3_1280_16k \
 sbatch naacl/launch_frontier_validation.slurm
 ```
 
@@ -226,20 +240,20 @@ Qwen safely refuses do not become positive training records.
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_qwen32_validated_v3.jsonl \
-  --output $OUT/frontier_multi_author_qwen32_candidates_v3.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_validated_v3_1280_16k.jsonl \
+  --output $OUT/frontier_multi_author_qwen32_candidates_v3_1280_16k.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
 
 N_SHARDS=2 \
-MAX_TOKENS=640 \
-TARGET_MAX_MODEL_LEN=8192 \
+MAX_TOKENS=1280 \
+TARGET_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_MODEL_LEN=16384 \
 JUDGE_MAX_CONTEXT_CHARS=40000 \
-INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates_v3.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence_v4.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence_v4 \
+INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates_v3_1280_16k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence_v4_1280_16k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence_v4_1280_16k \
 sbatch naacl/launch_frontier_evidence.slurm
 ```
 
@@ -247,7 +261,7 @@ sbatch naacl/launch_frontier_evidence.slurm
 
 ```bash
 python naacl/prepare_frontier_dataset.py \
-  --input $OUT/frontier_multi_author_qwen32_evidence_v4.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_evidence_v4_1280_16k.jsonl \
   --output $OUT/naacl_frontier_prepared.jsonl \
   --benign-stress-output $OUT/naacl_frontier_hard_benign_stress.jsonl \
   --excluded-output $OUT/naacl_frontier_excluded.jsonl \
@@ -260,10 +274,11 @@ python naacl/audit_frontier_stress.py \
   --input $OUT/naacl_frontier_hard_benign_stress.jsonl
 ```
 
-B5 and both post-B5 audits require the exact reviewed B1→B4 protocol chain.
-Primary Dataset B remains complete-pair-only. A pair is retained only when the
-malicious twin passes Qwen/Mistral/evidence gates and the benign twin is
-independently validated safe. No orphan twin enters primary training.
+B5 and both post-B5 audits require the exact reviewed B1→B4 protocol chain and
+1280/16K target envelope. Primary Dataset B remains complete-pair-only. A pair is
+retained only when the malicious twin passes Qwen/Mistral/evidence gates and the
+benign twin is independently validated safe. No orphan twin enters primary
+training.
 
 All validated standalone hard benigns from both authors remain evaluation-only.
 
