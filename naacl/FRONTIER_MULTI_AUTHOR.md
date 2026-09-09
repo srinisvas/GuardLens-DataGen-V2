@@ -36,7 +36,23 @@ export MERGED_SOURCE=$OUT/guardlens_source_merged_v3_3000.jsonl
 - judge policy: full observable prefix or fail closed
 
 Old 320/640/1280-token checkpoints are not reusable because the B1 configuration
-fingerprint contains the generation envelope.
+fingerprint contains the generation envelope. B2 additionally fingerprints the
+actual Mistral runtime context window, so a validation artifact generated with a
+different judge server context cannot reuse a reviewed checkpoint.
+
+## Model-visible information boundary
+
+Research metadata remains in JSONL for provenance, auditing, grouping, and
+supervision, but is never serialized into target/judge prompts. B1, B2, and B4
+model requests may contain only observable role/text conversation content plus the
+explicit counterfactual replacement at B4. Pair IDs, labels, author/source fields,
+scenario/mechanism families, `intended_structure`, expected pivots, and candidate
+annotations are researcher-side only.
+
+Executable canary tests inject secret values into these hidden fields and fail if
+they appear in captured Qwen or Mistral requests. The GuardLens Transformer branch
+has a separate training-side canary proving that changing construction/provenance
+metadata cannot change model-visible turn text/role features.
 
 ## Full-throttle GPU topology
 
@@ -62,11 +78,21 @@ B4 also uses execution-only prefix reuse. A fresh full baseline is still generat
 and judged once and must exactly reproduce B1/B2. After that gate passes, an
 intervention replay reuses the already-proven identical conversation prefix before
 the intervention and regenerates/judges only the intervention turn and downstream
-suffix. This removes redundant computation without changing the counterfactual.
+suffix. The optimizer independently verifies fresh baseline response fingerprints
+against stored B1 assistant text. If that identity check fails, it falls back to a
+full replay instead of reusing the prefix.
 
 All vLLM servers enable prefix caching.
 
-## Static gate
+## Parallel-output integrity
+
+B1, B2, and B4 use `merge_stage_shards.py` after workers finish. Source order and
+`source_index % num_shards` are authoritative. Duplicate IDs, IDs in the wrong
+shard, unexpected IDs, missing IDs, incorrect shard counts, and cross-shard
+duplicates are fatal. Parallel output is never merged by silent dictionary
+overwrite.
+
+## Static gate — mandatory before any GPU submission
 
 Run after every pull and before GPU submission:
 
@@ -78,12 +104,16 @@ python -m unittest \
   naacl/test_multi_author_source.py \
   naacl/test_generation_completion.py \
   naacl/test_frontier_evidence_fast.py \
+  naacl/test_frontier_prompt_leakage.py \
+  naacl/test_stage_shard_merge.py \
   -v
 
 bash -n naacl/launch_frontier_rollout.slurm
 bash -n naacl/launch_frontier_validation.slurm
 bash -n naacl/launch_frontier_evidence.slurm
 ```
+
+Do not submit the production GPU jobs unless this complete gate passes.
 
 ## Final 20-record B1 smoke at 2048 / 16K
 
@@ -107,6 +137,7 @@ Required pass condition:
 - every assistant generation `finish_reason=stop`
 - no instrumentation errors
 - no target-context errors
+- strict shard merge passes
 
 Do not select around length failures. If a record still reaches exactly 2048 and
 ends with `finish_reason=length`, stop and inspect before the full launch.
@@ -125,7 +156,9 @@ sbatch naacl/launch_frontier_validation.slurm
 ```
 
 Inspect all 20 judgments, author balance, confidence, malicious unsafe rate, benign
-safe rate, and earliest unsafe anchors before evidence.
+safe rate, and earliest unsafe anchors before evidence. B2 provenance must report
+`judge_max_model_len=16384`, `judge_max_context_chars=40000`, and the full-prefix
+context policy.
 
 ## B3 candidate materialization
 
@@ -138,7 +171,7 @@ python naacl/materialize_frontier_candidates.py \
   --controls 2
 ```
 
-## B4 evidence smoke
+## B4 evidence smoke — mandatory determinism gate
 
 Run the production 3-target + 1-shared-judge topology on the smoke:
 
@@ -155,9 +188,11 @@ The decisive gate is baseline reproducibility. Every malicious record reaching B
 must reproduce the stored B1 target responses exactly and B2 judge outputs across
 behavior, harmfulness, refusal strength, unsafe score, and confidence.
 
-The prefix-reuse optimization is valid only after that full fresh baseline passes.
-The regression test verifies that target/judge calls before an intervention are
-skipped while the exact original prefix is inserted into the downstream prompt.
+This smoke is mandatory even though the CPU differential test proves the prefix
+optimization algebraically under deterministic stubs. It empirically verifies
+that the real vLLM servers remain reproducible when B1/B2 and B4 use different
+continuous-batching topologies. If baseline hashes or judge outputs drift, do not
+run full B4.
 
 ## Full B1 — 3,000 records
 
@@ -250,6 +285,11 @@ python naacl/split_consolidated.py \
   --test-frac 0.15 \
   --seed 42
 ```
+
+The consolidated split asserts no conversation, pair, frontier scenario-family,
+or exact normalized user-trajectory leakage across train/dev/test. Primary splits
+are IID across mechanism families by design; mechanism-held-out evaluation is a
+separate secondary protocol and must not be claimed from the primary split.
 
 Only after the consolidated split passes do we hand off to the GuardLens
 Transformer branch. Dataset A stays frozen throughout.
