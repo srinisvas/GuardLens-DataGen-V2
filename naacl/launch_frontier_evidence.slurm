@@ -170,4 +170,14 @@ python3 naacl/merge_stage_shards.py \
   --num-shards "$N_SHARDS" \
   --shard-pattern "${OUTPUT_FILE%.jsonl}.shard{i}.jsonl"
 
-echo "Frontier evidence complete: $OUTPUT_FILE"
+python3 naacl/audit_frontier_evidence_protocol.py \
+  --input "$OUTPUT_FILE" \
+  --expected-records "$EXPECTED_RECORDS" \
+  --target-model "$TARGET_MODEL" \
+  --judge-model "$JUDGE_MODEL" \
+  --max-tokens "$MAX_TOKENS" \
+  --target-max-model-len "$TARGET_MAX_MODEL_LEN" \
+  --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
+  --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS"
+
+echo "Frontier evidence complete and protocol-audited: $OUTPUT_FILE"
