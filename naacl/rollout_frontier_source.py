@@ -20,6 +20,7 @@ import time
 from collections import Counter
 
 from frontier_common import (
+    DEFAULT_TARGET_MAX_MODEL_LEN,
     DEFAULT_TARGET_MAX_TOKENS,
     VLLMClient,
     assert_frontier_source_record,
@@ -33,16 +34,18 @@ from frontier_common import (
 
 PROTOCOL = "frontier_fixed_user_rollout_v2"
 DEFAULT_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
+DEFAULT_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
-def rollout_config(*, model: str, base_seed: int, max_tokens: int):
+def rollout_config(*, model: str, base_seed: int, max_tokens: int, max_model_len: int):
     return {
         "protocol": PROTOCOL,
         "target_model": model,
         "base_seed": int(base_seed),
         "temperature": 0.0,
         "max_tokens": int(max_tokens),
+        "max_model_len": int(max_model_len),
         "completion_contract": COMPLETION_CONTRACT,
     }
 
@@ -83,13 +86,25 @@ def finalize_partial_rollout(
     return r
 
 
-def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: int):
+def rollout_record(
+    record,
+    client: VLLMClient,
+    *,
+    base_seed: int,
+    max_tokens: int,
+    max_model_len: int,
+):
     assert_frontier_source_record(record)
     r = copy.deepcopy(record)
     cid = str(r["conversation_id"])
     record_seed = stable_record_seed(base_seed, cid)
     input_fp = json_fingerprint(record)
-    cfg = rollout_config(model=client.model, base_seed=base_seed, max_tokens=max_tokens)
+    cfg = rollout_config(
+        model=client.model,
+        base_seed=base_seed,
+        max_tokens=max_tokens,
+        max_model_len=max_model_len,
+    )
 
     messages = []
     realized_turns = []
@@ -139,6 +154,7 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
                 "seed": response_seed,
                 "temperature": 0.0,
                 "max_tokens": max_tokens,
+                "max_model_len": max_model_len,
                 "finish_reason": finish_reason,
                 "completion_tokens": completion_tokens,
             },
@@ -222,6 +238,8 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
         and provenance.get("input_fingerprint") == json_fingerprint(source_record)
         and provenance.get("config_fingerprint") == config_fingerprint(cfg)
         and provenance.get("target_model") == cfg["target_model"]
+        and provenance.get("max_tokens") == cfg["max_tokens"]
+        and provenance.get("max_model_len") == cfg["max_model_len"]
         and provenance.get("authoring_metadata_exposed_to_target") is False
     ):
         return False
@@ -240,6 +258,8 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
             return False
         if generation.get("max_tokens") != cfg["max_tokens"]:
             return False
+        if generation.get("max_model_len") != cfg["max_model_len"]:
+            return False
         if generation.get("model") != cfg["target_model"]:
             return False
     return True
@@ -255,6 +275,7 @@ def main() -> None:
     parser.add_argument("--api-key", default=os.environ.get("VLLM_API_KEY", "EMPTY"))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    parser.add_argument("--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -264,6 +285,8 @@ def main() -> None:
         raise ValueError("require 0 <= shard-index < num-shards")
     if args.max_tokens <= 0:
         raise ValueError("max-tokens must be positive")
+    if args.max_model_len <= 0:
+        raise ValueError("max-model-len must be positive")
 
     client = VLLMClient(args.model, args.base_url, args.api_key)
     if not client.health_check():
@@ -278,7 +301,12 @@ def main() -> None:
         records = records[: args.limit]
     checkpoint = args.checkpoint or args.output + ".checkpoint.jsonl"
     completed = load_completed(checkpoint)
-    cfg = rollout_config(model=args.model, base_seed=args.seed, max_tokens=args.max_tokens)
+    cfg = rollout_config(
+        model=args.model,
+        base_seed=args.seed,
+        max_tokens=args.max_tokens,
+        max_model_len=args.max_model_len,
+    )
 
     os.makedirs(os.path.dirname(checkpoint) or ".", exist_ok=True)
     processed = 0
@@ -297,6 +325,7 @@ def main() -> None:
                     client,
                     base_seed=args.seed,
                     max_tokens=args.max_tokens,
+                    max_model_len=args.max_model_len,
                 )
             except Exception as exc:
                 out = copy.deepcopy(record)
