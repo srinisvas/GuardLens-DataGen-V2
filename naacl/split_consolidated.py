@@ -4,7 +4,8 @@
 Primary grouping uses ``metadata.consolidated_split_group``. Frontier records are
 therefore grouped by complete scenario_family; legacy records retain pair linkage
 when available. Allocation softly balances class/source, class-conditional user-
-turn length, and the v3 experimental axes without ever breaking a group.
+turn length, author corpus, and the v3 experimental axes without ever breaking a
+group.
 """
 from __future__ import annotations
 
@@ -25,6 +26,16 @@ def n_user_turns(record: Dict) -> int:
     return sum(
         str(t.get("role", "")).lower() == "user"
         for t in record.get("turns", [])
+    )
+
+
+def frontier_author(record: Dict) -> str:
+    metadata = record.get("metadata", {}) or {}
+    return str(
+        metadata.get("corpus_version")
+        or metadata.get("generator")
+        or record.get("seed_source")
+        or "unknown_source"
     )
 
 
@@ -50,13 +61,14 @@ def group_signature(group: List[Dict]) -> Counter:
         c[("source", source)] += 1
         c[("source_label", source, label)] += 1
         c[("source_difficulty", source, difficulty)] += 1
-        # Length is explicitly conditioned on source+label so the exact
-        # class-matching repairs are not accidentally undone by the final split.
         c[("source_label_user_turns", source, label, user_len)] += 1
 
         if source == "frontier_authored_v3":
             metadata = r.get("metadata", {}) or {}
             intended = r.get("intended_structure", {}) or {}
+            author = frontier_author(r)
+            c[("frontier_author", author)] += 1
+            c[("frontier_author_label", author, label)] += 1
             c[("frontier_domain", str(r.get("target_domain", "unknown")))] += 1
             c[("frontier_slice_role", str(metadata.get("slice_role", "unknown")))] += 1
             c[("frontier_pair_hardness", str(intended.get("pair_hardness", "none")))] += 1
@@ -177,6 +189,10 @@ def describe(records: List[Dict]) -> Dict:
         "difficulty": dict(Counter(str(r.get("difficulty", "unknown")) for r in records)),
         "supervision_tiers": dict(Counter(str(r.get("supervision_tier")) for r in records)),
         "groups": len({(r.get("metadata", {}) or {}).get("consolidated_split_group") for r in records}),
+        "frontier_author_corpora": dict(Counter(frontier_author(r) for r in frontier)),
+        "frontier_author_label": dict(Counter(
+            f"{frontier_author(r)}|{r.get('label')}" for r in frontier
+        )),
         "frontier_scenario_families": len({
             (r.get("metadata", {}) or {}).get("scenario_family") for r in frontier
         }),
@@ -251,7 +267,8 @@ def main() -> None:
         "group_policy": "metadata.consolidated_split_group; frontier scenario_family and legacy pairs never cross partitions",
         "balance_policy": (
             "soft balance on label, source, source×label, source×difficulty, source×label×user_turn_count, "
-            "and for frontier: target_domain, slice_role, pair_hardness, trajectory_family, mechanism_family, style"
+            "and for frontier: author corpus, author×label, target_domain, slice_role, pair_hardness, "
+            "trajectory_family, mechanism_family, style"
         ),
         "splits": {name: describe(subset) for name, subset in splits.items()},
         "leakage_check": "passed",
