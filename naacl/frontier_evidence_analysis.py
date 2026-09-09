@@ -19,6 +19,8 @@ from collections import Counter
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from frontier_common import (
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_TARGET_MAX_TOKENS,
     VLLMClient,
     config_fingerprint,
     json_fingerprint,
@@ -53,15 +55,27 @@ LOSS_WEIGHTS = {
     "benign_validated": 1.00,
     "ignore": 0.00,
 }
-PROTOCOL = "frontier_context_paired_counterfactual_v3"
+ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
+VALIDATION_PROTOCOL = "frontier_context_judge_v3"
+COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
+CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
+PROTOCOL = "frontier_context_paired_counterfactual_v4"
 TERMINAL_STATUSES = {"complete", "baseline_not_unsafe", "not_applicable"}
 
 
 class FrontierEvidenceValidator:
-    def __init__(self, target: VLLMClient, judge: VLLMClient, *, max_tokens: int = 320):
+    def __init__(
+        self,
+        target: VLLMClient,
+        judge: VLLMClient,
+        *,
+        max_tokens: int = DEFAULT_TARGET_MAX_TOKENS,
+        judge_max_context_chars: int = DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    ):
         self.target = target
         self.judge = judge
         self.max_tokens = max_tokens
+        self.judge_max_context_chars = judge_max_context_chars
 
     def replay(
         self,
@@ -91,11 +105,18 @@ class FrontierEvidenceValidator:
             )
             messages.append({"role": "assistant", "content": response})
             judge_seed = seed + 1_000_003 + 1013 * (user_index + 1)
-            judged = judge_assistant_response(self.judge, messages, seed=judge_seed)
+            judged = judge_assistant_response(
+                self.judge,
+                messages,
+                seed=judge_seed,
+                max_context_chars=self.judge_max_context_chars,
+            )
             trajectory.append({
                 "user_turn_id": tid,
                 "unsafe_score": judged["unsafe_score"],
                 "behavior": judged["behavior"],
+                "harmfulness": judged["harmfulness"],
+                "refusal_strength": judged["refusal_strength"],
                 "confidence": judged["confidence"],
                 "response_fingerprint": json_fingerprint(response),
                 "response_snippet": response[:240],
@@ -115,7 +136,7 @@ def evidence_config(
     unsafe_threshold: float, min_confidence: float, weak_threshold: float,
     strong_threshold: float, negative_control_tolerance: float,
     max_turn_interventions: int, max_positive_spans: int,
-    max_negative_spans: int, max_tokens: int,
+    max_negative_spans: int, max_tokens: int, judge_max_context_chars: int,
 ) -> Dict:
     return {
         "protocol": PROTOCOL,
@@ -131,6 +152,8 @@ def evidence_config(
         "max_positive_spans": int(max_positive_spans),
         "max_negative_spans": int(max_negative_spans),
         "max_tokens": int(max_tokens),
+        "judge_max_context_chars": int(judge_max_context_chars),
+        "context_policy": CONTEXT_POLICY,
     }
 
 
@@ -218,20 +241,40 @@ def assert_primary_provenance(
     judge_model: str,
     unsafe_threshold: float,
     min_confidence: float,
+    target_max_tokens: int,
+    judge_max_context_chars: int,
 ) -> None:
     cid = str(record.get("conversation_id", ""))
     rollout = record.get("rollout_provenance", {}) or {}
     validation = record.get("frontier_behavioral_validation", {}) or {}
+    if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+        raise RuntimeError(f"{cid}: unsupported rollout protocol {rollout.get('protocol')!r}")
+    if rollout.get("completion_contract") != COMPLETION_CONTRACT:
+        raise RuntimeError(f"{cid}: rollout completion contract mismatch")
     if rollout.get("target_model") != target_model:
         raise RuntimeError(
             f"{cid}: evidence target {target_model!r} differs from rollout target "
             f"{rollout.get('target_model')!r}"
         )
+    if int(rollout.get("max_tokens", -1)) != int(target_max_tokens):
+        raise RuntimeError(
+            f"{cid}: evidence target max_tokens={target_max_tokens} differs from rollout "
+            f"max_tokens={rollout.get('max_tokens')!r}"
+        )
+    if validation.get("protocol") != VALIDATION_PROTOCOL:
+        raise RuntimeError(f"{cid}: unsupported validation protocol {validation.get('protocol')!r}")
     if validation.get("judge_model") != judge_model:
         raise RuntimeError(
             f"{cid}: evidence judge {judge_model!r} differs from validation judge "
             f"{validation.get('judge_model')!r}"
         )
+    if int(validation.get("judge_max_context_chars", -1)) != int(judge_max_context_chars):
+        raise RuntimeError(
+            f"{cid}: evidence judge context budget={judge_max_context_chars} differs from "
+            f"validation budget={validation.get('judge_max_context_chars')!r}"
+        )
+    if validation.get("context_policy") != CONTEXT_POLICY:
+        raise RuntimeError(f"{cid}: validation context policy mismatch")
     if float(validation.get("unsafe_threshold", -1)) != float(unsafe_threshold):
         raise RuntimeError(f"{cid}: unsafe threshold differs between validation and evidence")
     if float(validation.get("min_confidence_threshold", -1)) != float(min_confidence):
@@ -273,7 +316,7 @@ def assert_baseline_reproducible(
             raise RuntimeError(f"{cid}: target baseline response drift at user turn {tid}")
         if fresh_item.get("behavior") != stored_item.get("behavior"):
             raise RuntimeError(f"{cid}: judge behavior drift at user turn {tid}")
-        for field in ("unsafe_score", "confidence"):
+        for field in ("harmfulness", "refusal_strength", "unsafe_score", "confidence"):
             if abs(float(fresh_item.get(field, -1)) - float(stored_item.get(field, -1))) > tolerance:
                 raise RuntimeError(f"{cid}: judge {field} drift at user turn {tid}")
 
@@ -390,6 +433,7 @@ def analyze_record(
         max_positive_spans=max_positive_spans,
         max_negative_spans=max_negative_spans,
         max_tokens=validator.max_tokens,
+        judge_max_context_chars=validator.judge_max_context_chars,
     )
     input_fp = json_fingerprint(record)
     r["frontier_evidence_version"] = PROTOCOL
@@ -415,6 +459,8 @@ def analyze_record(
         judge_model=validator.judge.model,
         unsafe_threshold=unsafe_threshold,
         min_confidence=min_confidence,
+        target_max_tokens=validator.max_tokens,
+        judge_max_context_chars=validator.judge_max_context_chars,
     )
     seed = stable_record_seed(base_seed, cid)
     baseline = validator.replay(r.get("turns", []), seed=seed)
@@ -644,7 +690,12 @@ def main() -> None:
     parser.add_argument("--max-turn-interventions", type=int, default=4)
     parser.add_argument("--max-positive-spans", type=int, default=6)
     parser.add_argument("--max-negative-spans", type=int, default=2)
-    parser.add_argument("--max-tokens", type=int, default=320)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_TARGET_MAX_TOKENS)
+    parser.add_argument(
+        "--judge-max-context-chars",
+        type=int,
+        default=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    )
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     args = parser.parse_args()
@@ -663,6 +714,8 @@ def main() -> None:
         raise ValueError("turn and positive-span intervention caps must be positive")
     if args.max_negative_spans < 0 or args.max_tokens <= 0:
         raise ValueError("negative-span cap must be nonnegative and max-tokens positive")
+    if args.judge_max_context_chars <= 0:
+        raise ValueError("judge-max-context-chars must be positive")
     if not (0 <= args.shard_index < args.num_shards):
         raise ValueError("require 0 <= shard-index < num-shards")
 
@@ -672,7 +725,12 @@ def main() -> None:
         raise RuntimeError(f"target server not ready at {args.target_base_url}")
     if not judge.health_check():
         raise RuntimeError(f"judge server not ready at {args.judge_base_url}")
-    validator = FrontierEvidenceValidator(target, judge, max_tokens=args.max_tokens)
+    validator = FrontierEvidenceValidator(
+        target,
+        judge,
+        max_tokens=args.max_tokens,
+        judge_max_context_chars=args.judge_max_context_chars,
+    )
 
     all_records = load_jsonl(args.input)
     ids = [str(r.get("conversation_id", "")) for r in all_records]
@@ -697,6 +755,7 @@ def main() -> None:
         max_positive_spans=args.max_positive_spans,
         max_negative_spans=args.max_negative_spans,
         max_tokens=args.max_tokens,
+        judge_max_context_chars=args.judge_max_context_chars,
     )
     os.makedirs(os.path.dirname(checkpoint) or ".", exist_ok=True)
 
