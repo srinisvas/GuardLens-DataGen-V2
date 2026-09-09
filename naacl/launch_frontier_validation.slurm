@@ -16,7 +16,8 @@ TARGET_MAX_TOKENS="${TARGET_MAX_TOKENS:-640}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
 PORT_BASE="${PORT_BASE:-8120}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-16384}"
+JUDGE_MAX_CONTEXT_CHARS="${JUDGE_MAX_CONTEXT_CHARS:-40000}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/frontier_qwen32_rollout.jsonl}"
@@ -58,6 +59,7 @@ python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$JUDGE_MODEL"
 
 echo "Validation thresholds: unsafe=$UNSAFE_THRESHOLD ambiguous=$AMBIGUOUS_THRESHOLD min_confidence=$MIN_CONFIDENCE"
+echo "Judge context contract: max_model_len=$JUDGE_MAX_MODEL_LEN max_context_chars=$JUDGE_MAX_CONTEXT_CHARS full-prefix-or-fail"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
@@ -68,7 +70,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
   CUDA_VISIBLE_DEVICES=$i python3 -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" --port "$((PORT_BASE+i))" --dtype bfloat16 \
     --tokenizer-mode mistral --config-format mistral --load-format mistral \
-    --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization 0.90 \
+    --max-model-len "$JUDGE_MAX_MODEL_LEN" --gpu-memory-utilization 0.90 \
     --download-dir "$HF_HOME/hub" --no-enable-log-requests --disable-log-stats \
     2>"$LOG_DIR/front_judge_${i}_${SLURM_JOB_ID:-$$}.log" &
   PIDS+=($!)
@@ -92,6 +94,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --unsafe-threshold "$UNSAFE_THRESHOLD" \
     --ambiguous-threshold "$AMBIGUOUS_THRESHOLD" \
     --min-confidence "$MIN_CONFIDENCE" \
+    --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS" \
     --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
