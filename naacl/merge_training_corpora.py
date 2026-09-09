@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Merge frozen legacy Dataset A and canonical frontier Dataset B."""
+"""Merge frozen legacy Dataset A and canonical frontier Dataset B.
+
+The merge is deliberately fail-closed. Besides identifier collisions, exact
+normalized user trajectories are forbidden from crossing corpus or split-group
+boundaries because they would create content leakage even when IDs differ.
+"""
 from __future__ import annotations
 
 import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Dict
 
 from frontier_common import load_jsonl, write_jsonl
@@ -43,8 +49,13 @@ def canonicalize(
     if r.get("supervision_tier") in {None, "ignore", "construction"}:
         raise RuntimeError(f"{cid}: unresolved supervision tier")
     loss = r.get("loss_weight")
-    if not isinstance(loss, (int, float)) or isinstance(loss, bool) or loss <= 0:
-        raise RuntimeError(f"{cid}: unresolved loss_weight")
+    if (
+        not isinstance(loss, (int, float))
+        or isinstance(loss, bool)
+        or not math.isfinite(float(loss))
+        or float(loss) <= 0
+    ):
+        raise RuntimeError(f"{cid}: unresolved/invalid loss_weight")
 
     r["corpus_source"] = source
     metadata = r.setdefault("metadata", {})
@@ -63,12 +74,15 @@ def canonicalize(
         if not group:
             raise RuntimeError(f"{cid}: frontier record missing scenario_family")
         group = f"frontier::{group}"
-    else:
+    elif source == "legacy_repaired":
         pair_id = r.get("pair_id")
         if pair_id not in (None, ""):
             group = f"legacy::pair::{pair_id}"
         else:
             group = f"legacy::conversation::{cid}"
+    else:
+        raise RuntimeError(f"{cid}: unsupported corpus source {source!r}")
+
     metadata["consolidated_split_group"] = group
     metadata["normalized_user_trajectory_hash"] = user_trajectory_hash(r)
     return r
@@ -110,19 +124,29 @@ def main() -> None:
     if duplicates:
         raise RuntimeError(f"duplicate conversation_ids across corpora: {duplicates[:10]}")
 
-    legacy_hashes = Counter(
-        (r.get("metadata", {}) or {}).get("normalized_user_trajectory_hash")
-        for r in legacy
-    )
-    frontier_hashes = Counter(
-        (r.get("metadata", {}) or {}).get("normalized_user_trajectory_hash")
-        for r in frontier
-    )
-    cross_exact = sorted(set(legacy_hashes) & set(frontier_hashes))
-    if cross_exact:
+    # Exact normalized content must not bridge independent split groups. The
+    # same content inside one indivisible group is harmless because it can never
+    # cross train/dev/test; across groups it is a leakage path.
+    hash_groups = defaultdict(set)
+    hash_sources = defaultdict(set)
+    for r in combined:
+        metadata = r.get("metadata", {}) or {}
+        trajectory_hash = metadata.get("normalized_user_trajectory_hash")
+        hash_groups[trajectory_hash].add(metadata.get("consolidated_split_group"))
+        hash_sources[trajectory_hash].add(r.get("corpus_source"))
+    cross_group_exact = [h for h, groups in hash_groups.items() if len(groups) > 1]
+    if cross_group_exact:
+        examples = [
+            {
+                "hash": h,
+                "groups": sorted(str(x) for x in hash_groups[h]),
+                "sources": sorted(str(x) for x in hash_sources[h]),
+            }
+            for h in cross_group_exact[:10]
+        ]
         raise RuntimeError(
-            f"exact normalized user trajectories occur in both corpora; "
-            f"cross-corpus leakage risk for {len(cross_exact)} trajectory hashes"
+            "exact normalized user trajectories occur across independent split groups; "
+            f"leakage risk for {len(cross_group_exact)} hashes. Examples: {examples}"
         )
 
     rng = random.Random(args.seed)
@@ -135,7 +159,7 @@ def main() -> None:
         "supervision_tiers": dict(Counter(r.get("supervision_tier") for r in combined)),
         "split_groups": len({(r.get("metadata", {}) or {}).get("consolidated_split_group") for r in combined}),
         "frontier_scenario_families": len({(r.get("metadata", {}) or {}).get("scenario_family") for r in frontier}),
-        "cross_corpus_exact_user_trajectory_duplicates": 0,
+        "cross_group_exact_user_trajectory_duplicates": 0,
         "expected_frontier_target_model": args.expected_frontier_target_model,
         "expected_frontier_judge_model": args.expected_frontier_judge_model,
         "policy": "merge canonical records first; perform a single group-aware split afterward",
