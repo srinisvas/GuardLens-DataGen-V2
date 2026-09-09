@@ -1,0 +1,218 @@
+{
+  "benign_length_matched": {
+    "labels": {
+      "0": 526
+    },
+    "n": 526,
+    "name": "benign_length_matched",
+    "total_turns": {
+      "max": 48,
+      "mean": 29.079847908745247,
+      "median": 28.0,
+      "min": 16
+    },
+    "user_turns": {
+      "histogram": {
+        "8": 7,
+        "9": 21,
+        "10": 37,
+        "11": 57,
+        "12": 48,
+        "13": 49,
+        "14": 51,
+        "15": 43,
+        "16": 56,
+        "17": 39,
+        "18": 42,
+        "19": 30,
+        "20": 32,
+        "21": 6,
+        "22": 3,
+        "23": 3,
+        "24": 2
+      },
+      "max": 24,
+      "mean": 14.539923954372624,
+      "median": 14.0,
+      "min": 8
+    }
+  },
+  "benign_original": {
+    "labels": {
+      "0": 721
+    },
+    "n": 721,
+    "name": "benign_original",
+    "total_turns": {
+      "max": 64,
+      "mean": 36.41886269070735,
+      "median": 34,
+      "min": 16
+    },
+    "user_turns": {
+      "histogram": {
+        "8": 26,
+        "9": 46,
+        "10": 36,
+        "11": 31,
+        "12": 33,
+        "13": 37,
+        "14": 39,
+        "15": 40,
+        "16": 35,
+        "17": 44,
+        "18": 32,
+        "19": 40,
+        "20": 40,
+        "21": 29,
+        "22": 16,
+        "23": 17,
+        "24": 26,
+        "25": 24,
+        "26": 18,
+        "27": 22,
+        "28": 21,
+        "29": 18,
+        "30": 12,
+        "31": 17,
+        "32": 22
+      },
+      "max": 32,
+      "mean": 18.209431345353675,
+      "median": 17,
+      "min": 8
+    }
+  },
+  "combined": {
+    "labels": {
+      "0": 526,
+      "1": 526
+    },
+    "n": 1052,
+    "name": "combined",
+    "total_turns": {
+      "max": 48,
+      "mean": 29.079847908745247,
+      "median": 28.0,
+      "min": 16
+    },
+    "user_turns": {
+      "histogram": {
+        "8": 14,
+        "9": 42,
+        "10": 74,
+        "11": 114,
+        "12": 96,
+        "13": 98,
+        "14": 102,
+        "15": 86,
+        "16": 112,
+        "17": 78,
+        "18": 84,
+        "19": 60,
+        "20": 64,
+        "21": 12,
+        "22": 6,
+        "23": 6,
+        "24": 4
+      },
+      "max": 24,
+      "mean": 14.539923954372624,
+      "median": 14.0,
+      "min": 8
+    }
+  },
+  "malicious": {
+    "labels": {
+      "1": 526
+    },
+    "n": 526,
+    "name": "malicious",
+    "total_turns": {
+      "max": 48,
+      "mean": 29.079847908745247,
+      "median": 28.0,
+      "min": 16
+    },
+    "user_turns": {
+      "histogram": {
+        "8": 7,
+        "9": 21,
+        "10": 37,
+        "11": 57,
+        "12": 48,
+        "13": 49,
+        "14": 51,
+        "15": 43,
+        "16": 56,
+        "17": 39,
+        "18": 42,
+        "19": 30,
+        "20": 32,
+        "21": 6,
+        "22": 3,
+        "23": 3,
+        "24": 2
+      },
+      "max": 24,
+      "mean": 14.539923954372624,
+      "median": 14.0,
+      "min": 8
+    }
+  },
+  "malicious_excluded_no_repaired_behavioral_evidence": {
+    "labels": {
+      "1": 19
+    },
+    "n": 19,
+    "name": "malicious_excluded",
+    "total_turns": {
+      "max": 38,
+      "mean": 26.210526315789473,
+      "median": 26,
+      "min": 16
+    },
+    "user_turns": {
+      "histogram": {
+        "8": 1,
+        "9": 2,
+        "10": 1,
+        "11": 3,
+        "12": 2,
+        "13": 2,
+        "14": 2,
+        "15": 1,
+        "16": 1,
+        "17": 2,
+        "18": 1,
+        "19": 1
+      },
+      "max": 19,
+      "mean": 13.105263157894736,
+      "median": 13,
+      "min": 8
+    }
+  },
+  "method": {
+    "attribution_policy": "counterfactual-supported malicious spans only",
+    "behavioral_policy": "fresh Llama replay judged unsafe by Mistral OR independent Mistral transfer success; legacy Qwen-only target judgment is insufficient",
+    "length_policy": "benign prefixes sampled from empirical malicious user-turn distribution",
+    "pivot_policy": "unknown malicious pivots ignored; benign None is true no-pivot",
+    "seed": 42
+  },
+  "pivot_supervision": {
+    "ignored_unknown": 358,
+    "supported": 168
+  },
+  "repaired_behavioral_gate": {
+    "excluded": 19,
+    "fresh_target_unsafe": 429,
+    "independent_success": 503
+  },
+  "sample_tiers": {
+    "benign_validated": 526,
+    "cf_strong": 3,
+    "cf_weak": 2,
+    "llm_confirmed": 521
+  }
+}
