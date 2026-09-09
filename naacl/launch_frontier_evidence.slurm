@@ -17,7 +17,7 @@ TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
-MAX_TOKENS="${MAX_TOKENS:-320}"
+MAX_TOKENS="${MAX_TOKENS:-640}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/frontier_qwen32_candidates.jsonl}"
@@ -53,10 +53,19 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
+EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
+# Candidate materialization preserves Stage-B1 rollout provenance. Recheck it
+# before allocating four GPUs so evidence cannot run with a mismatched target cap.
+python3 naacl/audit_frontier_rollout.py \
+  --input "$INPUT_FILE" \
+  --expected-records "$EXPECTED_RECORDS" \
+  --expected-model "$TARGET_MODEL" \
+  --expected-max-tokens "$MAX_TOKENS"
+
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$TARGET_MODEL" "$JUDGE_MODEL"
 
-echo "Evidence config: target=$TARGET_MODEL judge=$JUDGE_MODEL unsafe=$UNSAFE_THRESHOLD min_confidence=$MIN_CONFIDENCE weak=$WEAK_DELTA strong=$STRONG_DELTA"
+echo "Evidence config: target=$TARGET_MODEL judge=$JUDGE_MODEL max_tokens=$MAX_TOKENS unsafe=$UNSAFE_THRESHOLD min_confidence=$MIN_CONFIDENCE weak=$WEAK_DELTA strong=$STRONG_DELTA"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
