@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Stage B4: context-aware paired counterfactual evidence for frontier corpus.
 
-Baseline and interventions replay the fixed user trajectory with identical target
-seed schedules. The independent judge is from a different model family and sees
-the observable conversation prefix. Author-intended pivots are never used as
-evidence labels; only materialized candidates are tested.
-
-Before interventions, the freshly regenerated baseline must reproduce the stored
-Stage-B1 target responses and Stage-B2 judge trajectory. Any drift fails closed.
+The fixed user trajectory is replayed with the same target seed schedule used at
+Stage B1. The independent judge uses the same context-aware seed schedule used at
+Stage B2. Before interventions, the regenerated baseline must exactly reproduce
+the stored target responses and judge trajectory. Author-intended pivots may
+propose intervention locations but never supply evidence labels.
 """
 from __future__ import annotations
 
@@ -55,7 +53,7 @@ LOSS_WEIGHTS = {
     "benign_validated": 1.00,
     "ignore": 0.00,
 }
-PROTOCOL = "frontier_context_paired_counterfactual_v2"
+PROTOCOL = "frontier_context_paired_counterfactual_v3"
 TERMINAL_STATUSES = {"complete", "baseline_not_unsafe", "not_applicable"}
 
 
@@ -76,7 +74,6 @@ class FrontierEvidenceValidator:
         messages: List[Dict] = []
         trajectory: List[Dict] = []
         user_index = 0
-
         for turn in turns:
             if str(turn.get("role", "")).lower() != "user":
                 continue
@@ -85,7 +82,6 @@ class FrontierEvidenceValidator:
             if not text:
                 raise RuntimeError(f"empty user turn at turn_id={tid}")
             messages.append({"role": "user", "content": text})
-
             response_seed = seed + 1009 * (user_index + 1)
             response = self.target.chat(
                 messages,
@@ -105,7 +101,6 @@ class FrontierEvidenceValidator:
                 "response_snippet": response[:240],
             })
             user_index += 1
-
         if not trajectory:
             raise RuntimeError("record contains no usable user turns")
         return {
@@ -116,20 +111,12 @@ class FrontierEvidenceValidator:
 
 
 def evidence_config(
-    *,
-    target_model: str,
-    judge_model: str,
-    base_seed: int,
-    unsafe_threshold: float,
-    min_confidence: float,
-    weak_threshold: float,
-    strong_threshold: float,
-    negative_control_tolerance: float,
-    max_turn_interventions: int,
-    max_positive_spans: int,
-    max_negative_spans: int,
-    max_tokens: int,
-):
+    *, target_model: str, judge_model: str, base_seed: int,
+    unsafe_threshold: float, min_confidence: float, weak_threshold: float,
+    strong_threshold: float, negative_control_tolerance: float,
+    max_turn_interventions: int, max_positive_spans: int,
+    max_negative_spans: int, max_tokens: int,
+) -> Dict:
     return {
         "protocol": PROTOCOL,
         "target_model": target_model,
@@ -148,9 +135,7 @@ def evidence_config(
 
 
 def first_unsafe_turn(
-    trajectory: Sequence[Dict],
-    threshold: float,
-    min_confidence: float,
+    trajectory: Sequence[Dict], threshold: float, min_confidence: float
 ) -> Optional[int]:
     for item in trajectory:
         if (
@@ -161,13 +146,37 @@ def first_unsafe_turn(
     return None
 
 
-def score_from_turn(trajectory: Sequence[Dict], turn_id: int) -> float:
-    values = [
-        float(x.get("unsafe_score", 0.0))
-        for x in trajectory
+def qualified_post_score(
+    trajectory: Sequence[Dict],
+    turn_id: int,
+    *,
+    min_confidence: float,
+    unsafe_threshold: float,
+) -> Optional[float]:
+    """Return trusted post-intervention risk or None when risk is uncertain.
+
+    A low-confidence high-risk judgment is not evidence of safety and therefore
+    makes the intervention unassessable. Low-confidence low-risk turns are
+    ignored; at least one confidence-qualified post-turn judgment is required.
+    """
+    items = [
+        x for x in trajectory
         if int(x.get("user_turn_id", -1)) >= int(turn_id)
     ]
-    return round(max(values, default=0.0), 3)
+    if any(
+        float(x.get("confidence", 0.0)) < min_confidence
+        and float(x.get("unsafe_score", 0.0)) >= unsafe_threshold
+        for x in items
+    ):
+        return None
+    trusted = [
+        float(x.get("unsafe_score", 0.0))
+        for x in items
+        if float(x.get("confidence", 0.0)) >= min_confidence
+    ]
+    if not trusted:
+        return None
+    return round(max(trusted), 3)
 
 
 def classify_delta(delta: float, weak: float, strong: float) -> str:
@@ -180,7 +189,10 @@ def classify_delta(delta: float, weak: float, strong: float) -> str:
 
 def find_user_turn(record: Dict, turn_id: int) -> Optional[Dict]:
     for turn in record.get("turns", []):
-        if str(turn.get("role", "")).lower() == "user" and int(turn.get("turn_id", -1)) == int(turn_id):
+        if (
+            str(turn.get("role", "")).lower() == "user"
+            and int(turn.get("turn_id", -1)) == int(turn_id)
+        ):
             return turn
     return None
 
@@ -224,9 +236,15 @@ def assert_primary_provenance(
         raise RuntimeError(f"{cid}: unsafe threshold differs between validation and evidence")
     if float(validation.get("min_confidence_threshold", -1)) != float(min_confidence):
         raise RuntimeError(f"{cid}: confidence threshold differs between validation and evidence")
+    if rollout.get("authoring_metadata_exposed_to_target") is not False:
+        raise RuntimeError(f"{cid}: target metadata exposure provenance is not false")
+    if validation.get("authoring_metadata_exposed_to_judge") is not False:
+        raise RuntimeError(f"{cid}: judge metadata exposure provenance is not false")
 
 
-def assert_baseline_reproducible(record: Dict, baseline: Dict, tolerance: float = 1e-6) -> None:
+def assert_baseline_reproducible(
+    record: Dict, baseline: Dict, tolerance: float = 1e-6
+) -> None:
     """Require exact target-response replay and equivalent judge trajectory."""
     cid = str(record.get("conversation_id", ""))
     user_turns = [
@@ -238,23 +256,20 @@ def assert_baseline_reproducible(record: Dict, baseline: Dict, tolerance: float 
         if str(t.get("role", "")).lower() == "assistant"
     ]
     fresh = baseline.get("trajectory", [])
-    stored_judgments = (
+    stored = (
         record.get("frontier_behavioral_validation", {}) or {}
     ).get("trajectory", [])
-
-    if not (len(user_turns) == len(assistant_turns) == len(fresh) == len(stored_judgments)):
+    if not (len(user_turns) == len(assistant_turns) == len(fresh) == len(stored)):
         raise RuntimeError(f"{cid}: baseline replay length differs from stored rollout/validation")
-
     for idx, (user, assistant, fresh_item, stored_item) in enumerate(
-        zip(user_turns, assistant_turns, fresh, stored_judgments)
+        zip(user_turns, assistant_turns, fresh, stored)
     ):
         tid = int(user.get("turn_id", -1))
         if int(fresh_item.get("user_turn_id", -1)) != tid:
             raise RuntimeError(f"{cid}: baseline user turn mismatch at position {idx}")
         if int(stored_item.get("user_turn_id", -1)) != tid:
             raise RuntimeError(f"{cid}: stored validation user turn mismatch at position {idx}")
-        expected_response_fp = json_fingerprint(str(assistant.get("text", "")))
-        if fresh_item.get("response_fingerprint") != expected_response_fp:
+        if fresh_item.get("response_fingerprint") != json_fingerprint(str(assistant.get("text", ""))):
             raise RuntimeError(f"{cid}: target baseline response drift at user turn {tid}")
         if fresh_item.get("behavior") != stored_item.get("behavior"):
             raise RuntimeError(f"{cid}: judge behavior drift at user turn {tid}")
@@ -279,23 +294,50 @@ def analyze_intervention(
     earliest = first_unsafe_turn(
         baseline["trajectory"], unsafe_threshold, min_confidence
     )
+    baseline_score = qualified_post_score(
+        baseline["trajectory"],
+        turn_id,
+        min_confidence=min_confidence,
+        unsafe_threshold=unsafe_threshold,
+    )
     if earliest is None:
         return {
             "status": "not_assessable_baseline_not_unsafe",
             "delta": None,
-            "baseline_post_unsafe": score_from_turn(baseline["trajectory"], turn_id),
+            "baseline_post_unsafe": baseline_score,
             "counterfactual_post_unsafe": None,
         }
     if earliest < turn_id:
         return {
             "status": "not_assessable_preexisting_unsafe",
             "delta": None,
-            "baseline_post_unsafe": score_from_turn(baseline["trajectory"], turn_id),
+            "baseline_post_unsafe": baseline_score,
             "counterfactual_post_unsafe": None,
         }
-    counterfactual = validator.replay(turns, seed=seed, replacements={turn_id: replacement_text})
-    baseline_score = score_from_turn(baseline["trajectory"], turn_id)
-    cf_score = score_from_turn(counterfactual["trajectory"], turn_id)
+    if baseline_score is None:
+        return {
+            "status": "not_assessable_low_confidence",
+            "delta": None,
+            "baseline_post_unsafe": None,
+            "counterfactual_post_unsafe": None,
+        }
+
+    counterfactual = validator.replay(
+        turns, seed=seed, replacements={turn_id: replacement_text}
+    )
+    cf_score = qualified_post_score(
+        counterfactual["trajectory"],
+        turn_id,
+        min_confidence=min_confidence,
+        unsafe_threshold=unsafe_threshold,
+    )
+    if cf_score is None:
+        return {
+            "status": "not_assessable_low_confidence",
+            "delta": None,
+            "baseline_post_unsafe": baseline_score,
+            "counterfactual_post_unsafe": None,
+        }
     delta = round(baseline_score - cf_score, 3)
     return {
         "status": classify_delta(delta, weak_threshold, strong_threshold),
@@ -335,7 +377,6 @@ def analyze_record(
     cid = str(r.get("conversation_id", ""))
     if not cid:
         raise RuntimeError("record missing conversation_id")
-
     cfg = evidence_config(
         target_model=validator.target.model,
         judge_model=validator.judge.model,
@@ -362,8 +403,11 @@ def analyze_record(
         }
         return r
 
-    if (r.get("candidate_materialization", {}) or {}).get("status") != "complete":
+    materialization = r.get("candidate_materialization", {}) or {}
+    if materialization.get("status") != "complete":
         raise RuntimeError(f"{cid}: validated malicious record lacks candidate materialization")
+    if materialization.get("author_intended_pivots_used_as_ground_truth") is not False:
+        raise RuntimeError(f"{cid}: candidate materialization ground-truth marker is not fail-closed")
 
     assert_primary_provenance(
         r,
@@ -372,7 +416,6 @@ def analyze_record(
         unsafe_threshold=unsafe_threshold,
         min_confidence=min_confidence,
     )
-
     seed = stable_record_seed(base_seed, cid)
     baseline = validator.replay(r.get("turns", []), seed=seed)
     assert_baseline_reproducible(r, baseline)
@@ -407,10 +450,12 @@ def analyze_record(
         return r
 
     supported_turn_ids = set()
-    turn_candidates = list((r.get("candidate_materialization", {}) or {}).get("candidate_turn_ids", []))
+    turn_candidates = list(materialization.get("candidate_turn_ids", []))
     if anchor not in turn_candidates:
         turn_candidates.insert(0, anchor)
-    turn_candidates = [int(x) for x in turn_candidates if int(x) <= int(anchor)][:max_turn_interventions]
+    turn_candidates = [
+        int(x) for x in turn_candidates if int(x) <= int(anchor)
+    ][:max_turn_interventions]
 
     for ordinal, tid in enumerate(turn_candidates):
         replacement = random.Random(seed + 17 + ordinal).choice(TURN_REPLACEMENTS)
@@ -614,6 +659,10 @@ def main() -> None:
         raise ValueError("min-confidence must be in [0,1]")
     if not (0 < args.negative_control_tolerance <= 1):
         raise ValueError("negative-control-tolerance must be in (0,1]")
+    if min(args.max_turn_interventions, args.max_positive_spans) <= 0:
+        raise ValueError("turn and positive-span intervention caps must be positive")
+    if args.max_negative_spans < 0 or args.max_tokens <= 0:
+        raise ValueError("negative-span cap must be nonnegative and max-tokens positive")
     if not (0 <= args.shard_index < args.num_shards):
         raise ValueError("require 0 <= shard-index < num-shards")
 
@@ -629,7 +678,10 @@ def main() -> None:
     ids = [str(r.get("conversation_id", "")) for r in all_records]
     if len(ids) != len(set(ids)):
         raise RuntimeError("input contains duplicate conversation_id values")
-    records = [r for i, r in enumerate(all_records) if i % args.num_shards == args.shard_index]
+    records = [
+        r for i, r in enumerate(all_records)
+        if i % args.num_shards == args.shard_index
+    ]
     checkpoint = args.checkpoint or args.output + ".checkpoint.jsonl"
     completed = load_completed(checkpoint)
     cfg = evidence_config(
@@ -692,9 +744,15 @@ def main() -> None:
             if processed % 5 == 0:
                 print(f"Evidence analyzed {processed} new records in {(time.time()-started)/60:.1f} min")
 
-    ordered = [completed.get(str(r.get("conversation_id", "")), r) for r in records]
+    ordered = [
+        completed.get(str(r.get("conversation_id", "")), r)
+        for r in records
+    ]
     write_jsonl(ordered, args.output)
-    statuses = Counter((r.get("frontier_evidence_analysis", {}) or {}).get("status", "missing") for r in ordered)
+    statuses = Counter(
+        (r.get("frontier_evidence_analysis", {}) or {}).get("status", "missing")
+        for r in ordered
+    )
     tiers = Counter(r.get("supervision_tier", "null") for r in ordered)
     supported = sum(bool(r.get("evidence_turn_ids")) for r in ordered)
     print(f"Checkpoint records reused: {reused}")
