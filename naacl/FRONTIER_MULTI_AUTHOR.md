@@ -26,20 +26,33 @@ Merged Stage-0 expectations:
 No source record is rewritten during merge. Existing `metadata.corpus_version` and
 `metadata.generator` preserve author provenance.
 
-## Locked target-generation contract
+## Locked B1–B4 protocol chain
 
-The canonical Qwen and counterfactual target-generation cap is **640 tokens**.
-Every assistant generation must persist:
+The reviewed primary protocol is:
 
-- `generation_provenance.finish_reason`
-- `generation_provenance.completion_tokens`
-- `generation_provenance.max_tokens=640`
+- B1 rollout: `frontier_fixed_user_rollout_v2`
+- B2 judge: `frontier_context_judge_v3`
+- B4 evidence: `frontier_context_paired_counterfactual_v4`
+- Qwen target generation cap: `640` tokens
+- target completion contract: `finish_reason=stop` with positive
+  `completion_tokens` recorded
+- Mistral runtime context window: `16384` tokens
+- judge observable-transcript budget: `40000` characters
+- judge context policy: full observable prefix or fail closed; no suffix-only
+  truncation is permitted
 
-A target response is scientifically complete only when `finish_reason=stop`.
-`finish_reason=length` is persisted for diagnosis but terminates that trajectory
-immediately; later fixed user turns are not executed and the record cannot proceed
-to behavioral validation. `audit_frontier_rollout.py` enforces this contract after
-rollout and before both validation and evidence.
+Every target assistant generation persists `finish_reason`, `completion_tokens`,
+and `max_tokens=640`. A response ending with `finish_reason=length` is retained
+only for diagnosis. The trajectory stops immediately, later fixed user turns are
+not executed, and the record cannot enter behavioral validation.
+
+The judge never silently removes early context. If a full observable conversation
+prefix exceeds the explicit 40K-character protocol budget, the record fails
+closed instead of being judged on a suffix.
+
+Preparation and post-preparation audits require the exact reviewed protocol chain
+for malicious, paired-benign, and standalone-benign records. Old 320-token,
+14K-context, judge-v2, or evidence-v3 artifacts are rejected.
 
 ## 1. CPU audits and merge
 
@@ -65,17 +78,27 @@ python naacl/audit_frontier_source.py \
   --expected-pairs 1200 \
   --expected-standalone 600 \
   --expected-scenarios 600
+```
+
+Before any GPU submission after a code update, run the complete static gate:
+
+```bash
+python -m compileall -q naacl
 
 python -m unittest \
   naacl/test_frontier_cpu.py \
   naacl/test_multi_author_source.py \
   naacl/test_generation_completion.py \
   -v
+
+bash -n naacl/launch_frontier_rollout.slurm
+bash -n naacl/launch_frontier_validation.slurm
+bash -n naacl/launch_frontier_evidence.slurm
 ```
 
 The merge fails closed on conversation-ID, pair-ID, scenario-family, and normalized
 complete-trajectory collisions across authors. The strict merged audit rechecks
-all pair/scenario construction invariants and the paired primary length shortcut
+all pair/scenario construction invariants and the paired-primary length shortcut
 gate.
 
 ## 2. Deterministic 20-record multi-author smoke
@@ -92,38 +115,46 @@ python naacl/select_frontier_smoke_subset.py \
   --seed 44
 ```
 
-Inspect the stats and require `selection.source_authors` to contain 5 pairs from
-each corpus.
+Inspect the stats and require `selection.source_authors` to contain five pairs
+from each corpus.
 
 ## 3. Qwen2.5-32B smoke rollout
+
+Keep the old 320-token smoke artifacts untouched. The reviewed smoke uses distinct
+v2/640 output names:
 
 ```bash
 N_SHARDS=1 \
 MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640 \
 SOURCE_PREFLIGHT_MODE=schema \
 sbatch --gres=gpu:1 naacl/launch_frontier_rollout.slurm
 ```
 
-The launcher runs `audit_frontier_rollout.py` automatically after merging shards.
-Do not proceed unless all records are complete, every assistant turn has
-`finish_reason=stop`, completion-token usage is present, and the near-cap count is
-acceptably small. The audit prints min/median/p95/max completion-token statistics.
+The launcher runs `audit_frontier_rollout.py` after merging shards. Do not proceed
+unless all 20 records are complete, every assistant turn has `finish_reason=stop`,
+completion-token usage is present, and the near-cap count is acceptably small.
+The audit prints min/median/p95/max completion-token statistics.
 
 ## 4. Mistral-24B smoke validation
+
+Only after B1 passes and the locked Mistral 3.1 model cache is ready:
 
 ```bash
 N_SHARDS=1 \
 TARGET_MAX_TOKENS=640 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated \
+JUDGE_MAX_MODEL_LEN=16384 \
+JUDGE_MAX_CONTEXT_CHARS=40000 \
+INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_640.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated_v3.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated_v3 \
 sbatch --gres=gpu:1 naacl/launch_frontier_validation.slurm
 ```
 
-The validation launcher re-audits Stage-B1 completion before loading the judge.
+Before the judge server is loaded, the launcher re-audits B1 and verifies that the
+entire realized transcript fits the 40K-character full-prefix judge budget.
 Review validation-status counts, confidence, unsafe anchors, and representative
 realized conversations from both authors before evidence replay.
 
@@ -131,25 +162,31 @@ realized conversations from both authors before evidence replay.
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_smoke_qwen32_validated.jsonl \
-  --output $OUT/frontier_multi_author_smoke_qwen32_candidates.jsonl \
+  --input $OUT/frontier_multi_author_smoke_qwen32_validated_v3.jsonl \
+  --output $OUT/frontier_multi_author_smoke_qwen32_candidates_v3.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
 
 N_SHARDS=1 \
 MAX_TOKENS=640 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence \
+TARGET_MAX_MODEL_LEN=8192 \
+JUDGE_MAX_MODEL_LEN=16384 \
+JUDGE_MAX_CONTEXT_CHARS=40000 \
+INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates_v3.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4 \
 sbatch --gres=gpu:2 naacl/launch_frontier_evidence.slurm
 ```
 
 The evidence launcher rechecks that the candidate file came from a complete
-640-token Qwen rollout. The shared vLLM client rejects any counterfactual target
-generation whose finish reason is not `stop`, so a clipped intervention cannot
-produce an evidence delta. The evidence smoke must demonstrate B1 rollout replay
-reproducibility and B2 judge reproducibility. Any replay mismatch fails closed.
+640-token Qwen rollout and fits the same full-prefix judge budget. The shared vLLM
+client rejects any counterfactual target generation whose finish reason is not
+`stop`, so a clipped intervention cannot produce an evidence delta.
+
+The evidence smoke must demonstrate exact B1 target-response replay and B2 judge
+replay across behavior, harmfulness, refusal strength, unsafe score, and
+confidence. Any replay mismatch fails closed.
 
 ## 6. Full 3,000-record Qwen rollout
 
@@ -159,8 +196,8 @@ Only after the smoke passes:
 N_SHARDS=2 \
 MAX_TOKENS=640 \
 INPUT_FILE="$MERGED_SOURCE" \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_rollout \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_640.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_rollout_v2_640 \
 SOURCE_PREFLIGHT_MODE=strict \
 sbatch naacl/launch_frontier_rollout.slurm
 ```
@@ -174,9 +211,11 @@ completion audit.
 ```bash
 N_SHARDS=2 \
 TARGET_MAX_TOKENS=640 \
-INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated \
+JUDGE_MAX_MODEL_LEN=16384 \
+JUDGE_MAX_CONTEXT_CHARS=40000 \
+INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_640.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated_v3.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated_v3 \
 sbatch naacl/launch_frontier_validation.slurm
 ```
 
@@ -187,17 +226,20 @@ Qwen safely refuses do not become positive training records.
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_qwen32_validated.jsonl \
-  --output $OUT/frontier_multi_author_qwen32_candidates.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_validated_v3.jsonl \
+  --output $OUT/frontier_multi_author_qwen32_candidates_v3.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
 
 N_SHARDS=2 \
 MAX_TOKENS=640 \
-INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence \
+TARGET_MAX_MODEL_LEN=8192 \
+JUDGE_MAX_MODEL_LEN=16384 \
+JUDGE_MAX_CONTEXT_CHARS=40000 \
+INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates_v3.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence_v4.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence_v4 \
 sbatch naacl/launch_frontier_evidence.slurm
 ```
 
@@ -205,7 +247,7 @@ sbatch naacl/launch_frontier_evidence.slurm
 
 ```bash
 python naacl/prepare_frontier_dataset.py \
-  --input $OUT/frontier_multi_author_qwen32_evidence.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_evidence_v4.jsonl \
   --output $OUT/naacl_frontier_prepared.jsonl \
   --benign-stress-output $OUT/naacl_frontier_hard_benign_stress.jsonl \
   --excluded-output $OUT/naacl_frontier_excluded.jsonl \
@@ -218,8 +260,9 @@ python naacl/audit_frontier_stress.py \
   --input $OUT/naacl_frontier_hard_benign_stress.jsonl
 ```
 
+B5 and both post-B5 audits require the exact reviewed B1→B4 protocol chain.
 Primary Dataset B remains complete-pair-only. A pair is retained only when the
-malicious twin passes the Qwen/Mistral/evidence gates and the benign twin is
+malicious twin passes Qwen/Mistral/evidence gates and the benign twin is
 independently validated safe. No orphan twin enters primary training.
 
 All validated standalone hard benigns from both authors remain evaluation-only.
@@ -243,10 +286,10 @@ python naacl/split_consolidated.py \
   --seed 42
 ```
 
-The final splitter keeps complete frontier scenario families indivisible and now
-softly balances frontier author corpus and author×label in addition to the locked
-source, label, length, difficulty, domain, pair-hardness, trajectory, mechanism,
-and style axes.
+The final splitter keeps complete frontier scenario families indivisible and
+softly balances frontier author corpus and author×label in addition to source,
+label, source×label×user-turn length, difficulty, domain, pair hardness,
+trajectory family, mechanism family, and style.
 
 ## 11. Transformer handoff
 
