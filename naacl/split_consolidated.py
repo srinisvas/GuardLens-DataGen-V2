@@ -64,26 +64,31 @@ def split_groups(groups: Dict[str, List[Dict]], fractions: Dict[str, float], see
         gsig = group_signature(group)
         best_split = None
         best_score = None
-        for s in SPLITS:
-            new_total = counts[s] + len(group)
-            total_err = ((new_total - target_total[s]) / max(target_total[s], 1.0)) ** 2
-            sig_err = 0.0
+        for split_name in SPLITS:
+            # Fill-ratio minimization remains stable with unequal target
+            # fractions. Signature fill is a soft secondary balance constraint.
+            total_fill = (counts[split_name] + len(group)) / max(target_total[split_name], 1.0)
+            signature_fills = []
             for key, amount in gsig.items():
-                target = max(target_sig[s].get(key, 0.0), 1.0)
-                new_value = sig_counts[s][key] + amount
-                sig_err += ((new_value - target) / target) ** 2
-            score = 4.0 * total_err + 0.25 * sig_err + rng.random() * 1e-9
+                target = target_sig[split_name].get(key, 0.0)
+                if target > 0:
+                    signature_fills.append((sig_counts[split_name][key] + amount) / target)
+            signature_fill = (
+                sum(signature_fills) / len(signature_fills)
+                if signature_fills else total_fill
+            )
+            score = 0.80 * total_fill + 0.20 * signature_fill + rng.random() * 1e-9
             if best_score is None or score < best_score:
                 best_score = score
-                best_split = s
+                best_split = split_name
         assigned[best_split].append((group_id, group))
         counts[best_split] += len(group)
         sig_counts[best_split].update(gsig)
 
     output = {}
-    for s in SPLITS:
-        output[s] = [r for _, group in assigned[s] for r in group]
-        rng.shuffle(output[s])
+    for split_name in SPLITS:
+        output[split_name] = [r for _, group in assigned[split_name] for r in group]
+        rng.shuffle(output[split_name])
     return output
 
 
