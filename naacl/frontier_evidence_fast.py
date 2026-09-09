@@ -8,7 +8,10 @@ conversation prefix before the intervention turn and regenerate/judge only the
 intervention turn and its downstream suffix.
 
 The optimization removes redundant target decoding and judge calls for turns that
-occur strictly before the intervention and therefore cannot have changed.
+occur strictly before the intervention and therefore cannot have changed. Prefix
+reuse is additionally guarded inside this class: if fresh baseline target-response
+fingerprints do not exactly match the stored B1 assistant texts, optimized replay
+is disabled and the implementation falls back to a full counterfactual replay.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
         super().__init__(*args, **kwargs)
         self._baseline_key: Optional[str] = None
         self._baseline: Optional[Dict] = None
+        self._baseline_prefix_safe: bool = False
 
     @staticmethod
     def _turns_key(turns: Sequence[Dict]) -> str:
@@ -37,6 +41,30 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
         ]
         return fea.json_fingerprint(observable)
 
+    @staticmethod
+    def _stored_prefix_matches_fresh_baseline(
+        turns: Sequence[Dict], baseline: Dict
+    ) -> bool:
+        users = [
+            t for t in turns
+            if str(t.get("role", "")).lower() == "user"
+        ]
+        assistants = [
+            t for t in turns
+            if str(t.get("role", "")).lower() == "assistant"
+        ]
+        trajectory = list(baseline.get("trajectory", []))
+        if not (len(users) == len(assistants) == len(trajectory)):
+            return False
+        for user, assistant, item in zip(users, assistants, trajectory):
+            user_tid = int(user.get("turn_id", -1))
+            if int(item.get("user_turn_id", -1)) != user_tid:
+                return False
+            assistant_text = str(assistant.get("text", ""))
+            if item.get("response_fingerprint") != fea.json_fingerprint(assistant_text):
+                return False
+        return True
+
     def replay(self, turns, *, seed: int, replacements=None):
         replacements = replacements or {}
         key = self._turns_key(turns)
@@ -45,12 +73,16 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
             baseline = super().replay(turns, seed=seed, replacements=None)
             self._baseline_key = key
             self._baseline = copy.deepcopy(baseline)
+            self._baseline_prefix_safe = self._stored_prefix_matches_fresh_baseline(
+                turns, baseline
+            )
             return baseline
 
         if (
             len(replacements) != 1
             or self._baseline is None
             or self._baseline_key != key
+            or not self._baseline_prefix_safe
         ):
             return super().replay(turns, seed=seed, replacements=replacements)
 
@@ -107,6 +139,12 @@ class PrefixReuseEvidenceValidator(fea.FrontierEvidenceValidator):
                 assistant_text = str(assistant.get("text", "")).strip()
                 if not assistant_text:
                     raise RuntimeError(f"empty stored assistant turn at turn_id={tid+1}")
+                if baseline_item.get("response_fingerprint") != fea.json_fingerprint(
+                    assistant_text
+                ):
+                    raise RuntimeError(
+                        f"baseline prefix identity lost at assistant turn {tid+1}"
+                    )
                 messages.append({"role": "user", "content": original_text})
                 messages.append({"role": "assistant", "content": assistant_text})
                 trajectory.append(copy.deepcopy(baseline_item))
