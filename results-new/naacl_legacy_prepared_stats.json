@@ -196,7 +196,7 @@
   "method": {
     "attribution_policy": "counterfactual-supported malicious spans only",
     "behavioral_policy": "fresh Llama replay judged unsafe by Mistral OR independent Mistral transfer success; legacy Qwen-only target judgment is insufficient",
-    "length_policy": "benign prefixes sampled from empirical malicious user-turn distribution",
+    "length_policy": "one-to-one benign prefix matching to the malicious empirical user-turn distribution; class-conditional user-turn histograms are identical in the primary corpus",
     "pivot_policy": "unknown malicious pivots ignored; benign None is true no-pivot",
     "seed": 42
   },
