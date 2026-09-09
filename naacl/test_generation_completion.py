@@ -10,7 +10,12 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 
-from frontier_common import parse_chat_completion_data  # noqa: E402
+from frontier_common import (  # noqa: E402
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_TARGET_MAX_TOKENS,
+    parse_chat_completion_data,
+    transcript_text,
+)
 from validate_frontier_rollout import assert_realized_rollout  # noqa: E402
 
 
@@ -34,9 +39,11 @@ def realized_record(*, finish_reason="stop", completion_tokens=42, max_tokens=64
         "conversation_length": 2,
         "rollout_status": "complete",
         "rollout_provenance": {
+            "protocol": "frontier_fixed_user_rollout_v2",
             "target_model": "Qwen/Qwen2.5-32B-Instruct",
             "max_tokens": max_tokens,
             "completion_contract": "finish_reason=stop and completion_tokens recorded",
+            "authoring_metadata_exposed_to_target": False,
         },
         "turns": [
             {"turn_id": 0, "role": "user", "text": "Test prompt."},
@@ -56,6 +63,10 @@ def realized_record(*, finish_reason="stop", completion_tokens=42, max_tokens=64
 
 
 class ChatCompletionParsingTests(unittest.TestCase):
+    def test_protocol_defaults_are_640_and_40k(self):
+        self.assertEqual(DEFAULT_TARGET_MAX_TOKENS, 640)
+        self.assertEqual(DEFAULT_JUDGE_MAX_CONTEXT_CHARS, 40000)
+
     def test_stop_completion_is_accepted_and_usage_preserved(self):
         result = parse_chat_completion_data(
             completion_payload(),
@@ -92,6 +103,35 @@ class ChatCompletionParsingTests(unittest.TestCase):
                 require_usage=True,
             )
 
+    def test_boolean_completion_tokens_is_rejected(self):
+        with self.assertRaises(RuntimeError):
+            parse_chat_completion_data(
+                completion_payload(completion_tokens=True),
+                require_stop=False,
+            )
+
+
+class JudgeContextTests(unittest.TestCase):
+    def test_observable_prefix_is_preserved_when_within_budget(self):
+        messages = [
+            {"role": "user", "content": "early context"},
+            {"role": "assistant", "content": "middle response"},
+            {"role": "user", "content": "final request"},
+        ]
+        rendered = transcript_text(messages, max_chars=1000)
+        self.assertIn("early context", rendered)
+        self.assertIn("middle response", rendered)
+        self.assertIn("final request", rendered)
+        self.assertNotIn("EARLIER CONTEXT TRUNCATED", rendered)
+
+    def test_context_overflow_fails_instead_of_suffix_truncating(self):
+        messages = [
+            {"role": "user", "content": "A" * 200},
+            {"role": "assistant", "content": "B" * 200},
+        ]
+        with self.assertRaises(RuntimeError):
+            transcript_text(messages, max_chars=100)
+
 
 class ValidationCompletionGateTests(unittest.TestCase):
     def test_complete_v2_rollout_passes(self):
@@ -110,6 +150,12 @@ class ValidationCompletionGateTests(unittest.TestCase):
     def test_old_rollout_without_completion_contract_is_rejected(self):
         record = realized_record()
         del record["rollout_provenance"]["completion_contract"]
+        with self.assertRaises(RuntimeError):
+            assert_realized_rollout(record)
+
+    def test_metadata_exposure_marker_must_be_false(self):
+        record = realized_record()
+        record["rollout_provenance"]["authoring_metadata_exposed_to_target"] = True
         with self.assertRaises(RuntimeError):
             assert_realized_rollout(record)
 
