@@ -11,6 +11,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 
+from frontier_evidence_analysis import FrontierEvidenceValidator  # noqa: E402
 from rollout_frontier_source import rollout_record  # noqa: E402
 from validate_frontier_rollout import validate_record  # noqa: E402
 
@@ -97,6 +98,10 @@ class CaptureTarget:
     def __init__(self):
         self.requests = []
 
+    def _record(self, messages):
+        self.requests.append([dict(m) for m in messages])
+        return f"VISIBLE ASSISTANT RESPONSE {len(self.requests)}"
+
     def chat_result(
         self,
         messages,
@@ -107,12 +112,14 @@ class CaptureTarget:
         require_stop,
         require_usage,
     ):
-        self.requests.append([dict(m) for m in messages])
         return {
-            "content": f"VISIBLE ASSISTANT RESPONSE {len(self.requests)}",
+            "content": self._record(messages),
             "finish_reason": "stop",
             "completion_tokens": 8,
         }
+
+    def chat(self, messages, *, seed, temperature, max_tokens):
+        return self._record(messages)
 
 
 class CaptureJudge:
@@ -189,6 +196,45 @@ class PromptLeakageTests(unittest.TestCase):
         rendered = json.dumps(judge.requests)
         self.assertIn("VISIBLE USER TURN ZERO", rendered)
         self.assertIn("VISIBLE ASSISTANT RESPONSE", rendered)
+
+    def test_b4_replay_ignores_span_candidate_and_record_metadata(self):
+        target = CaptureTarget()
+        rolled = rollout_record(
+            source_record(),
+            target,
+            base_seed=42,
+            max_tokens=2048,
+            max_model_len=16384,
+        )
+        # B4 receives rich turns. Canary annotations must remain researcher-side.
+        rolled["turns"][0]["span_annotations"] = [
+            {
+                "label": "EVIDENCE_CANDIDATE",
+                "candidate_origin": "CANDIDATE_SECRET_CANARY",
+                "text": "VISIBLE",
+                "char_start": 0,
+                "char_end": 7,
+            }
+        ]
+        replay_target = CaptureTarget()
+        judge = CaptureJudge()
+        validator = FrontierEvidenceValidator(
+            replay_target,
+            judge,
+            max_tokens=2048,
+            judge_max_context_chars=40000,
+        )
+        validator.replay(
+            rolled["turns"],
+            seed=42,
+            replacements={2: "VISIBLE COUNTERFACTUAL USER TURN"},
+        )
+        self.assertEqual(len(replay_target.requests), 2)
+        self.assertEqual(len(judge.requests), 2)
+        self.assert_no_canary(replay_target.requests)
+        self.assert_no_canary(judge.requests)
+        rendered = json.dumps(replay_target.requests)
+        self.assertIn("VISIBLE COUNTERFACTUAL USER TURN", rendered)
 
 
 if __name__ == "__main__":
