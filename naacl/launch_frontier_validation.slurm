@@ -12,7 +12,8 @@
 # Stage B2. Two context-aware Mistral-Small-3.1-24B judge shards.
 set -euo pipefail
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
-TARGET_MAX_TOKENS="${TARGET_MAX_TOKENS:-640}"
+TARGET_MAX_TOKENS="${TARGET_MAX_TOKENS:-1280}"
+TARGET_MAX_MODEL_LEN="${TARGET_MAX_MODEL_LEN:-16384}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
 N_SHARDS="${N_SHARDS:-2}"
 PORT_BASE="${PORT_BASE:-8120}"
@@ -54,12 +55,14 @@ python3 naacl/audit_frontier_rollout.py \
   --expected-records "$EXPECTED_RECORDS" \
   --expected-model "$TARGET_MODEL" \
   --expected-max-tokens "$TARGET_MAX_TOKENS" \
+  --expected-max-model-len "$TARGET_MAX_MODEL_LEN" \
   --max-transcript-chars "$JUDGE_MAX_CONTEXT_CHARS"
 
 python3 naacl/check_frontier_environment.py \
   --model-cache "$MODEL_CACHE" --models "$JUDGE_MODEL"
 
 echo "Validation thresholds: unsafe=$UNSAFE_THRESHOLD ambiguous=$AMBIGUOUS_THRESHOLD min_confidence=$MIN_CONFIDENCE"
+echo "Target rollout envelope: max_tokens=$TARGET_MAX_TOKENS max_model_len=$TARGET_MAX_MODEL_LEN"
 echo "Judge context contract: max_model_len=$JUDGE_MAX_MODEL_LEN max_context_chars=$JUDGE_MAX_CONTEXT_CHARS full-prefix-or-fail"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
