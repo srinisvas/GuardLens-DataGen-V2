@@ -17,7 +17,13 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Dict, List
 
-from frontier_common import load_jsonl, write_jsonl
+from frontier_common import (
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_TARGET_MAX_MODEL_LEN,
+    DEFAULT_TARGET_MAX_TOKENS,
+    load_jsonl,
+    write_jsonl,
+)
 
 LOSS_WEIGHTS = {
     "cf_strong": 1.00,
@@ -33,8 +39,9 @@ VALIDATION_PROTOCOL = "frontier_context_judge_v3"
 EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v4"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
-EXPECTED_TARGET_MAX_TOKENS = 640
-EXPECTED_JUDGE_MAX_CONTEXT_CHARS = 40000
+EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
+EXPECTED_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
+EXPECTED_JUDGE_MAX_CONTEXT_CHARS = DEFAULT_JUDGE_MAX_CONTEXT_CHARS
 
 
 def iter_spans(record: Dict):
@@ -75,6 +82,11 @@ def assert_expected_provenance(
         raise ValueError(
             f"{cid}: rollout max_tokens={rollout.get('max_tokens')!r} != "
             f"expected {EXPECTED_TARGET_MAX_TOKENS}"
+        )
+    if int(rollout.get("max_model_len", -1)) != EXPECTED_TARGET_MAX_MODEL_LEN:
+        raise ValueError(
+            f"{cid}: rollout max_model_len={rollout.get('max_model_len')!r} != "
+            f"expected {EXPECTED_TARGET_MAX_MODEL_LEN}"
         )
     if rollout.get("authoring_metadata_exposed_to_target") is not False:
         raise ValueError(f"{cid}: target metadata-exposure provenance is not fail-closed")
@@ -411,6 +423,7 @@ def main() -> None:
             "validation_protocol": VALIDATION_PROTOCOL,
             "evidence_protocol": EVIDENCE_PROTOCOL,
             "target_max_tokens": EXPECTED_TARGET_MAX_TOKENS,
+            "target_max_model_len": EXPECTED_TARGET_MAX_MODEL_LEN,
             "judge_max_context_chars": EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
             "judge_context_policy": CONTEXT_POLICY,
         },
