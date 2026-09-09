@@ -17,6 +17,7 @@ from collections import Counter
 
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_TARGET_MAX_MODEL_LEN,
     VLLMClient,
     config_fingerprint,
     json_fingerprint,
@@ -30,6 +31,7 @@ from frontier_common import (
 PROTOCOL = "frontier_context_judge_v3"
 TERMINAL_STATUSES = {"validated", "rejected", "ambiguous"}
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
+DEFAULT_JUDGE_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 
 
 def validation_config(
@@ -40,6 +42,7 @@ def validation_config(
     ambiguous_threshold: float,
     min_confidence: float,
     judge_max_context_chars: int,
+    judge_max_model_len: int = DEFAULT_JUDGE_MAX_MODEL_LEN,
 ):
     return {
         "protocol": PROTOCOL,
@@ -49,6 +52,7 @@ def validation_config(
         "ambiguous_threshold": float(ambiguous_threshold),
         "min_confidence_threshold": float(min_confidence),
         "judge_max_context_chars": int(judge_max_context_chars),
+        "judge_max_model_len": int(judge_max_model_len),
         "context_policy": "full_observable_prefix_or_fail_closed",
     }
 
@@ -130,6 +134,7 @@ def validate_record(
     ambiguous_threshold: float,
     min_confidence: float,
     judge_max_context_chars: int,
+    judge_max_model_len: int = DEFAULT_JUDGE_MAX_MODEL_LEN,
 ):
     r = copy.deepcopy(record)
     cid = str(r.get("conversation_id", ""))
@@ -142,6 +147,7 @@ def validate_record(
         ambiguous_threshold=ambiguous_threshold,
         min_confidence=min_confidence,
         judge_max_context_chars=judge_max_context_chars,
+        judge_max_model_len=judge_max_model_len,
     )
     input_fp = json_fingerprint(record)
 
@@ -189,6 +195,7 @@ def validate_record(
             "seed": judge_seed,
             "context_aware": True,
             "max_context_chars": judge_max_context_chars,
+            "max_model_len": judge_max_model_len,
             "context_policy": "full_observable_prefix_or_fail_closed",
         }
         trajectory.append({
@@ -273,6 +280,7 @@ def cached_validation_is_reusable(cached, input_record, cfg) -> bool:
         validation.get("input_fingerprint") == json_fingerprint(input_record)
         and validation.get("config_fingerprint") == config_fingerprint(cfg)
         and validation.get("judge_model") == cfg["judge_model"]
+        and validation.get("judge_max_model_len") == cfg["judge_max_model_len"]
     )
 
 
@@ -293,6 +301,11 @@ def main() -> None:
         type=int,
         default=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
     )
+    parser.add_argument(
+        "--judge-max-model-len",
+        type=int,
+        default=DEFAULT_JUDGE_MAX_MODEL_LEN,
+    )
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     args = parser.parse_args()
@@ -303,6 +316,8 @@ def main() -> None:
         raise ValueError("min-confidence must be in [0,1]")
     if args.judge_max_context_chars <= 0:
         raise ValueError("judge-max-context-chars must be positive")
+    if args.judge_max_model_len <= 0:
+        raise ValueError("judge-max-model-len must be positive")
     if not (0 <= args.shard_index < args.num_shards):
         raise ValueError("require 0 <= shard-index < num-shards")
 
@@ -324,6 +339,7 @@ def main() -> None:
         ambiguous_threshold=args.ambiguous_threshold,
         min_confidence=args.min_confidence,
         judge_max_context_chars=args.judge_max_context_chars,
+        judge_max_model_len=args.judge_max_model_len,
     )
     os.makedirs(os.path.dirname(checkpoint) or ".", exist_ok=True)
 
@@ -346,6 +362,7 @@ def main() -> None:
                     ambiguous_threshold=args.ambiguous_threshold,
                     min_confidence=args.min_confidence,
                     judge_max_context_chars=args.judge_max_context_chars,
+                    judge_max_model_len=args.judge_max_model_len,
                 )
             except Exception as exc:
                 out = copy.deepcopy(record)
