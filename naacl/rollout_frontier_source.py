@@ -4,6 +4,11 @@
 Only observable user text is sent to the target. Authoring metadata, including
 ``intended_structure``, is preserved in the output but never enters the prompt.
 Checkpoint resume is fail-closed against source/configuration drift.
+
+A target turn is experimentally complete only when the OpenAI-compatible server
+reports ``finish_reason=stop`` and usage includes ``completion_tokens``. A length-
+truncated turn is persisted for diagnosis, but the record stops immediately and
+cannot proceed to behavioral validation.
 """
 from __future__ import annotations
 
@@ -25,7 +30,8 @@ from frontier_common import (
     write_jsonl,
 )
 
-PROTOCOL = "frontier_fixed_user_rollout_v1"
+PROTOCOL = "frontier_fixed_user_rollout_v2"
+DEFAULT_MAX_TOKENS = 640
 
 
 def rollout_config(*, model: str, base_seed: int, max_tokens: int):
@@ -35,7 +41,44 @@ def rollout_config(*, model: str, base_seed: int, max_tokens: int):
         "base_seed": int(base_seed),
         "temperature": 0.0,
         "max_tokens": int(max_tokens),
+        "completion_contract": "finish_reason=stop and completion_tokens recorded",
     }
+
+
+def finalize_partial_rollout(
+    r,
+    *,
+    realized_turns,
+    assistant_count: int,
+    cfg,
+    record_seed: int,
+    input_fp: str,
+    status: str,
+    error: str,
+):
+    r["turns"] = realized_turns
+    r["assistant_turn_count"] = assistant_count
+    r["conversation_length"] = len(realized_turns)
+    r["source_stage"] = "local_target_rollout_incomplete"
+    r["use_as"] = "not_valid_for_behavioral_validation"
+    r["rollout_status"] = status
+    r["rollout_error"] = error
+    r["rollout_provenance"] = {
+        **cfg,
+        "record_seed": record_seed,
+        "input_fingerprint": input_fp,
+        "config_fingerprint": config_fingerprint(cfg),
+        "authoring_metadata_exposed_to_target": False,
+    }
+    r.setdefault("metadata", {})["assistant_responses_present"] = assistant_count > 0
+    r["pivot_turn_id"] = None
+    r["pivot_kind"] = None
+    r["supervision_tier"] = None
+    r["loss_weight"] = None
+    r["judge_confidence"] = None
+    r["training_eligible"] = False
+    r["validation_status"] = "unvalidated"
+    return r
 
 
 def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: int):
@@ -67,12 +110,18 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
         messages.append({"role": "user", "content": text})
 
         response_seed = record_seed + 1009 * (user_index + 1)
-        response = client.chat(
+        result = client.chat_result(
             messages,
             seed=response_seed,
             temperature=0.0,
             max_tokens=max_tokens,
+            require_stop=False,
+            require_usage=False,
         )
+        response = result["content"]
+        finish_reason = result.get("finish_reason")
+        completion_tokens = result.get("completion_tokens")
+
         assistant_turn_id = user_turn_id + 1
         if assistant_turn_id in used_turn_ids:
             raise RuntimeError(f"{cid}: assistant turn_id collision at {assistant_turn_id}")
@@ -88,11 +137,44 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
                 "seed": response_seed,
                 "temperature": 0.0,
                 "max_tokens": max_tokens,
+                "finish_reason": finish_reason,
+                "completion_tokens": completion_tokens,
             },
         }
         realized_turns.append(assistant_turn)
-        messages.append({"role": "assistant", "content": response})
         user_index += 1
+
+        if completion_tokens is None:
+            return finalize_partial_rollout(
+                r,
+                realized_turns=realized_turns,
+                assistant_count=user_index,
+                cfg=cfg,
+                record_seed=record_seed,
+                input_fp=input_fp,
+                status="instrumentation_incomplete",
+                error=(
+                    f"assistant turn {assistant_turn_id} missing usage.completion_tokens; "
+                    "trajectory is not scientifically complete"
+                ),
+            )
+        if finish_reason != "stop":
+            return finalize_partial_rollout(
+                r,
+                realized_turns=realized_turns,
+                assistant_count=user_index,
+                cfg=cfg,
+                record_seed=record_seed,
+                input_fp=input_fp,
+                status="incomplete_generation",
+                error=(
+                    f"assistant turn {assistant_turn_id} ended with "
+                    f"finish_reason={finish_reason!r}, completion_tokens={completion_tokens}; "
+                    "later fixed user turns were not executed"
+                ),
+            )
+
+        messages.append({"role": "assistant", "content": response})
 
     if user_index != int(r.get("user_turn_count", -1)):
         raise RuntimeError(f"{cid}: realized assistant count does not match user_turn_count")
@@ -103,6 +185,7 @@ def rollout_record(record, client: VLLMClient, *, base_seed: int, max_tokens: in
     r["source_stage"] = "local_target_rollout"
     r["use_as"] = "input_for_independent_behavioral_validation"
     r["rollout_status"] = "complete"
+    r.pop("rollout_error", None)
     r["rollout_provenance"] = {
         **cfg,
         "record_seed": record_seed,
@@ -126,10 +209,24 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
     if not cached or cached.get("rollout_status") != "complete":
         return False
     provenance = cached.get("rollout_provenance", {}) or {}
-    return (
+    if not (
         provenance.get("input_fingerprint") == json_fingerprint(source_record)
         and provenance.get("config_fingerprint") == config_fingerprint(cfg)
         and provenance.get("target_model") == cfg["target_model"]
+    ):
+        return False
+    assistant_turns = [
+        t for t in cached.get("turns", [])
+        if str(t.get("role", "")).lower() == "assistant"
+    ]
+    if not assistant_turns:
+        return False
+    return all(
+        (t.get("generation_provenance", {}) or {}).get("finish_reason") == "stop"
+        and isinstance(
+            (t.get("generation_provenance", {}) or {}).get("completion_tokens"), int
+        )
+        for t in assistant_turns
     )
 
 
@@ -142,7 +239,7 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--api-key", default=os.environ.get("VLLM_API_KEY", "EMPTY"))
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-tokens", type=int, default=320)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -206,9 +303,29 @@ def main() -> None:
 
     ordered = [completed.get(str(r.get("conversation_id", "")), r) for r in records]
     write_jsonl(ordered, args.output)
+    statuses = Counter(r.get("rollout_status", "missing") for r in ordered)
+    finish_reasons = Counter()
+    completion_tokens = []
+    for record in ordered:
+        for turn in record.get("turns", []):
+            if str(turn.get("role", "")).lower() != "assistant":
+                continue
+            provenance = turn.get("generation_provenance", {}) or {}
+            finish_reasons[str(provenance.get("finish_reason", "missing"))] += 1
+            value = provenance.get("completion_tokens")
+            if isinstance(value, int) and not isinstance(value, bool):
+                completion_tokens.append(value)
+
     print(f"Shard {args.shard_index}/{args.num_shards}: {len(ordered)} records")
     print(f"Checkpoint records reused: {reused}")
-    print(f"Rollout statuses: {dict(Counter(r.get('rollout_status','missing') for r in ordered))}")
+    print(f"Rollout statuses: {dict(statuses)}")
+    print(f"Assistant finish reasons: {dict(finish_reasons)}")
+    if completion_tokens:
+        print(
+            "Completion tokens: "
+            f"min={min(completion_tokens)} max={max(completion_tokens)} "
+            f"mean={sum(completion_tokens)/len(completion_tokens):.1f}"
+        )
     print(f"Wrote: {args.output}")
 
 
