@@ -16,6 +16,7 @@ from collections import Counter
 
 from frontier_common import load_jsonl
 
+ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
@@ -80,6 +81,10 @@ def main() -> None:
             continue
 
         rollout = record.get("rollout_provenance", {}) or {}
+        if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+            errors.append(
+                f"{cid}: rollout protocol={rollout.get('protocol')!r} != {ROLLOUT_PROTOCOL!r}"
+            )
         target_model = rollout.get("target_model")
         if args.expected_model and target_model != args.expected_model:
             errors.append(
@@ -87,6 +92,19 @@ def main() -> None:
             )
         if rollout.get("completion_contract") != COMPLETION_CONTRACT:
             errors.append(f"{cid}: missing/invalid completion contract")
+        if rollout.get("authoring_metadata_exposed_to_target") is not False:
+            errors.append(f"{cid}: target metadata-exposure marker is not false")
+        if float(rollout.get("temperature", -1.0)) != 0.0:
+            errors.append(f"{cid}: rollout temperature is not 0.0")
+
+        record_seed = rollout.get("record_seed")
+        if isinstance(record_seed, bool) or not isinstance(record_seed, int):
+            errors.append(f"{cid}: missing/invalid record_seed={record_seed!r}")
+            record_seed = None
+        if not isinstance(rollout.get("input_fingerprint"), str):
+            errors.append(f"{cid}: missing input_fingerprint")
+        if not isinstance(rollout.get("config_fingerprint"), str):
+            errors.append(f"{cid}: missing config_fingerprint")
 
         max_tokens = rollout.get("max_tokens")
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
@@ -104,6 +122,13 @@ def main() -> None:
         if ids != list(range(len(turns))):
             errors.append(f"{cid}: realized turn IDs are not contiguous 0..N-1")
 
+        for idx, turn in enumerate(turns):
+            expected_role = "user" if idx % 2 == 0 else "assistant"
+            if str(turn.get("role", "")).lower() != expected_role:
+                errors.append(
+                    f"{cid}: turn {idx} role={turn.get('role')!r}, expected {expected_role!r}"
+                )
+
         users = [t for t in turns if str(t.get("role", "")).lower() == "user"]
         assistants = [t for t in turns if str(t.get("role", "")).lower() == "assistant"]
         if not (
@@ -114,7 +139,7 @@ def main() -> None:
         ):
             errors.append(f"{cid}: realized user/assistant counts are inconsistent")
 
-        for turn in assistants:
+        for assistant_index, turn in enumerate(assistants):
             tid = int(turn.get("turn_id", -1))
             generation = turn.get("generation_provenance", {}) or {}
             finish = generation.get("finish_reason")
@@ -127,6 +152,15 @@ def main() -> None:
                 errors.append(f"{cid}: assistant turn {tid} model provenance mismatch")
             if generation.get("max_tokens") != max_tokens:
                 errors.append(f"{cid}: assistant turn {tid} max_tokens provenance mismatch")
+            if float(generation.get("temperature", -1.0)) != 0.0:
+                errors.append(f"{cid}: assistant turn {tid} temperature is not 0.0")
+            if record_seed is not None:
+                expected_seed = record_seed + 1009 * (assistant_index + 1)
+                if generation.get("seed") != expected_seed:
+                    errors.append(
+                        f"{cid}: assistant turn {tid} seed={generation.get('seed')!r} "
+                        f"!= expected {expected_seed}"
+                    )
 
             tokens = generation.get("completion_tokens")
             if (
