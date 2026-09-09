@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the Stage-B4 prefix-reuse throughput optimization."""
+"""Regression tests for the Stage-B4 production throughput wrapper."""
 from __future__ import annotations
 
 import os
@@ -12,7 +12,15 @@ if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 
 import frontier_evidence_analysis as fea  # noqa: E402
-from frontier_evidence_fast import PrefixReuseEvidenceValidator  # noqa: E402
+from frontier_evidence_fast import (  # noqa: E402
+    PrefixReuseEvidenceValidator,
+    build_record_seed_map,
+)
+from frontier_seed_policy import (  # noqa: E402
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
+)
 
 
 class StubTarget:
@@ -68,6 +76,22 @@ def deterministic_judgment(_judge, prefix, *, seed, max_context_chars):
     text = "\n".join(str(m.get("content", "")) for m in prefix)
     score = 0.8 if "changed-u1" in text else 0.2
     return judgment(score)
+
+
+def seeded_record(cid, pair_id, base_seed=42):
+    record = {"conversation_id": cid, "pair_id": pair_id}
+    seed = experiment_record_seed(base_seed, record)
+    record["rollout_provenance"] = {
+        "base_seed": base_seed,
+        "seed_policy": SEED_POLICY,
+        "record_seed": seed,
+        "seed_key": experiment_seed_key(record),
+    }
+    record["frontier_behavioral_validation"] = {
+        "seed_policy": SEED_POLICY,
+        "record_seed": seed,
+    }
+    return record
 
 
 class PrefixReuseTests(unittest.TestCase):
@@ -153,7 +177,6 @@ class PrefixReuseTests(unittest.TestCase):
             validator.replay(self.turns, seed=5)
             self.assertFalse(validator._baseline_prefix_safe)
             validator.replay(self.turns, seed=5, replacements={2: "changed-u1"})
-        # Three calls for baseline + three more for fail-closed full replay.
         self.assertEqual(len(target.calls), 6)
 
     def test_fast_replay_is_identical_to_full_replay_when_prefix_is_proven(self):
@@ -170,7 +193,11 @@ class PrefixReuseTests(unittest.TestCase):
             self.assertTrue(fast._baseline_prefix_safe)
             self.assertEqual(
                 [x["response_fingerprint"] for x in baseline["trajectory"]],
-                [fea.json_fingerprint("a0"), fea.json_fingerprint("a1"), fea.json_fingerprint("a2")],
+                [
+                    fea.json_fingerprint("a0"),
+                    fea.json_fingerprint("a1"),
+                    fea.json_fingerprint("a2"),
+                ],
             )
             optimized = fast.replay(
                 self.turns,
@@ -184,7 +211,7 @@ class PrefixReuseTests(unittest.TestCase):
             )
 
         self.assertEqual(optimized, reference)
-        self.assertEqual(len(fast_target.calls), 5)  # 3 baseline + 2 suffix
+        self.assertEqual(len(fast_target.calls), 5)
         self.assertEqual(len(full_target.calls), 3)
 
     def test_missing_intervention_turn_fails_closed(self):
@@ -195,6 +222,20 @@ class PrefixReuseTests(unittest.TestCase):
         validator._baseline_prefix_safe = True
         with self.assertRaises(RuntimeError):
             validator.replay(self.turns, seed=5, replacements={99: "missing"})
+
+
+class ProductionSeedBindingTests(unittest.TestCase):
+    def test_b4_seed_map_preserves_pair_shared_seed(self):
+        a = seeded_record("adv", "pair-z")
+        b = seeded_record("ben", "pair-z")
+        seed_map = build_record_seed_map([a, b], expected_base_seed=42)
+        self.assertEqual(seed_map["adv"], seed_map["ben"])
+
+    def test_b4_rejects_b2_seed_drift(self):
+        record = seeded_record("adv", "pair-z")
+        record["frontier_behavioral_validation"]["record_seed"] += 1
+        with self.assertRaises(RuntimeError):
+            build_record_seed_map([record], expected_base_seed=42)
 
 
 if __name__ == "__main__":
