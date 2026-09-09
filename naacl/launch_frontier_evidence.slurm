@@ -120,6 +120,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --max-positive-spans "$MAX_POSITIVE_SPANS" \
     --max-negative-spans "$MAX_NEGATIVE_SPANS" \
     --max-tokens "$MAX_TOKENS" \
+    --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS" \
     --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
