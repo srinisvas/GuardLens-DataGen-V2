@@ -87,6 +87,10 @@ def main() -> None:
             require_version(errors, "vLLM", vllm_version, "0.8.1")
             require_version(errors, "mistral-common", mistral_common_version, "1.5.4")
         if "gemma-3" in lowered:
+            # Gemma 3 support appears in the vLLM 0.8.2/0.8.3 generation;
+            # require 0.8.3 to avoid an environment that is sufficient for
+            # Mistral Small 3.1 but too old for reliable Gemma 3 serving.
+            require_version(errors, "vLLM", vllm_version, "0.8.3")
             require_version(errors, "transformers", transformers_version, "4.50.0")
 
     if errors:
