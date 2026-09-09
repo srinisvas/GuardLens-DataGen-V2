@@ -17,8 +17,8 @@ set -euo pipefail
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 N_SHARDS="${N_SHARDS:-2}"
 PORT_BASE="${PORT_BASE:-8100}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
-MAX_TOKENS="${MAX_TOKENS:-640}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+MAX_TOKENS="${MAX_TOKENS:-1280}"
 SEED="${SEED:-42}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
@@ -108,7 +108,7 @@ case "$SOURCE_PREFLIGHT_MODE" in
     ;;
 esac
 
-echo "Target generation contract: max_tokens=$MAX_TOKENS; require finish_reason=stop + completion_tokens"
+echo "Target generation contract: max_tokens=$MAX_TOKENS max_model_len=$MAX_MODEL_LEN; require finish_reason=stop + completion_tokens"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
@@ -141,7 +141,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --output "${OUTPUT_FILE%.jsonl}.shard${i}.jsonl" \
     --checkpoint "${CHECKPOINT_PREFIX}.shard${i}.checkpoint.jsonl" \
     --model "$TARGET_MODEL" --base-url "http://localhost:$((PORT_BASE+i))" \
-    --seed "$SEED" --max-tokens "$MAX_TOKENS" \
+    --seed "$SEED" --max-tokens "$MAX_TOKENS" --max-model-len "$MAX_MODEL_LEN" \
     --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
@@ -168,6 +168,7 @@ python3 naacl/audit_frontier_rollout.py \
   --input "$OUTPUT_FILE" \
   --expected-records "$RECORDS" \
   --expected-model "$TARGET_MODEL" \
-  --expected-max-tokens "$MAX_TOKENS"
+  --expected-max-tokens "$MAX_TOKENS" \
+  --expected-max-model-len "$MAX_MODEL_LEN"
 
 echo "Frontier rollout complete and completion-audited: $OUTPUT_FILE"
