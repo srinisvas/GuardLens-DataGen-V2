@@ -3,8 +3,8 @@
 
 A scientifically usable rollout must contain every requested record and every
 assistant response must terminate naturally with ``finish_reason=stop``. The
-OpenAI-compatible server's completion-token count is persisted and checked so a
-length-capped response cannot masquerade as a complete trajectory.
+target envelope, pair-shared seed policy, completion instrumentation, and prompt
+metadata-exposure marker are all rechecked before downstream use.
 """
 from __future__ import annotations
 
@@ -12,9 +12,15 @@ import argparse
 import math
 import statistics
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 
-from frontier_common import load_jsonl, transcript_text
+from frontier_common import config_fingerprint, load_jsonl, transcript_text
+from frontier_seed_policy import (
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
+)
+from rollout_frontier_source import rollout_config
 
 ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
@@ -64,11 +70,10 @@ def main() -> None:
     completion_tokens = []
     near_cap = []
     transcript_lengths = []
+    pair_seeds = defaultdict(set)
 
     if args.expected_records and len(records) != args.expected_records:
-        errors.append(
-            f"expected {args.expected_records} records, got {len(records)}"
-        )
+        errors.append(f"expected {args.expected_records} records, got {len(records)}")
 
     for record in records:
         cid = str(record.get("conversation_id", ""))
@@ -99,15 +104,36 @@ def main() -> None:
             )
         if rollout.get("completion_contract") != COMPLETION_CONTRACT:
             errors.append(f"{cid}: missing/invalid completion contract")
+        if rollout.get("seed_policy") != SEED_POLICY:
+            errors.append(f"{cid}: seed_policy={rollout.get('seed_policy')!r} != {SEED_POLICY!r}")
         if rollout.get("authoring_metadata_exposed_to_target") is not False:
             errors.append(f"{cid}: target metadata-exposure marker is not false")
         if float(rollout.get("temperature", -1.0)) != 0.0:
             errors.append(f"{cid}: rollout temperature is not 0.0")
 
+        base_seed = rollout.get("base_seed")
+        if isinstance(base_seed, bool) or not isinstance(base_seed, int):
+            errors.append(f"{cid}: missing/invalid base_seed={base_seed!r}")
+            base_seed = None
         record_seed = rollout.get("record_seed")
         if isinstance(record_seed, bool) or not isinstance(record_seed, int):
             errors.append(f"{cid}: missing/invalid record_seed={record_seed!r}")
             record_seed = None
+        if base_seed is not None and record_seed is not None:
+            expected_record_seed = experiment_record_seed(base_seed, record)
+            expected_seed_key = experiment_seed_key(record)
+            if record_seed != expected_record_seed:
+                errors.append(
+                    f"{cid}: record_seed={record_seed} != locked-policy seed {expected_record_seed}"
+                )
+            if rollout.get("seed_key") != expected_seed_key:
+                errors.append(
+                    f"{cid}: seed_key={rollout.get('seed_key')!r} != {expected_seed_key!r}"
+                )
+            pair_id = record.get("pair_id")
+            if pair_id not in (None, ""):
+                pair_seeds[str(pair_id)].add(record_seed)
+
         if not isinstance(rollout.get("input_fingerprint"), str):
             errors.append(f"{cid}: missing input_fingerprint")
         if not isinstance(rollout.get("config_fingerprint"), str):
@@ -135,6 +161,16 @@ def main() -> None:
                 f"{cid}: rollout max_model_len={max_model_len} != expected "
                 f"{args.expected_max_model_len}"
             )
+
+        if base_seed is not None and target_model:
+            expected_cfg = rollout_config(
+                model=str(target_model),
+                base_seed=base_seed,
+                max_tokens=max_tokens,
+                max_model_len=max_model_len,
+            )
+            if rollout.get("config_fingerprint") != config_fingerprint(expected_cfg):
+                errors.append(f"{cid}: rollout config fingerprint mismatch")
 
         turns = record.get("turns", [])
         if len(turns) != int(record.get("conversation_length", -1)):
@@ -170,10 +206,7 @@ def main() -> None:
         ]
         if args.max_transcript_chars:
             try:
-                rendered = transcript_text(
-                    observable,
-                    max_chars=args.max_transcript_chars,
-                )
+                rendered = transcript_text(observable, max_chars=args.max_transcript_chars)
                 transcript_lengths.append(len(rendered))
             except Exception as exc:
                 errors.append(f"{cid}: judge transcript budget failure: {exc}")
@@ -184,9 +217,7 @@ def main() -> None:
             finish = generation.get("finish_reason")
             finish_reasons[str(finish)] += 1
             if finish != "stop":
-                errors.append(
-                    f"{cid}: assistant turn {tid} finish_reason={finish!r}"
-                )
+                errors.append(f"{cid}: assistant turn {tid} finish_reason={finish!r}")
             if generation.get("model") != target_model:
                 errors.append(f"{cid}: assistant turn {tid} model provenance mismatch")
             if generation.get("max_tokens") != max_tokens:
@@ -204,11 +235,7 @@ def main() -> None:
                     )
 
             tokens = generation.get("completion_tokens")
-            if (
-                isinstance(tokens, bool)
-                or not isinstance(tokens, int)
-                or tokens <= 0
-            ):
+            if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
                 errors.append(
                     f"{cid}: assistant turn {tid} invalid completion_tokens={tokens!r}"
                 )
@@ -221,10 +248,17 @@ def main() -> None:
             if tokens >= args.near_cap_fraction * max_tokens:
                 near_cap.append((cid, tid, tokens, max_tokens))
 
+    for pair_id, seeds in pair_seeds.items():
+        if len(seeds) != 1:
+            errors.append(
+                f"pair_id={pair_id}: paired records do not share one record seed: {sorted(seeds)}"
+            )
+
     print("=== Frontier rollout completion audit ===")
     print(f"Records: {len(records)}")
     print(f"Rollout statuses: {dict(statuses)}")
     print(f"Assistant finish reasons: {dict(finish_reasons)}")
+    print(f"Seed policy: {SEED_POLICY}; paired groups checked={len(pair_seeds)}")
     if completion_tokens:
         print(
             "Completion tokens: "
@@ -247,9 +281,7 @@ def main() -> None:
     )
     if near_cap:
         for cid, tid, tokens, max_tokens in near_cap[:20]:
-            warnings.append(
-                f"{cid} turn {tid}: completion_tokens={tokens}/{max_tokens}"
-            )
+            warnings.append(f"{cid} turn {tid}: completion_tokens={tokens}/{max_tokens}")
         for warning in warnings:
             print(f"WARN: {warning}")
 
