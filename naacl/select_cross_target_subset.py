@@ -5,8 +5,8 @@ Selection is outcome-blind and occurs from the source corpus. Complete scenario
 families are indivisible. Paired scenario families and standalone hard-benign
 families are sampled separately so the robustness subset preserves the source
 construction mix. Within each construction type, a deterministic greedy allocator
-balances the full scenario composition rather than using the first record as a
-proxy for pair hardness or trajectory structure.
+minimizes residual error over the full scenario-feature distribution rather than
+scoring only features present in the candidate group.
 """
 from __future__ import annotations
 
@@ -50,14 +50,20 @@ def select_balanced_groups(
     fraction: float,
     rng: random.Random,
 ) -> List[Tuple[str, List[Dict]]]:
+    """Greedily minimize full normalized residual to the target distribution."""
     if not items:
         return []
     n_select = max(1, min(len(items), int(round(len(items) * fraction))))
 
+    feature_cache = {}
     global_features = Counter()
-    for _, group in items:
-        global_features.update(feature_counter(group))
+    for scenario, group in items:
+        features = feature_counter(group)
+        feature_cache[scenario] = features
+        global_features.update(features)
+
     target = {key: value * fraction for key, value in global_features.items()}
+    keys = list(target)
 
     remaining = list(items)
     rng.shuffle(remaining)
@@ -67,27 +73,20 @@ def select_balanced_groups(
     while len(selected) < n_select:
         best_idx = None
         best_score = None
-        for idx, (_, group) in enumerate(remaining):
-            gfeatures = feature_counter(group)
+        for idx, (scenario, _) in enumerate(remaining):
+            candidate = feature_cache[scenario]
             score = 0.0
-            for key, amount in gfeatures.items():
-                expected = max(target.get(key, 0.0), 1.0)
-                after = selected_features[key] + amount
-                score += ((after - target.get(key, 0.0)) / expected) ** 2
-            # Encourage underrepresented features even if they are absent from
-            # this group's direct score contribution.
-            coverage_bonus = 0.0
-            for key, amount in gfeatures.items():
-                deficit = max(0.0, target.get(key, 0.0) - selected_features[key])
-                coverage_bonus += min(float(amount), deficit) / max(target.get(key, 1.0), 1.0)
-            score -= 0.15 * coverage_bonus
-            score += rng.random() * 1e-10
+            for key in keys:
+                after = selected_features[key] + candidate.get(key, 0)
+                denom = max(target[key], 1.0)
+                score += ((after - target[key]) / denom) ** 2
+            score += rng.random() * 1e-12
             if best_score is None or score < best_score:
                 best_score = score
                 best_idx = idx
         scenario, group = remaining.pop(best_idx)
         selected.append((scenario, group))
-        selected_features.update(feature_counter(group))
+        selected_features.update(feature_cache[scenario])
 
     return selected
 
@@ -129,6 +128,10 @@ def main() -> None:
         raise ValueError("fraction must be in (0,1]")
 
     records = load_jsonl(args.input)
+    ids = [str(r.get("conversation_id", "")) for r in records]
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("input contains duplicate conversation_id values")
+
     groups = defaultdict(list)
     for r in records:
         scenario = (r.get("metadata", {}) or {}).get("scenario_family")
@@ -172,7 +175,7 @@ def main() -> None:
         "selected_distribution": summarize(selected),
         "policy": (
             "source-only outcome-blind selection; complete scenario families; paired and standalone "
-            "families sampled separately; full group composition balanced across domain, difficulty, "
+            "families sampled separately; full normalized residual minimized across domain, difficulty, "
             "trajectory family, pair hardness, slice role, mechanism family, style, and label"
         ),
         "target_model": "google/gemma-3-27b-it",
