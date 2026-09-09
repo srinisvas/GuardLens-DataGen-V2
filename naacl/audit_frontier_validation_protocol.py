@@ -6,6 +6,11 @@ import argparse
 from collections import Counter
 
 from frontier_common import config_fingerprint, load_jsonl
+from frontier_seed_policy import (
+    SEED_POLICY,
+    experiment_record_seed,
+    experiment_seed_key,
+)
 from validate_frontier_rollout import (
     PROTOCOL,
     TERMINAL_STATUSES,
@@ -34,12 +39,28 @@ def audit_record(
     validation = record.get("frontier_behavioral_validation", {}) or {}
     if rollout.get("target_model") != target_model:
         raise RuntimeError(f"{cid}: rollout target model mismatch")
+    if rollout.get("seed_policy") != SEED_POLICY:
+        raise RuntimeError(f"{cid}: rollout seed policy mismatch")
+    base_seed = rollout.get("base_seed")
+    if isinstance(base_seed, bool) or not isinstance(base_seed, int):
+        raise RuntimeError(f"{cid}: rollout base seed missing/invalid")
+    expected_seed = experiment_record_seed(base_seed, record)
+    expected_key = experiment_seed_key(record)
+    if rollout.get("record_seed") != expected_seed:
+        raise RuntimeError(f"{cid}: rollout record seed mismatch")
+    if rollout.get("seed_key") != expected_key:
+        raise RuntimeError(f"{cid}: rollout seed key mismatch")
+
     if validation.get("protocol") != PROTOCOL:
         raise RuntimeError(f"{cid}: validation protocol mismatch")
     if validation.get("target_model") != target_model:
         raise RuntimeError(f"{cid}: validation target model mismatch")
     if validation.get("judge_model") != judge_model:
         raise RuntimeError(f"{cid}: validation judge model mismatch")
+    if validation.get("seed_policy") != SEED_POLICY:
+        raise RuntimeError(f"{cid}: validation seed policy mismatch")
+    if validation.get("record_seed") != expected_seed:
+        raise RuntimeError(f"{cid}: B2 record seed differs from B1 paired seed")
     if int(validation.get("judge_max_model_len", -1)) != int(judge_max_model_len):
         raise RuntimeError(f"{cid}: judge runtime context mismatch")
     if int(validation.get("judge_max_context_chars", -1)) != int(judge_max_context_chars):
@@ -49,9 +70,6 @@ def audit_record(
     if validation.get("authoring_metadata_exposed_to_judge") is not False:
         raise RuntimeError(f"{cid}: judge metadata exposure marker is not false")
 
-    # Reconstruct exactly the B2 configuration dictionary whose fingerprint was
-    # written by validate_frontier_rollout.py. This catches stale/mutated
-    # thresholds, seeds, context windows, or judge identity before B4.
     cfg = validation_config(
         judge_model=judge_model,
         base_seed=int(validation.get("base_seed", -1)),
@@ -69,9 +87,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--expected-records", type=int, default=0)
-    parser.add_argument(
-        "--target-model", default="Qwen/Qwen2.5-32B-Instruct"
-    )
+    parser.add_argument("--target-model", default="Qwen/Qwen2.5-32B-Instruct")
     parser.add_argument(
         "--judge-model", default="mistralai/Mistral-Small-3.1-24B-Instruct-2503"
     )
@@ -104,6 +120,7 @@ def main() -> None:
     print(f"Validation statuses: {dict(statuses)}")
     print(f"Target: {args.target_model}")
     print(f"Judge: {args.judge_model}")
+    print(f"Seed policy: {SEED_POLICY}")
     print(
         f"Judge context: max_model_len={args.judge_max_model_len} "
         f"max_context_chars={args.judge_max_context_chars}"
