@@ -18,7 +18,7 @@ TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 N_SHARDS="${N_SHARDS:-2}"
 PORT_BASE="${PORT_BASE:-8100}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
-MAX_TOKENS="${MAX_TOKENS:-320}"
+MAX_TOKENS="${MAX_TOKENS:-640}"
 SEED="${SEED:-42}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
@@ -108,6 +108,7 @@ case "$SOURCE_PREFLIGHT_MODE" in
     ;;
 esac
 
+echo "Target generation contract: max_tokens=$MAX_TOKENS; require finish_reason=stop + completion_tokens"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader || true
 
 PIDS=()
@@ -163,4 +164,10 @@ with open(out,'w',encoding='utf-8') as f:
 print('merged',len(source),'records ->',out)
 PY
 
-echo "Frontier rollout complete: $OUTPUT_FILE"
+python3 naacl/audit_frontier_rollout.py \
+  --input "$OUTPUT_FILE" \
+  --expected-records "$RECORDS" \
+  --expected-model "$TARGET_MODEL" \
+  --expected-max-tokens "$MAX_TOKENS"
+
+echo "Frontier rollout complete and completion-audited: $OUTPUT_FILE"
