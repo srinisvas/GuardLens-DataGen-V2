@@ -26,6 +26,21 @@ Merged Stage-0 expectations:
 No source record is rewritten during merge. Existing `metadata.corpus_version` and
 `metadata.generator` preserve author provenance.
 
+## Locked target-generation contract
+
+The canonical Qwen and counterfactual target-generation cap is **640 tokens**.
+Every assistant generation must persist:
+
+- `generation_provenance.finish_reason`
+- `generation_provenance.completion_tokens`
+- `generation_provenance.max_tokens=640`
+
+A target response is scientifically complete only when `finish_reason=stop`.
+`finish_reason=length` is persisted for diagnosis but terminates that trajectory
+immediately; later fixed user turns are not executed and the record cannot proceed
+to behavioral validation. `audit_frontier_rollout.py` enforces this contract after
+rollout and before both validation and evidence.
+
 ## 1. CPU audits and merge
 
 ```bash
@@ -51,7 +66,11 @@ python naacl/audit_frontier_source.py \
   --expected-standalone 600 \
   --expected-scenarios 600
 
-python -m unittest naacl/test_frontier_cpu.py naacl/test_multi_author_source.py -v
+python -m unittest \
+  naacl/test_frontier_cpu.py \
+  naacl/test_multi_author_source.py \
+  naacl/test_generation_completion.py \
+  -v
 ```
 
 The merge fails closed on conversation-ID, pair-ID, scenario-family, and normalized
@@ -80,6 +99,7 @@ each corpus.
 
 ```bash
 N_SHARDS=1 \
+MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
 OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout \
@@ -87,18 +107,23 @@ SOURCE_PREFLIGHT_MODE=schema \
 sbatch --gres=gpu:1 naacl/launch_frontier_rollout.slurm
 ```
 
-Do not proceed if model loading, record completion, or output integrity fails.
+The launcher runs `audit_frontier_rollout.py` automatically after merging shards.
+Do not proceed unless all records are complete, every assistant turn has
+`finish_reason=stop`, completion-token usage is present, and the near-cap count is
+acceptably small. The audit prints min/median/p95/max completion-token statistics.
 
 ## 4. Mistral-24B smoke validation
 
 ```bash
 N_SHARDS=1 \
+TARGET_MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout.jsonl \
 OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated \
 sbatch --gres=gpu:1 naacl/launch_frontier_validation.slurm
 ```
 
+The validation launcher re-audits Stage-B1 completion before loading the judge.
 Review validation-status counts, confidence, unsafe anchors, and representative
 realized conversations from both authors before evidence replay.
 
@@ -113,14 +138,18 @@ python naacl/materialize_frontier_candidates.py \
   --controls 2
 
 N_SHARDS=1 \
+MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates.jsonl \
 OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence \
 sbatch --gres=gpu:2 naacl/launch_frontier_evidence.slurm
 ```
 
-The evidence smoke must demonstrate B1 rollout replay reproducibility and B2 judge
-reproducibility. Any replay mismatch fails closed rather than creating evidence.
+The evidence launcher rechecks that the candidate file came from a complete
+640-token Qwen rollout. The shared vLLM client rejects any counterfactual target
+generation whose finish reason is not `stop`, so a clipped intervention cannot
+produce an evidence delta. The evidence smoke must demonstrate B1 rollout replay
+reproducibility and B2 judge reproducibility. Any replay mismatch fails closed.
 
 ## 6. Full 3,000-record Qwen rollout
 
@@ -128,6 +157,7 @@ Only after the smoke passes:
 
 ```bash
 N_SHARDS=2 \
+MAX_TOKENS=640 \
 INPUT_FILE="$MERGED_SOURCE" \
 OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_rollout \
@@ -136,12 +166,14 @@ sbatch naacl/launch_frontier_rollout.slurm
 ```
 
 The launcher recognizes 3,000 records and automatically runs strict expectations
-for 1,200 pairs, 600 standalone records, and 600 scenarios.
+for 1,200 pairs, 600 standalone records, and 600 scenarios, followed by the target
+completion audit.
 
 ## 7. Full independent validation
 
 ```bash
 N_SHARDS=2 \
+TARGET_MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout.jsonl \
 OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated \
@@ -162,6 +194,7 @@ python naacl/materialize_frontier_candidates.py \
   --controls 2
 
 N_SHARDS=2 \
+MAX_TOKENS=640 \
 INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates.jsonl \
 OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence.jsonl \
 CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence \
