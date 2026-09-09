@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from typing import Dict
 
 from frontier_common import load_jsonl, write_jsonl
+from prepare_frontier_dataset import assert_expected_provenance
 
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
@@ -60,6 +61,15 @@ def canonicalize(
     r["corpus_source"] = source
     metadata = r.setdefault("metadata", {})
     if source == "frontier_authored_v3":
+        try:
+            assert_expected_provenance(
+                r,
+                expected_target=expected_frontier_target,
+                expected_judge=expected_frontier_judge,
+                require_evidence=(r.get("label") == 1),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"{cid}: frontier protocol-chain validation failed: {exc}") from exc
         if r.get("primary_pair_complete") is not True:
             raise RuntimeError(f"{cid}: frontier merge input is not from a complete retained pair")
         if r.get("canonical_target_model") != expected_frontier_target:
@@ -162,6 +172,7 @@ def main() -> None:
         "cross_group_exact_user_trajectory_duplicates": 0,
         "expected_frontier_target_model": args.expected_frontier_target_model,
         "expected_frontier_judge_model": args.expected_frontier_judge_model,
+        "frontier_protocol_chain_rechecked": True,
         "policy": "merge canonical records first; perform a single group-aware split afterward",
     }
     os.makedirs(os.path.dirname(args.stats_output) or ".", exist_ok=True)
