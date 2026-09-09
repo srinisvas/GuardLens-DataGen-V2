@@ -164,22 +164,11 @@ for i in $(seq 0 $((N_SHARDS-1))); do
 done
 for p in "${WORKERS[@]}"; do wait "$p"; done
 
-python3 - "$INPUT_FILE" "$OUTPUT_FILE" "$N_SHARDS" <<'PY'
-import json, sys
-src, out, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
-merged={}
-for i in range(n):
-    p=out[:-6]+f'.shard{i}.jsonl'
-    for line in open(p, encoding='utf-8'):
-        if line.strip():
-            r=json.loads(line); merged[str(r['conversation_id'])]=r
-source=[json.loads(x) for x in open(src,encoding='utf-8') if x.strip()]
-missing=[r['conversation_id'] for r in source if str(r['conversation_id']) not in merged]
-if missing: raise SystemExit(f'missing {len(missing)} rollout records')
-with open(out,'w',encoding='utf-8') as f:
-    for r in source: f.write(json.dumps(merged[str(r['conversation_id'])],ensure_ascii=False)+'\n')
-print('merged',len(source),'records ->',out)
-PY
+python3 naacl/merge_stage_shards.py \
+  --source "$INPUT_FILE" \
+  --output "$OUTPUT_FILE" \
+  --num-shards "$N_SHARDS" \
+  --shard-pattern "${OUTPUT_FILE%.jsonl}.shard{i}.jsonl"
 
 python3 naacl/audit_frontier_rollout.py \
   --input "$OUTPUT_FILE" \
