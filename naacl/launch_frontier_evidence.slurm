@@ -12,8 +12,6 @@
 # Stage B4. Full-throttle topology: three Qwen target servers (GPUs 0-2) feed one
 # shared Mistral judge server (GPU 3). Two logical evidence workers share each
 # target server so vLLM can continuously batch independent counterfactual replays.
-# The shared judge is intentionally consolidated because its responses are tiny
-# JSON objects and it can batch requests from all evidence workers.
 set -euo pipefail
 TARGET_MODEL="${TARGET_MODEL:-Qwen/Qwen2.5-32B-Instruct}"
 JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
@@ -77,8 +75,6 @@ cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
 EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
-# Candidate materialization preserves B1/B2 provenance. Recheck both before
-# allocating four GPUs so evidence cannot run on a stale target or judge envelope.
 python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
   --expected-records "$EXPECTED_RECORDS" \
@@ -161,6 +157,8 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --max-negative-spans "$MAX_NEGATIVE_SPANS" \
     --max-tokens "$MAX_TOKENS" \
     --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS" \
+    --target-max-model-len "$TARGET_MAX_MODEL_LEN" \
+    --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
     --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
