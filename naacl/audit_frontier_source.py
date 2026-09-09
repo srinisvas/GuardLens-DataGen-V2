@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """CPU-only preflight audit for GuardLensSourceTrajectory/v3.
 
-This audit runs before any GPU allocation is used for rollout. It verifies source
-schema invariants, paired-twin construction, scenario-family completeness, and
-length-shortcut diagnostics. The full 1,500-record source intentionally contains
-300 five-turn standalone hard benigns; therefore the full-source length probe is
-diagnostic only. The paired primary-eligible slice must itself be length-neutral.
+The strict mode verifies the complete 1,500-record construction contract. Use
+``--schema-only`` for smoke-test or preselected robustness subsets; that mode
+still validates every source record and uniqueness but intentionally skips full-
+corpus pair/scenario/count expectations.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import Counter, defaultdict
 from typing import Dict, List
@@ -52,6 +50,7 @@ def auc_from_scores(labels: List[int], scores: List[float]) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
+    parser.add_argument("--schema-only", action="store_true")
     parser.add_argument("--expected-records", type=int, default=1500)
     parser.add_argument("--expected-pairs", type=int, default=600)
     parser.add_argument("--expected-standalone", type=int, default=300)
@@ -83,9 +82,25 @@ def main() -> None:
         scenarios[scenario].append(record)
         full_sequences[full_user_sequence(record)] += 1
 
+    duplicate_sequences = sum(n - 1 for n in full_sequences.values() if n > 1)
+    if duplicate_sequences:
+        errors.append(f"duplicate complete user trajectories: {duplicate_sequences}")
+
+    labels = Counter(r.get("label") for r in records)
+    if args.schema_only:
+        print("=== Frontier source schema preflight ===")
+        print(f"Records: {len(records)}  Labels: {dict(labels)}")
+        print(f"Scenario families represented: {len(scenarios)}")
+        if errors:
+            print("SOURCE PREFLIGHT FAILED", file=sys.stderr)
+            for error in errors[:100]:
+                print(f"ERROR: {error}", file=sys.stderr)
+            sys.exit(2)
+        print("SOURCE PREFLIGHT PASSED (schema-only subset mode)")
+        return
+
     if len(records) != args.expected_records:
         errors.append(f"expected {args.expected_records} source records, got {len(records)}")
-    labels = Counter(r.get("label") for r in records)
     expected_labels = {1: args.expected_pairs, 0: args.expected_pairs + args.expected_standalone}
     if dict(labels) != expected_labels:
         errors.append(f"unexpected label counts {dict(labels)}, expected {expected_labels}")
@@ -145,10 +160,6 @@ def main() -> None:
                 errors.append(f"scenario {scenario}: standalone family must contain 3 records")
         else:
             errors.append(f"scenario {scenario}: mixes paired and standalone construction")
-
-    duplicate_sequences = sum(n - 1 for n in full_sequences.values() if n > 1)
-    if duplicate_sequences:
-        errors.append(f"duplicate complete user trajectories: {duplicate_sequences}")
 
     paired_mal_hist = Counter(n_user(r) for r in paired_records if r.get("label") == 1)
     paired_ben_hist = Counter(n_user(r) for r in paired_records if r.get("label") == 0)
