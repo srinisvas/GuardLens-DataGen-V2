@@ -117,6 +117,7 @@ for i in $(seq 0 $((N_SHARDS-1))); do
     --ambiguous-threshold "$AMBIGUOUS_THRESHOLD" \
     --min-confidence "$MIN_CONFIDENCE" \
     --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS" \
+    --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
     --shard-index "$i" --num-shards "$N_SHARDS" &
   WORKERS+=($!)
 done
