@@ -39,6 +39,7 @@ def main() -> None:
     parser.add_argument("--expected-records", type=int, default=0)
     parser.add_argument("--expected-model", default=None)
     parser.add_argument("--expected-max-tokens", type=int, default=0)
+    parser.add_argument("--expected-max-model-len", type=int, default=0)
     parser.add_argument("--max-transcript-chars", type=int, default=0)
     parser.add_argument("--near-cap-fraction", type=float, default=0.90)
     args = parser.parse_args()
@@ -47,6 +48,8 @@ def main() -> None:
         raise ValueError("expected-records must be nonnegative")
     if args.expected_max_tokens < 0:
         raise ValueError("expected-max-tokens must be nonnegative")
+    if args.expected_max_model_len < 0:
+        raise ValueError("expected-max-model-len must be nonnegative")
     if args.max_transcript_chars < 0:
         raise ValueError("max-transcript-chars must be nonnegative")
     if not (0.0 < args.near_cap_fraction <= 1.0):
@@ -119,6 +122,20 @@ def main() -> None:
                 f"{cid}: rollout max_tokens={max_tokens} != expected {args.expected_max_tokens}"
             )
 
+        max_model_len = rollout.get("max_model_len")
+        if (
+            isinstance(max_model_len, bool)
+            or not isinstance(max_model_len, int)
+            or max_model_len <= 0
+        ):
+            errors.append(f"{cid}: invalid rollout max_model_len={max_model_len!r}")
+            continue
+        if args.expected_max_model_len and max_model_len != args.expected_max_model_len:
+            errors.append(
+                f"{cid}: rollout max_model_len={max_model_len} != expected "
+                f"{args.expected_max_model_len}"
+            )
+
         turns = record.get("turns", [])
         if len(turns) != int(record.get("conversation_length", -1)):
             errors.append(f"{cid}: conversation_length does not match physical turns")
@@ -174,6 +191,8 @@ def main() -> None:
                 errors.append(f"{cid}: assistant turn {tid} model provenance mismatch")
             if generation.get("max_tokens") != max_tokens:
                 errors.append(f"{cid}: assistant turn {tid} max_tokens provenance mismatch")
+            if generation.get("max_model_len") != max_model_len:
+                errors.append(f"{cid}: assistant turn {tid} max_model_len provenance mismatch")
             if float(generation.get("temperature", -1.0)) != 0.0:
                 errors.append(f"{cid}: assistant turn {tid} temperature is not 0.0")
             if record_seed is not None:
