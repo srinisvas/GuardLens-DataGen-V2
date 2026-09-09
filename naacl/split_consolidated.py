@@ -3,8 +3,8 @@
 
 Primary grouping uses ``metadata.consolidated_split_group``. Frontier records are
 therefore grouped by complete scenario_family; legacy records retain pair linkage
-when available. Allocation softly balances class/source and the v3 experimental
-axes without ever breaking a group.
+when available. Allocation softly balances class/source, class-conditional user-
+turn length, and the v3 experimental axes without ever breaking a group.
 """
 from __future__ import annotations
 
@@ -19,6 +19,13 @@ from typing import Dict, List
 from frontier_common import load_jsonl, write_jsonl
 
 SPLITS = ("train", "dev", "test")
+
+
+def n_user_turns(record: Dict) -> int:
+    return sum(
+        str(t.get("role", "")).lower() == "user"
+        for t in record.get("turns", [])
+    )
 
 
 def group_records(records: List[Dict]) -> Dict[str, List[Dict]]:
@@ -38,10 +45,14 @@ def group_signature(group: List[Dict]) -> Counter:
         source = str(r.get("corpus_source", "unknown"))
         label = str(r.get("label"))
         difficulty = str(r.get("difficulty", "unknown"))
+        user_len = str(n_user_turns(r))
         c[("label", label)] += 1
         c[("source", source)] += 1
         c[("source_label", source, label)] += 1
         c[("source_difficulty", source, difficulty)] += 1
+        # Length is explicitly conditioned on source+label so the exact
+        # class-matching repairs are not accidentally undone by the final split.
+        c[("source_label_user_turns", source, label, user_len)] += 1
 
         if source == "frontier_authored_v3":
             metadata = r.get("metadata", {}) or {}
@@ -93,9 +104,6 @@ def split_groups(groups: Dict[str, List[Dict]], fractions: Dict[str, float], see
                 sum(signature_fills) / len(signature_fills)
                 if signature_fills else total_fill
             )
-            # Group-size ratio drives the allocation; signature balance is a
-            # meaningful but secondary constraint. Tiny seeded noise resolves
-            # otherwise exact ties reproducibly.
             score = 0.72 * total_fill + 0.28 * signature_fill + rng.random() * 1e-9
             if best_score is None or score < best_score:
                 best_score = score
@@ -116,6 +124,7 @@ def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
     ids = set()
     pair_owner = {}
     scenario_owner = {}
+    hash_owner = {}
     for split_name, records in splits.items():
         for r in records:
             cid = str(r.get("conversation_id", ""))
@@ -127,6 +136,14 @@ def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
             previous = owner.setdefault(group, split_name)
             if previous != split_name:
                 raise RuntimeError(f"split leakage: group {group} appears in {previous} and {split_name}")
+
+            trajectory_hash = metadata.get("normalized_user_trajectory_hash")
+            if trajectory_hash:
+                previous = hash_owner.setdefault(str(trajectory_hash), split_name)
+                if previous != split_name:
+                    raise RuntimeError(
+                        f"exact user-trajectory leakage: hash appears in {previous} and {split_name}"
+                    )
 
             pair_id = r.get("pair_id")
             if pair_id not in (None, ""):
@@ -152,6 +169,10 @@ def describe(records: List[Dict]) -> Dict:
         "sources": dict(Counter(str(r.get("corpus_source")) for r in records)),
         "source_label": dict(Counter(
             f"{r.get('corpus_source')}|{r.get('label')}" for r in records
+        )),
+        "source_label_user_turns": dict(Counter(
+            f"{r.get('corpus_source')}|{r.get('label')}|{n_user_turns(r)}"
+            for r in records
         )),
         "difficulty": dict(Counter(str(r.get("difficulty", "unknown")) for r in records)),
         "supervision_tiers": dict(Counter(str(r.get("supervision_tier")) for r in records)),
@@ -183,8 +204,6 @@ def assert_size_tolerance(
     total = sum(len(v) for v in splits.values())
     if total == 0:
         raise RuntimeError("cannot split an empty dataset")
-    # Indivisible groups limit exact ratio matching. Allow one maximum-size group
-    # plus 0.5 percentage points of numerical/greedy slack.
     tolerance = max_group_size / total + 0.005
     for name in SPLITS:
         if not splits[name]:
@@ -231,8 +250,8 @@ def main() -> None:
         "fractions": fractions,
         "group_policy": "metadata.consolidated_split_group; frontier scenario_family and legacy pairs never cross partitions",
         "balance_policy": (
-            "soft balance on label, source, source×label, source×difficulty, and for frontier: "
-            "target_domain, slice_role, pair_hardness, trajectory_family, mechanism_family, style"
+            "soft balance on label, source, source×label, source×difficulty, source×label×user_turn_count, "
+            "and for frontier: target_domain, slice_role, pair_hardness, trajectory_family, mechanism_family, style"
         ),
         "splits": {name: describe(subset) for name, subset in splits.items()},
         "leakage_check": "passed",
