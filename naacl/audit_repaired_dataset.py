@@ -113,8 +113,14 @@ def main() -> None:
         pivot = record.get("pivot_turn_id")
         ignore_pivot = bool(record.get("pivot_supervision_ignore", False))
 
-        if pivot is not None and int(pivot) not in evidence_turns:
-            errors.append(f"{cid}: pivot_turn_id {pivot} is not supported by evidence_turn_ids")
+        if args.require_prepared or analysis_status in {
+            "complete",
+            "baseline_not_unsafe",
+        }:
+            if pivot is not None and int(pivot) not in evidence_turns:
+                errors.append(
+                    f"{cid}: pivot_turn_id {pivot} is not supported by evidence_turn_ids"
+                )
 
         if args.require_prepared:
             if is_malicious:
