@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Fail-closed audit for canonical frontier-authored GuardLens primary records."""
+"""Fail-closed audit for canonical frontier-authored GuardLens primary records.
+
+The audit reconstructs evidence supervision from the stored intervention results
+rather than trusting derived fields such as ``evidence_turn_ids`` or the record-
+level supervision tier. It also rechecks pair semantics after rollout/evidence
+processing so no schema transformation can silently break the authored twin
+construction.
+"""
 from __future__ import annotations
 
 import argparse
@@ -21,14 +28,43 @@ DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
 
 def is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def user_turns(record):
+    return [
+        t for t in record.get("turns", [])
+        if str(t.get("role", "")).lower() == "user"
+    ]
 
 
 def n_user(record) -> int:
-    return sum(
-        str(t.get("role", "")).lower() == "user"
-        for t in record.get("turns", [])
-    )
+    return len(user_turns(record))
+
+
+def all_spans_with_turn(record):
+    for turn in record.get("turns", []):
+        if str(turn.get("role", "")).lower() != "user":
+            continue
+        tid = int(turn.get("turn_id", -1))
+        for span in turn.get("span_annotations", []):
+            yield tid, turn, span
+
+
+def expected_record_tier(record) -> str:
+    statuses = [
+        str(span.get("evidence_status", "unassessed"))
+        for _, _, span in all_spans_with_turn(record)
+    ]
+    if "supported_strong" in statuses:
+        return "cf_strong"
+    if "supported_weak" in statuses:
+        return "cf_weak"
+    return "llm_confirmed"
 
 
 def main() -> None:
@@ -100,17 +136,17 @@ def main() -> None:
         elif tier in EXPECTED_WEIGHTS and not math.isclose(
             float(weight), EXPECTED_WEIGHTS[tier], abs_tol=1e-9
         ):
-            errors.append(
-                f"{cid}: loss_weight={weight!r} does not match tier {tier!r}"
-            )
+            errors.append(f"{cid}: loss_weight={weight!r} does not match tier {tier!r}")
 
         label = r.get("label")
         evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
         pivot = r.get("pivot_turn_id")
         ignore = bool(r.get("pivot_supervision_ignore", False))
+        physical_user_ids = {int(t.get("turn_id", -1)) for t in user_turns(r)}
 
         if label == 1:
             analysis = r.get("frontier_evidence_analysis", {}) or {}
+            materialization = r.get("candidate_materialization", {}) or {}
             if r.get("validation_status") != "validated":
                 errors.append(f"{cid}: malicious prepared record is not independently validated")
             if analysis.get("status") != "complete":
@@ -123,18 +159,121 @@ def main() -> None:
                 errors.append(f"{cid}: malicious evidence judge mismatch")
             if analysis.get("author_intended_pivots_used_as_ground_truth") is not False:
                 errors.append(f"{cid}: author-intended pivots leaked into evidence ground truth")
+            if materialization.get("author_intended_pivots_used_as_ground_truth") is not False:
+                errors.append(f"{cid}: candidate materialization ground-truth marker is not false")
+
+            anchor = analysis.get("fresh_anchor_turn_id")
+            try:
+                anchor_int = int(anchor)
+            except (TypeError, ValueError):
+                anchor_int = None
+            if anchor_int not in physical_user_ids:
+                errors.append(f"{cid}: fresh unsafe anchor is not a realized user turn")
+
+            try:
+                weak_thr = float(analysis.get("weak_delta_threshold"))
+                strong_thr = float(analysis.get("strong_delta_threshold"))
+                control_tol = float(analysis.get("negative_control_tolerance"))
+            except (TypeError, ValueError):
+                weak_thr = strong_thr = control_tol = math.nan
+                errors.append(f"{cid}: evidence thresholds are missing/non-numeric")
+
+            reconstructed_turns = set()
+            for intervention in analysis.get("turn_interventions", []) or []:
+                status = str(intervention.get("status", ""))
+                tid = int(intervention.get("turn_id", -1))
+                delta = intervention.get("delta")
+                if tid not in physical_user_ids:
+                    errors.append(f"{cid}: turn intervention references missing user turn {tid}")
+                if status in SUPPORTED:
+                    reconstructed_turns.add(tid)
+                    if not is_number(delta):
+                        errors.append(f"{cid}: supported turn intervention has nonnumeric delta")
+                    elif status == "supported_strong" and float(delta) < strong_thr:
+                        errors.append(f"{cid}: strong turn intervention below strong threshold")
+                    elif status == "supported_weak" and not (
+                        weak_thr <= float(delta) < strong_thr
+                    ):
+                        errors.append(f"{cid}: weak turn intervention inconsistent with thresholds")
+
+            strong_span = False
+            weak_span = False
+            for tid, turn, span in all_spans_with_turn(r):
+                text = str(turn.get("text", ""))
+                status = str(span.get("evidence_status", "unassessed"))
+                delta = span.get("counterfactual_delta")
+                start, end = span.get("char_start"), span.get("char_end")
+                span_text = str(span.get("text", ""))
+                if isinstance(start, int) and isinstance(end, int) and span_text:
+                    if not (0 <= start < end <= len(text)) or text[start:end] != span_text:
+                        errors.append(f"{cid}: stale/misaligned span offsets")
+
+                if status in SUPPORTED:
+                    reconstructed_turns.add(tid)
+                    strong_span = strong_span or status == "supported_strong"
+                    weak_span = weak_span or status == "supported_weak"
+                    if span.get("causal_type") != "causal":
+                        errors.append(f"{cid}: supported span not causal")
+                    expected_span_tier = "cf_strong" if status == "supported_strong" else "cf_weak"
+                    if span.get("supervision_tier") != expected_span_tier:
+                        errors.append(f"{cid}: supported span supervision tier disagrees with status")
+                    if not is_number(delta):
+                        errors.append(f"{cid}: supported span has nonnumeric delta")
+                    elif status == "supported_strong" and float(delta) < strong_thr:
+                        errors.append(f"{cid}: strong span below strong threshold")
+                    elif status == "supported_weak" and not (
+                        weak_thr <= float(delta) < strong_thr
+                    ):
+                        errors.append(f"{cid}: weak span inconsistent with thresholds")
+                elif status == "negative_control_supported":
+                    if span.get("causal_type") != "incidental" or span.get("supervision_tier") != "incidental":
+                        errors.append(f"{cid}: supported negative control not marked incidental")
+                    if not is_number(delta) or not abs(float(delta)) < control_tol:
+                        errors.append(f"{cid}: supported negative control violates tolerance")
+                else:
+                    if span.get("causal_type") == "causal":
+                        errors.append(f"{cid}: unsupported span visible as causal")
+                    if span.get("supervision_tier") != "ignore":
+                        errors.append(f"{cid}: unsupported malicious span tier is not ignore")
+                    if status == "negative_control_violated" and is_number(delta):
+                        if abs(float(delta)) < control_tol:
+                            errors.append(f"{cid}: violated negative control is actually within tolerance")
+
+            reconstructed = sorted(reconstructed_turns)
+            if reconstructed != evidence_turns:
+                errors.append(
+                    f"{cid}: evidence_turn_ids {evidence_turns} != reconstructed supported turns {reconstructed}"
+                )
+            analysis_turns = sorted({int(x) for x in analysis.get("evidence_turn_ids", [])})
+            if analysis_turns != evidence_turns:
+                errors.append(f"{cid}: record and analysis evidence_turn_ids disagree")
+            if anchor_int is not None and any(tid > anchor_int for tid in evidence_turns):
+                errors.append(f"{cid}: evidence turn occurs after fresh unsafe anchor")
+
+            expected_tier = "cf_strong" if strong_span else "cf_weak" if weak_span else "llm_confirmed"
+            if tier != expected_tier:
+                errors.append(
+                    f"{cid}: record supervision tier {tier!r} != evidence-derived {expected_tier!r}"
+                )
+
             if evidence_turns:
                 pivots["malicious_supported"] += 1
                 if pivot != evidence_turns[0]:
                     errors.append(f"{cid}: pivot is not earliest supported evidence turn")
                 if ignore:
                     errors.append(f"{cid}: supported malicious pivot is ignored")
+                expected_kind = "distributed" if len(evidence_turns) > 1 else "contextual_pivot"
+                if r.get("pivot_kind") != expected_kind:
+                    errors.append(f"{cid}: pivot_kind disagrees with supported evidence-turn count")
             else:
                 pivots["malicious_unknown_ignored"] += 1
                 if pivot is not None:
                     errors.append(f"{cid}: unsupported malicious pivot is non-null")
                 if not ignore:
                     errors.append(f"{cid}: unknown malicious pivot must be ignored")
+                if r.get("pivot_kind") != "none":
+                    errors.append(f"{cid}: no-evidence malicious record must have pivot_kind=none")
+
         elif label == 0:
             pivots["benign_true_no_pivot"] += 1
             if r.get("validation_status") != "validated":
@@ -145,31 +284,20 @@ def main() -> None:
                 errors.append(f"{cid}: benign true no-pivot is incorrectly ignored")
             if tier != "benign_validated":
                 errors.append(f"{cid}: benign tier is {tier!r}, expected benign_validated")
-        else:
-            errors.append(f"{cid}: unsupported label={label!r}")
-
-        for turn in r.get("turns", []):
-            text = str(turn.get("text", ""))
-            for span in turn.get("span_annotations", []):
-                status = str(span.get("evidence_status", "unassessed"))
-                delta = span.get("counterfactual_delta")
+            if r.get("pivot_kind") != "none":
+                errors.append(f"{cid}: benign record must have pivot_kind=none")
+            analysis = r.get("frontier_evidence_analysis", {}) or {}
+            if analysis.get("status") != "not_applicable":
+                errors.append(f"{cid}: benign evidence analysis must be not_applicable")
+            for _, turn, span in all_spans_with_turn(r):
+                text = str(turn.get("text", ""))
                 start, end = span.get("char_start"), span.get("char_end")
                 span_text = str(span.get("text", ""))
                 if isinstance(start, int) and isinstance(end, int) and span_text:
                     if not (0 <= start < end <= len(text)) or text[start:end] != span_text:
-                        errors.append(f"{cid}: stale/misaligned span offsets")
-                if label == 1 and status in SUPPORTED:
-                    if span.get("causal_type") != "causal":
-                        errors.append(f"{cid}: supported span not causal")
-                    if span.get("supervision_tier") not in {"cf_strong", "cf_weak"}:
-                        errors.append(f"{cid}: supported span lacks evidence supervision tier")
-                    if not is_number(delta):
-                        errors.append(f"{cid}: supported span has nonnumeric delta")
-                elif label == 1 and status != "negative_control_supported":
-                    if span.get("causal_type") == "causal":
-                        errors.append(f"{cid}: unsupported span visible as causal")
-                    if span.get("supervision_tier") != "ignore":
-                        errors.append(f"{cid}: unsupported malicious span tier is not ignore")
+                        errors.append(f"{cid}: stale/misaligned benign span offsets")
+        else:
+            errors.append(f"{cid}: unsupported label={label!r}")
 
     for pair_id, group in pair_groups.items():
         labels = Counter(r.get("label") for r in group)
@@ -180,8 +308,25 @@ def main() -> None:
             continue
         malicious = next(r for r in group if r.get("label") == 1)
         benign = next(r for r in group if r.get("label") == 0)
-        if n_user(malicious) != n_user(benign):
+        mal_users = user_turns(malicious)
+        ben_users = user_turns(benign)
+        if len(mal_users) != len(ben_users):
             errors.append(f"pair {pair_id}: user-turn counts differ across twins")
+            continue
+        if not mal_users or mal_users[0].get("text") != ben_users[0].get("text"):
+            errors.append(f"pair {pair_id}: first user turn is no longer byte-identical")
+        mh = (malicious.get("intended_structure", {}) or {}).get("pair_hardness")
+        bh = (benign.get("intended_structure", {}) or {}).get("pair_hardness")
+        if mh != bh:
+            errors.append(f"pair {pair_id}: pair_hardness differs across twins")
+        elif mh == "context_required":
+            if mal_users[-1].get("text") != ben_users[-1].get("text"):
+                errors.append(f"pair {pair_id}: context-required final turn is no longer identical")
+        elif mh == "surface_control":
+            if mal_users[-1].get("text") == ben_users[-1].get("text"):
+                errors.append(f"pair {pair_id}: surface-control final turns unexpectedly identical")
+        else:
+            errors.append(f"pair {pair_id}: unsupported pair_hardness={mh!r}")
 
     label_counts = Counter(r.get("label") for r in records)
     if label_counts.get(0, 0) != label_counts.get(1, 0):
@@ -200,7 +345,10 @@ def main() -> None:
     print(f"User-turn histograms identical: {mal_hist == ben_hist}")
     print(f"Supervision tiers: {dict(tiers)}")
     print(f"Pivot supervision modes: {dict(pivots)}")
-    print(f"Scenario families: {len({(r.get('metadata',{}) or {}).get('scenario_family') for r in records})}")
+    print(
+        "Scenario families: "
+        f"{len({(r.get('metadata',{}) or {}).get('scenario_family') for r in records})}"
+    )
     if errors:
         print("VALIDITY AUDIT FAILED", file=sys.stderr)
         for error in errors[:100]:
