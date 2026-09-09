@@ -40,7 +40,7 @@ def realized_record(
     *,
     finish_reason="stop",
     completion_tokens=42,
-    max_tokens=1280,
+    max_tokens=2048,
     max_model_len=16384,
 ):
     return {
@@ -95,7 +95,7 @@ def reviewed_protocol_record(*, malicious=False):
         "protocol": "frontier_context_paired_counterfactual_v4",
         "target_model": TARGET,
         "judge_model": JUDGE,
-        "max_tokens": 1280,
+        "max_tokens": 2048,
         "judge_max_context_chars": 40000,
         "context_policy": "full_observable_prefix_or_fail_closed",
     }
@@ -105,8 +105,8 @@ def reviewed_protocol_record(*, malicious=False):
 
 
 class ChatCompletionParsingTests(unittest.TestCase):
-    def test_protocol_defaults_are_1280_16k_and_40k(self):
-        self.assertEqual(DEFAULT_TARGET_MAX_TOKENS, 1280)
+    def test_protocol_defaults_are_2048_16k_and_40k(self):
+        self.assertEqual(DEFAULT_TARGET_MAX_TOKENS, 2048)
         self.assertEqual(DEFAULT_TARGET_MAX_MODEL_LEN, 16384)
         self.assertEqual(DEFAULT_JUDGE_MAX_CONTEXT_CHARS, 40000)
 
@@ -123,18 +123,18 @@ class ChatCompletionParsingTests(unittest.TestCase):
     def test_length_completion_fails_when_natural_stop_required(self):
         with self.assertRaises(RuntimeError):
             parse_chat_completion_data(
-                completion_payload(finish_reason="length", completion_tokens=1280),
+                completion_payload(finish_reason="length", completion_tokens=2048),
                 require_stop=True,
             )
 
     def test_length_completion_can_be_persisted_for_diagnosis(self):
         result = parse_chat_completion_data(
-            completion_payload(finish_reason="length", completion_tokens=1280),
+            completion_payload(finish_reason="length", completion_tokens=2048),
             require_stop=False,
             require_usage=True,
         )
         self.assertEqual(result["finish_reason"], "length")
-        self.assertEqual(result["completion_tokens"], 1280)
+        self.assertEqual(result["completion_tokens"], 2048)
 
     def test_missing_usage_fails_when_instrumentation_required(self):
         payload = completion_payload()
@@ -183,7 +183,7 @@ class ValidationCompletionGateTests(unittest.TestCase):
     def test_length_terminated_assistant_is_rejected(self):
         with self.assertRaises(RuntimeError):
             assert_realized_rollout(
-                realized_record(finish_reason="length", completion_tokens=1280)
+                realized_record(finish_reason="length", completion_tokens=2048)
             )
 
     def test_missing_completion_tokens_is_rejected(self):
@@ -237,9 +237,9 @@ class PreparationProtocolChainTests(unittest.TestCase):
                 require_evidence=False,
             )
 
-    def test_old_640_token_rollout_is_rejected(self):
+    def test_old_1280_token_rollout_is_rejected(self):
         record = reviewed_protocol_record()
-        record["rollout_provenance"]["max_tokens"] = 640
+        record["rollout_provenance"]["max_tokens"] = 1280
         with self.assertRaises(ValueError):
             assert_expected_provenance(
                 record,
