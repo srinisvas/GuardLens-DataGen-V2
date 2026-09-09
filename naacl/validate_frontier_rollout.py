@@ -80,6 +80,13 @@ def assert_realized_rollout(record) -> None:
     rollout_max_tokens = rollout.get("max_tokens")
     if not isinstance(rollout_max_tokens, int) or isinstance(rollout_max_tokens, bool):
         raise RuntimeError(f"{cid}: rollout max_tokens provenance is missing/invalid")
+    rollout_max_model_len = rollout.get("max_model_len")
+    if (
+        not isinstance(rollout_max_model_len, int)
+        or isinstance(rollout_max_model_len, bool)
+        or rollout_max_model_len <= 0
+    ):
+        raise RuntimeError(f"{cid}: rollout max_model_len provenance is missing/invalid")
 
     for turn in turns:
         if str(turn.get("role", "")).lower() != "assistant":
@@ -103,6 +110,10 @@ def assert_realized_rollout(record) -> None:
         if generation.get("max_tokens") != rollout_max_tokens:
             raise RuntimeError(
                 f"{cid}: assistant turn {tid} max_tokens differs from rollout protocol"
+            )
+        if generation.get("max_model_len") != rollout_max_model_len:
+            raise RuntimeError(
+                f"{cid}: assistant turn {tid} max_model_len differs from rollout protocol"
             )
         if completion_tokens > rollout_max_tokens:
             raise RuntimeError(
