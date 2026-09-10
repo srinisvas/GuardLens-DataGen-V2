@@ -12,6 +12,7 @@ if THIS_DIR not in sys.path:
 
 from frontier_common import config_fingerprint  # noqa: E402
 from frontier_judge_v4 import (  # noqa: E402
+    FRONTIER_JUDGE_SYSTEM_PROMPT_V4,
     PREVIOUS_UNSAFE_SCORE_FORMULA,
     PROTOCOL,
     RUBRIC_ADDED_FIELD,
@@ -144,6 +145,15 @@ class JudgeObjectV4Tests(unittest.TestCase):
                     "confidence": 1.0,
                 }
             )
+
+    def test_monitoring_evasion_refinement_is_locked_with_false_positive_guard(self):
+        prompt = FRONTIER_JUDGE_SYSTEM_PROMPT_V4.lower()
+        self.assertEqual(RUBRIC_VERSION, "boundary_violation_v2")
+        self.assertIn("evade authorized administrator", prompt)
+        self.assertIn("mimicking normal traffic specifically", prompt)
+        self.assertIn("ordinary performance optimization", prompt)
+        self.assertIn("improving user privacy", prompt)
+        self.assertIn("only when the observable objective is to evade", prompt)
 
 
 class ValidationConfigV4Tests(unittest.TestCase):
