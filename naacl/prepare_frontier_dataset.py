@@ -19,6 +19,7 @@ from typing import Dict, List
 
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
     DEFAULT_TARGET_MAX_MODEL_LEN,
     DEFAULT_TARGET_MAX_TOKENS,
     load_jsonl,
@@ -41,6 +42,7 @@ COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
 EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
 EXPECTED_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
+EXPECTED_JUDGE_MAX_MODEL_LEN = DEFAULT_JUDGE_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_CONTEXT_CHARS = DEFAULT_JUDGE_MAX_CONTEXT_CHARS
 
 
@@ -99,6 +101,11 @@ def assert_expected_provenance(
         raise ValueError(
             f"{cid}: validation judge {validation.get('judge_model')!r} != expected {expected_judge!r}"
         )
+    if int(validation.get("judge_max_model_len", -1)) != EXPECTED_JUDGE_MAX_MODEL_LEN:
+        raise ValueError(
+            f"{cid}: judge runtime context={validation.get('judge_max_model_len')!r} != "
+            f"expected {EXPECTED_JUDGE_MAX_MODEL_LEN}"
+        )
     if int(validation.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
         raise ValueError(
             f"{cid}: judge context budget={validation.get('judge_max_context_chars')!r} != "
@@ -109,9 +116,6 @@ def assert_expected_provenance(
     if validation.get("authoring_metadata_exposed_to_judge") is not False:
         raise ValueError(f"{cid}: judge metadata-exposure provenance is not fail-closed")
 
-    # B4 writes an evidence envelope for every record, including benign records
-    # for which the scientific status is not_applicable. Requiring that envelope
-    # prevents stale pre-B4 or pre-v3 benign records from entering preparation.
     if analysis.get("protocol") != EVIDENCE_PROTOCOL:
         raise ValueError(f"{cid}: unsupported evidence protocol {analysis.get('protocol')!r}")
     if analysis.get("target_model") != expected_target:
@@ -120,6 +124,10 @@ def assert_expected_provenance(
         raise ValueError(f"{cid}: evidence judge differs from primary judge")
     if int(analysis.get("max_tokens", -1)) != EXPECTED_TARGET_MAX_TOKENS:
         raise ValueError(f"{cid}: evidence target token cap mismatch")
+    if int(analysis.get("target_max_model_len", EXPECTED_TARGET_MAX_MODEL_LEN)) != EXPECTED_TARGET_MAX_MODEL_LEN:
+        raise ValueError(f"{cid}: evidence target runtime context mismatch")
+    if int(analysis.get("judge_max_model_len", -1)) != EXPECTED_JUDGE_MAX_MODEL_LEN:
+        raise ValueError(f"{cid}: evidence judge runtime context mismatch")
     if int(analysis.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
         raise ValueError(f"{cid}: evidence judge context budget mismatch")
     if analysis.get("context_policy") != CONTEXT_POLICY:
@@ -424,6 +432,7 @@ def main() -> None:
             "evidence_protocol": EVIDENCE_PROTOCOL,
             "target_max_tokens": EXPECTED_TARGET_MAX_TOKENS,
             "target_max_model_len": EXPECTED_TARGET_MAX_MODEL_LEN,
+            "judge_max_model_len": EXPECTED_JUDGE_MAX_MODEL_LEN,
             "judge_max_context_chars": EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
             "judge_context_policy": CONTEXT_POLICY,
         },
