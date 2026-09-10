@@ -20,15 +20,27 @@ def audit_record(
     judge_max_model_len: int,
     judge_max_context_chars: int,
 ):
-    _BASE_AUDIT_RECORD(
-        record,
-        target_model=target_model,
-        judge_model=judge_model,
-        max_tokens=max_tokens,
-        target_max_model_len=target_max_model_len,
-        judge_max_model_len=judge_max_model_len,
-        judge_max_context_chars=judge_max_context_chars,
-    )
+    original_b2_audit = base.audit_b2_v5_record
+    original_protocol = base.EVIDENCE_PROTOCOL
+    original_build = base.build_v5_evidence_config
+    try:
+        base.audit_b2_v5_record = audit_b2_v5_deterministic
+        base.EVIDENCE_PROTOCOL = EVIDENCE_PROTOCOL
+        base.build_v5_evidence_config = build_v6_evidence_config
+        _BASE_AUDIT_RECORD(
+            record,
+            target_model=target_model,
+            judge_model=judge_model,
+            max_tokens=max_tokens,
+            target_max_model_len=target_max_model_len,
+            judge_max_model_len=judge_max_model_len,
+            judge_max_context_chars=judge_max_context_chars,
+        )
+    finally:
+        base.audit_b2_v5_record = original_b2_audit
+        base.EVIDENCE_PROTOCOL = original_protocol
+        base.build_v5_evidence_config = original_build
+
     cid = str(record.get("conversation_id", ""))
     analysis = record.get("frontier_evidence_analysis", {}) or {}
     try:
@@ -39,11 +51,21 @@ def audit_record(
 
 
 def main() -> None:
-    base.audit_b2_v5_record = audit_b2_v5_deterministic
-    base.EVIDENCE_PROTOCOL = EVIDENCE_PROTOCOL
-    base.build_v5_evidence_config = build_v6_evidence_config
-    base.audit_record = audit_record
-    base.main()
+    original_b2_audit = base.audit_b2_v5_record
+    original_protocol = base.EVIDENCE_PROTOCOL
+    original_build = base.build_v5_evidence_config
+    original_audit_record = base.audit_record
+    try:
+        base.audit_b2_v5_record = audit_b2_v5_deterministic
+        base.EVIDENCE_PROTOCOL = EVIDENCE_PROTOCOL
+        base.build_v5_evidence_config = build_v6_evidence_config
+        base.audit_record = audit_record
+        base.main()
+    finally:
+        base.audit_b2_v5_record = original_b2_audit
+        base.EVIDENCE_PROTOCOL = original_protocol
+        base.build_v5_evidence_config = original_build
+        base.audit_record = original_audit_record
 
 
 if __name__ == "__main__":
