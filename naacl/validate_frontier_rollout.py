@@ -17,7 +17,7 @@ from collections import Counter
 
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
-    DEFAULT_TARGET_MAX_MODEL_LEN,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
     VLLMClient,
     config_fingerprint,
     json_fingerprint,
@@ -35,7 +35,6 @@ from frontier_seed_policy import (
 PROTOCOL = "frontier_context_judge_v3"
 TERMINAL_STATUSES = {"validated", "rejected", "ambiguous"}
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
-DEFAULT_JUDGE_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 
 
 def validation_config(
