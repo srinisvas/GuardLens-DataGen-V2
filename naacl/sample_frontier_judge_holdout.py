@@ -3,8 +3,9 @@
 
 The sampler is deliberately score-blind. It rejects any input containing B2/B4
 judgments and excludes the 20-record design/calibration set. Sampling allocation is
-stratified by pair_hardness and authoring label; scenario_family is treated as a
-grouping unit so, when possible, at most one trajectory per family is selected.
+stratified by pair_hardness and authoring label. scenario_family is enforced as a
+global grouping unit so at most one trajectory per family is selected whenever the
+requested stratum quotas permit it.
 """
 from __future__ import annotations
 
@@ -52,6 +53,10 @@ def stratum(record):
     return hardness, label
 
 
+def scenario_family(record):
+    return str((record.get("metadata", {}) or {}).get("scenario_family") or record["conversation_id"])
+
+
 def largest_remainder_alloc(counts, n):
     total = sum(counts.values())
     if n > total:
@@ -78,27 +83,58 @@ def largest_remainder_alloc(counts, n):
     return alloc
 
 
-def choose_with_family_diversity(records, n, rng):
-    by_family = defaultdict(list)
-    for r in records:
-        fam = str((r.get("metadata", {}) or {}).get("scenario_family") or r["conversation_id"])
-        by_family[fam].append(r)
-    families = list(by_family)
-    rng.shuffle(families)
-    selected = []
-    leftovers = []
-    for fam in families:
-        rows = list(by_family[fam])
-        rng.shuffle(rows)
-        selected.append(rows[0])
-        leftovers.extend(rows[1:])
-        if len(selected) == n:
-            return selected
-    rng.shuffle(leftovers)
-    selected.extend(leftovers[: n - len(selected)])
-    if len(selected) != n:
-        raise RuntimeError("insufficient records after family-aware selection")
-    return selected
+def select_stratified_with_global_family_diversity(by_stratum, alloc, seed):
+    """Fill quotas while avoiding duplicate scenario families globally if possible."""
+    randomized = {}
+    for key, rows in by_stratum.items():
+        rows = list(rows)
+        random.Random(f"{seed}:{key[0]}:{key[1]}").shuffle(rows)
+        randomized[key] = rows
+
+    chosen = []
+    used_families = set()
+    remaining = dict(alloc)
+
+    # First pass: satisfy as much of every quota as possible with globally unique families.
+    progress = True
+    while progress and any(v > 0 for v in remaining.values()):
+        progress = False
+        for key in sorted(randomized, key=str):
+            if remaining[key] <= 0:
+                continue
+            rows = randomized[key]
+            pick_idx = next(
+                (i for i, r in enumerate(rows) if scenario_family(r) not in used_families),
+                None,
+            )
+            if pick_idx is None:
+                continue
+            r = rows.pop(pick_idx)
+            chosen.append(r)
+            used_families.add(scenario_family(r))
+            remaining[key] -= 1
+            progress = True
+
+    # Second pass: only if a stratum quota cannot be met without reusing a family.
+    reused_family_count = 0
+    for key in sorted(randomized, key=str):
+        need = remaining[key]
+        if need <= 0:
+            continue
+        rows = randomized[key]
+        if len(rows) < need:
+            raise RuntimeError(f"stratum {key} cannot satisfy quota {alloc[key]}")
+        for r in rows[:need]:
+            if scenario_family(r) in used_families:
+                reused_family_count += 1
+            chosen.append(r)
+            used_families.add(scenario_family(r))
+        remaining[key] = 0
+
+    if len(chosen) != sum(alloc.values()):
+        raise RuntimeError("family-aware stratified sampler returned wrong sample size")
+    random.Random(seed).shuffle(chosen)
+    return chosen, reused_family_count
 
 
 def main():
@@ -128,19 +164,14 @@ def main():
 
     counts = Counter(stratum(r) for r in eligible)
     alloc = largest_remainder_alloc(counts, args.sample_size)
-    rng = random.Random(args.seed)
     by_stratum = defaultdict(list)
     for r in eligible:
         by_stratum[stratum(r)].append(r)
 
-    chosen = []
-    for key in sorted(by_stratum, key=str):
-        rows = by_stratum[key]
-        local_rng = random.Random(f"{args.seed}:{key[0]}:{key[1]}")
-        chosen.extend(choose_with_family_diversity(rows, alloc[key], local_rng))
-    rng.shuffle(chosen)
+    chosen, reused_family_count = select_stratified_with_global_family_diversity(
+        by_stratum, alloc, args.seed
+    )
 
-    # Hard guarantee: excluded development IDs never appear.
     chosen_ids = [str(r["conversation_id"]) for r in chosen]
     leaked = sorted(set(chosen_ids) & excluded)
     if leaked:
@@ -185,7 +216,8 @@ def main():
         "source_requirement": "score_blind_B1_rollout_only",
         "excluded_design_manifest": args.exclude_manifest,
         "stratification": "proportional_pair_hardness_x_authoring_label",
-        "scenario_family_policy": "at_most_one_per_family_when_possible_within_stratum",
+        "scenario_family_policy": "global_unique_when_possible_then_minimal_reuse_to_fill_stratum_quota",
+        "scenario_family_reuse_count": reused_family_count,
         "paper_metric_eligible": True,
         "records": manifest_rows,
     }
@@ -203,7 +235,8 @@ def main():
     print(f"Eligible population: {len(eligible)}")
     print(f"Excluded design/calibration IDs: {len(excluded)}")
     print(f"Sample: {len(chosen)} seed={args.seed}")
-    print(f"Distinct scenario families: {family_count}")
+    print(f"Distinct scenario families: {family_count}/{len(chosen)}")
+    print(f"Scenario-family reuse required to satisfy strata: {reused_family_count}")
     print(f"Stratum counts: {dict(Counter((x['pair_hardness'], x['authoring_label']) for x in manifest_rows))}")
     print("Sampling used no B2/B4 judgments or judge scores.")
     print(f"Manifest: {args.output_manifest}")
