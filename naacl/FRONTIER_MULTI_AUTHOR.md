@@ -219,6 +219,7 @@ python -m unittest \
   naacl/test_stage_shard_merge.py \
   naacl/test_frontier_validation_protocol.py \
   naacl/test_frontier_judge_v4.py \
+  naacl/test_frontier_judge_smoke_manifest.py \
   -v
 
 bash -n naacl/launch_frontier_rollout.slurm
