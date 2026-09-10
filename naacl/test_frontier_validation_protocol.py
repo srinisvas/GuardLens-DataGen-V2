@@ -10,7 +10,11 @@ if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 
 from audit_frontier_validation_protocol import audit_record  # noqa: E402
-from frontier_common import config_fingerprint  # noqa: E402
+from frontier_common import (  # noqa: E402
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
+    config_fingerprint,
+)
 from frontier_seed_policy import (  # noqa: E402
     SEED_POLICY,
     experiment_record_seed,
@@ -36,8 +40,8 @@ def valid_record():
         unsafe_threshold=0.50,
         ambiguous_threshold=0.35,
         min_confidence=0.55,
-        judge_max_context_chars=40000,
-        judge_max_model_len=16384,
+        judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+        judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
     )
     record["rollout_provenance"] = {
         "target_model": TARGET,
@@ -63,20 +67,20 @@ class B2ProtocolAuditTests(unittest.TestCase):
             valid_record(),
             target_model=TARGET,
             judge_model=JUDGE,
-            judge_max_model_len=16384,
-            judge_max_context_chars=40000,
+            judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
+            judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
         )
 
     def test_wrong_runtime_context_is_rejected(self):
         record = valid_record()
-        record["frontier_behavioral_validation"]["judge_max_model_len"] = 8192
+        record["frontier_behavioral_validation"]["judge_max_model_len"] = 16384
         with self.assertRaises(RuntimeError):
             audit_record(
                 record,
                 target_model=TARGET,
                 judge_model=JUDGE,
-                judge_max_model_len=16384,
-                judge_max_context_chars=40000,
+                judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
+                judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
             )
 
     def test_mutated_threshold_with_stale_fingerprint_is_rejected(self):
@@ -87,8 +91,8 @@ class B2ProtocolAuditTests(unittest.TestCase):
                 record,
                 target_model=TARGET,
                 judge_model=JUDGE,
-                judge_max_model_len=16384,
-                judge_max_context_chars=40000,
+                judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
+                judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
             )
 
     def test_b2_record_seed_must_match_b1(self):
@@ -99,8 +103,8 @@ class B2ProtocolAuditTests(unittest.TestCase):
                 record,
                 target_model=TARGET,
                 judge_model=JUDGE,
-                judge_max_model_len=16384,
-                judge_max_context_chars=40000,
+                judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
+                judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
             )
 
 
