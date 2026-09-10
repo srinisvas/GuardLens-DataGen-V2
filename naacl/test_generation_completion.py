@@ -118,6 +118,8 @@ def reviewed_protocol_record(*, malicious=False):
         "target_model": TARGET,
         "judge_model": JUDGE,
         "max_tokens": 2048,
+        "target_max_model_len": 16384,
+        "judge_max_model_len": 32768,
         "judge_max_context_chars": 100000,
         "context_policy": "full_observable_prefix_or_fail_closed",
     }
