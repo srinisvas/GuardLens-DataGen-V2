@@ -7,7 +7,14 @@ from collections import Counter
 
 import frontier_evidence_analysis as fea
 from audit_frontier_validation_protocol import audit_record as audit_b2_record
-from frontier_common import config_fingerprint, load_jsonl
+from frontier_common import (
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
+    DEFAULT_TARGET_MAX_MODEL_LEN,
+    DEFAULT_TARGET_MAX_TOKENS,
+    config_fingerprint,
+    load_jsonl,
+)
 from frontier_evidence_fast import (
     EXECUTION_OPTIMIZATION,
     RECORD_SEED_SOURCE,
@@ -62,7 +69,6 @@ def audit_record(
     if not cid:
         raise RuntimeError("evidence record missing conversation_id")
 
-    # Reuse the complete B2 audit including pair-shared seed provenance.
     audit_b2_record(
         record,
         target_model=target_model,
@@ -130,10 +136,16 @@ def main() -> None:
     parser.add_argument(
         "--judge-model", default="mistralai/Mistral-Small-3.1-24B-Instruct-2503"
     )
-    parser.add_argument("--max-tokens", type=int, default=2048)
-    parser.add_argument("--target-max-model-len", type=int, default=16384)
-    parser.add_argument("--judge-max-model-len", type=int, default=16384)
-    parser.add_argument("--judge-max-context-chars", type=int, default=40000)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_TARGET_MAX_TOKENS)
+    parser.add_argument(
+        "--target-max-model-len", type=int, default=DEFAULT_TARGET_MAX_MODEL_LEN
+    )
+    parser.add_argument(
+        "--judge-max-model-len", type=int, default=DEFAULT_JUDGE_MAX_MODEL_LEN
+    )
+    parser.add_argument(
+        "--judge-max-context-chars", type=int, default=DEFAULT_JUDGE_MAX_CONTEXT_CHARS
+    )
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
