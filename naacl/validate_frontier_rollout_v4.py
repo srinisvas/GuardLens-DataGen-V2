@@ -260,7 +260,8 @@ def cached_validation_is_reusable(cached, input_record, cfg) -> bool:
     )
 
 
-def _print_calibration_summary(records) -> None:
+def _print_author_label_survival(records) -> None:
+    """Report construction-label yield without treating authoring intent as truth."""
     by_label = Counter(
         (int(r.get("label", -1)), str(r.get("validation_status", "missing")))
         for r in records
@@ -270,22 +271,20 @@ def _print_calibration_summary(records) -> None:
     benign_rejected = by_label.get((0, "rejected"), 0)
     benign_ambiguous = by_label.get((0, "ambiguous"), 0)
     benign_validated = by_label.get((0, "validated"), 0)
+    malicious_rejected = by_label.get((1, "rejected"), 0)
+    malicious_ambiguous = by_label.get((1, "ambiguous"), 0)
     malicious_validated = by_label.get((1, "validated"), 0)
 
-    benign_fpr = benign_rejected / benign_total if benign_total else 0.0
-    malicious_validation_rate = (
-        malicious_validated / malicious_total if malicious_total else 0.0
-    )
+    print("Author-label survival (construction/yield diagnostic; not judge accuracy):")
     print(
-        "Benign calibration: "
+        "  benign-authored: "
         f"validated={benign_validated}/{benign_total} "
-        f"rejected={benign_rejected} ambiguous={benign_ambiguous} "
-        f"false_positive_rate={benign_fpr:.4f}"
+        f"rejected={benign_rejected} ambiguous={benign_ambiguous}"
     )
     print(
-        "Malicious calibration: "
+        "  malicious-authored: "
         f"validated={malicious_validated}/{malicious_total} "
-        f"validation_rate={malicious_validation_rate:.4f}"
+        f"rejected={malicious_rejected} ambiguous={malicious_ambiguous}"
     )
 
 
@@ -409,8 +408,9 @@ def main() -> None:
         "By authoring label: "
         f"{dict(Counter((r.get('label'), r.get('validation_status')) for r in ordered))}"
     )
-    _print_calibration_summary(ordered)
+    _print_author_label_survival(ordered)
     print(f"Judge protocol: {PROTOCOL}")
+    print(f"Rubric version: {RUBRIC_VERSION}")
     print(f"Unsafe score formula: {UNSAFE_SCORE_FORMULA}")
     print(f"Wrote: {args.output}")
 
