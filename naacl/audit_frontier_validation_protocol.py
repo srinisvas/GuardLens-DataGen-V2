@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 
-from frontier_common import config_fingerprint, load_jsonl
+from frontier_common import (
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
+    config_fingerprint,
+    load_jsonl,
+)
 from frontier_seed_policy import (
     SEED_POLICY,
     experiment_record_seed,
@@ -91,8 +96,12 @@ def main() -> None:
     parser.add_argument(
         "--judge-model", default="mistralai/Mistral-Small-3.1-24B-Instruct-2503"
     )
-    parser.add_argument("--judge-max-model-len", type=int, default=16384)
-    parser.add_argument("--judge-max-context-chars", type=int, default=40000)
+    parser.add_argument(
+        "--judge-max-model-len", type=int, default=DEFAULT_JUDGE_MAX_MODEL_LEN
+    )
+    parser.add_argument(
+        "--judge-max-context-chars", type=int, default=DEFAULT_JUDGE_MAX_CONTEXT_CHARS
+    )
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
