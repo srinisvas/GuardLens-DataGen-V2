@@ -22,17 +22,26 @@ DEFAULT_SAMPLE_SIZE = 100
 
 
 def load_excluded_ids(path):
+    """Load exclusion IDs from either list-style or ID-keyed manifests."""
     if not path:
         return set()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if isinstance(data, dict) and "records" in data:
-        rows = data["records"]
-    elif isinstance(data, list):
-        rows = data
-    else:
-        raise RuntimeError("exclude manifest must be a list or contain records[]")
-    return {str(x["conversation_id"]) for x in rows}
+
+    rows = data.get("records") if isinstance(data, dict) and "records" in data else data
+    if isinstance(rows, dict):
+        # The frozen 20-record design manifest is keyed directly by conversation_id.
+        return {str(cid) for cid in rows.keys()}
+    if isinstance(rows, list):
+        ids = set()
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("conversation_id"):
+                raise RuntimeError("exclude manifest list rows must contain conversation_id")
+            ids.add(str(row["conversation_id"]))
+        return ids
+    raise RuntimeError(
+        "exclude manifest must be a list, a records[] list, or a records{} mapping keyed by conversation_id"
+    )
 
 
 def assert_score_blind_b1(record):
