@@ -35,20 +35,43 @@ Qwen max output                2048 tokens
 Qwen runtime context           16384 tokens
 Qwen temperature               0.0
 completion contract            finish_reason=stop + positive completion_tokens
-Mistral runtime context        16384 tokens
-judge observable prefix        40000 characters
+Mistral runtime context        32768 tokens
+judge observable prefix        100000 characters
 judge context policy           full observable prefix or fail closed
+judge max output               180 tokens
 seed policy                    pair_id_if_present_else_conversation_id_v1
 ```
 
+The 32K/100K judge envelope was chosen after the final B1 smoke. Its longest
+completed observable trajectory was about 52.2K characters and contained about
+11.1K Qwen completion tokens before adding user text and the judge prompt. The
+previous 40K-character guard would therefore have rejected a valid rollout. The
+100K character value is only a fail-closed serialization guard; Mistral's 32K
+runtime token window remains the actual model-context limit.
+
 Paired malicious/benign twins share one record-level seed derived from `pair_id`.
 Standalone records derive their seed from `conversation_id`. B2 and B4 reuse the
-B1-recorded seed rather than independently deriving a new seed. This prevents a
-hidden random-seed difference from becoming a matched-pair confound.
+B1-recorded seed rather than independently deriving a new seed.
+
+### Natural target variance is intentional
+
+Matched twins control the authored scenario, style, length, and construction
+variables. They do **not** require byte-identical Qwen assistant histories. Even
+with temperature 0 and a shared seed, independent GPU/batched inference can yield
+small generation differences. That natural variance is retained rather than
+copying one twin's assistant response into the other.
+
+This is scientifically acceptable because the direct malicious-twin minus
+benign-twin response difference is not the causal estimator. Counterfactual
+evidence is assessed within each realized malicious trajectory in B4. Natural
+between-twin assistant variation therefore contributes variance/noise and a more
+realistic assistant-history distribution rather than defining the intervention.
+We still audit label/source/shard balance so execution topology cannot become a
+systematic label-correlated channel.
 
 The B1 configuration fingerprint includes the 2048/16K envelope and seed policy.
-B2 fingerprints the judge model, thresholds, seed policy, 16K runtime context,
-40K observable-prefix budget, and context policy. Production B4 fingerprints the
+B2 fingerprints the judge model, thresholds, seed policy, 32K runtime context,
+100K observable-prefix guard, and context policy. Production B4 fingerprints the
 target/judge runtime windows, paired-seed source, and execution optimization.
 
 ## Model-visible information boundary
@@ -58,25 +81,15 @@ auditing but is never serialized into target/judge prompts. Model requests may
 contain only observable role/text conversation content plus the explicit B4
 counterfactual replacement.
 
-The following are researcher-side only:
-
-- label
-- conversation/pair IDs
-- author/generator and corpus version
-- scenario/mechanism family
-- `intended_structure`
-- expected pivots
-- pair hardness
-- candidate annotations/origins
-- split-group metadata
+Researcher-side-only fields include labels, conversation/pair IDs, generator and
+corpus version, scenario/mechanism family, `intended_structure`, expected pivots,
+pair hardness, candidate annotations/origins, and split-group metadata.
 
 `test_frontier_prompt_leakage.py` places secret canaries into those fields and
 captures B1, B2, and B4 requests. Any canary appearing in a model request fails the
-test.
-
-The GuardLens Transformer branch has a separate `test_metadata_leakage.py` canary
-showing that construction/provenance metadata cannot change model-visible turn
-text/role features.
+test. The GuardLens Transformer branch has a separate `test_metadata_leakage.py`
+canary showing that construction/provenance metadata cannot change model-visible
+turn text/role features.
 
 ## Full-throttle topology
 
@@ -88,37 +101,30 @@ record shards total. vLLM continuous-batches independent worker requests.
 ### B2
 
 Four Mistral servers, one per GPU. Four validation workers per judge server.
-Sixteen logical shards total.
+Sixteen logical shards total. Each Mistral server uses a 32K runtime context.
 
 ### B4
 
 GPUs 0–2 run three Qwen servers. GPU 3 runs one shared Mistral server. Two
 evidence workers per Qwen server produce six logical evidence shards. The shared
-judge batches requests from all six workers.
+judge uses the same 32K/100K context contract as B2.
 
-B4 runs a complete fresh baseline first and requires exact B1 target-response and
-B2 judge reproduction. Only after that does the optimized path reuse an unchanged
-prefix before an intervention. The optimizer independently rechecks fresh baseline
-response fingerprints against stored B1 assistant text. If prefix identity is not
-proven it falls back to a full replay.
+Current B4 code runs a complete fresh baseline first and requires exact B1 target
+response and B2 judge reproduction before using its prefix-reuse optimization.
+This is a separate within-record reproducibility gate; it is not a requirement
+that malicious/benign twins have identical B1 histories. The B4 smoke must test
+whether that stronger gate is realistic under the production batching topology.
+If it fails, revisit the B4 baseline-pairing rule rather than forcing twin answers
+to be identical.
 
 ## Parallel-output integrity
 
 B1, B2, and B4 all use `merge_stage_shards.py`. The source JSONL is authoritative
-for membership, shard ownership, and final order. The merger fails on:
-
-- duplicate conversation IDs
-- duplicate IDs across shards
-- unexpected IDs
-- records in the wrong shard
-- missing records
-- incorrect shard record counts
-
-There is no silent dictionary-overwrite merge path.
+for membership, shard ownership, and final order. Duplicate IDs, cross-shard
+duplicates, unexpected IDs, wrong-shard records, missing records, and incorrect
+shard counts are fatal.
 
 ## Mandatory CPU/static gate
-
-Run this after pulling the production branch and before allocating GPUs:
 
 ```bash
 python -m compileall -q naacl
@@ -140,72 +146,44 @@ bash -n naacl/launch_frontier_evidence.slurm
 
 Do not submit GPU jobs unless all commands pass.
 
-On the Transformer branch run:
+## B1 production-topology smoke
 
-```bash
-python -m unittest test_metadata_leakage.py -v
-```
+The completed 20-record 2048/16K B1 smoke is the production B1 gate. Required
+properties are 20/20 complete, 10/10 complete pairs, all assistant
+`finish_reason=stop`, correct 2048/16K provenance, paired seed groups sharing one
+record seed, strict shard merge, and `ROLLOUT AUDIT PASSED`. Byte-identical Qwen
+answers across matched twins are explicitly **not** required.
 
-before eventual GuardLens training.
+## B2 smoke — 32K judge
 
-## Final B1 production-topology smoke
-
-Use the exact same previously selected 20 records:
-
-```bash
-GPU_COUNT=4 \
-WORKERS_PER_GPU=2 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_2048_16k.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_2048_16k \
-SOURCE_PREFLIGHT_MODE=schema \
-sbatch naacl/launch_frontier_rollout.slurm
-```
-
-Required pass:
-
-```text
-20/20 complete
-10/10 complete pairs
-all assistant finish_reason=stop
-no instrumentation/context errors
-paired seed groups share exactly one record seed
-strict shard merge passes
-ROLLOUT AUDIT PASSED
-```
-
-Do not select around a length failure. If any response still hits 2048 with
-`finish_reason=length`, inspect before full B1.
-
-## B2 smoke
-
-After the locked Mistral-3.1 cache is ready:
+Use the already completed B1 smoke; do not regenerate it for this judge-only
+change.
 
 ```bash
 GPU_COUNT=4 \
 WORKERS_PER_GPU=4 \
+JUDGE_MAX_MODEL_LEN=32768 \
+JUDGE_MAX_CONTEXT_CHARS=100000 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_rollout_v2_2048_16k.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k_j32k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k_j32k \
 sbatch naacl/launch_frontier_validation.slurm
 ```
 
-The launcher runs the B1 audit before loading Mistral, strict-merges B2 shards,
-and then runs `audit_frontier_validation_protocol.py`. Require:
+Require all 20 records to end in a terminal B2 status (`validated`, `rejected`, or
+`ambiguous`) with zero `incomplete` records and `B2 PROTOCOL AUDIT PASSED`.
+Specifically verify that the longest ~52.2K-character smoke trajectory is judged
+through all of its assistant turns without context overflow.
 
-```text
-B2 PROTOCOL AUDIT PASSED
-```
-
-Inspect validation counts and representative GPT/Astra malicious and benign
-trajectories before B4.
+Inspect representative behavioral judgments, including clear unsafe-help cases,
+benign twins, and target refusals, before scaling B2.
 
 ## B3 smoke
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k.jsonl \
-  --output $OUT/frontier_multi_author_smoke_qwen32_candidates_v3_2048_16k.jsonl \
+  --input $OUT/frontier_multi_author_smoke_qwen32_validated_v3_2048_16k_j32k.jsonl \
+  --output $OUT/frontier_multi_author_smoke_qwen32_candidates_v3_2048_16k_j32k.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
@@ -213,28 +191,21 @@ python naacl/materialize_frontier_candidates.py \
 
 Candidate fields are proposals only and never enter target/judge prompts.
 
-## B4 smoke — mandatory real determinism test
+## B4 smoke
 
 ```bash
 TARGET_GPU_COUNT=3 \
 WORKERS_PER_TARGET=2 \
-INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates_v3_2048_16k.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_2048_16k.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_2048_16k \
+INPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_candidates_v3_2048_16k_j32k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_2048_16k_j32k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_smoke_qwen32_evidence_v4_2048_16k_j32k \
 sbatch naacl/launch_frontier_evidence.slurm
 ```
 
-This smoke is mandatory because B1/B2 and B4 use different continuous-batching
-topologies. Every malicious record reaching evidence must reproduce stored target
-responses exactly and B2 judgments across behavior, harmfulness, refusal strength,
-unsafe score, and confidence. The launcher also runs the post-merge B4 protocol
-audit. Require:
-
-```text
-B4 PROTOCOL AUDIT PASSED
-```
-
-If target hashes or judge results drift, do not launch full B4.
+The launcher runs the B1 and B2 protocol audits before allocating evidence work and
+the B4 protocol audit after strict shard merge. Do not launch full B4 until this
+smoke establishes the actual baseline-replay behavior under the production
+continuous-batching topology.
 
 ## Full B1 — 3000 records
 
@@ -248,9 +219,8 @@ SOURCE_PREFLIGHT_MODE=strict \
 sbatch naacl/launch_frontier_rollout.slurm
 ```
 
-The allocation has a 24-hour wall limit. If it expires, resubmit the identical
-command. Append-only checkpoints reuse only records matching source/configuration
-fingerprints.
+If the 24-hour allocation expires, resubmit the identical command. Append-only
+checkpoints reuse only records matching source/configuration fingerprints.
 
 ## Full B2
 
@@ -258,8 +228,8 @@ fingerprints.
 GPU_COUNT=4 \
 WORKERS_PER_GPU=4 \
 INPUT_FILE=$OUT/frontier_multi_author_qwen32_rollout_v2_2048_16k.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated_v3_2048_16k.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated_v3_2048_16k \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_validated_v3_2048_16k_j32k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_validated_v3_2048_16k_j32k \
 sbatch naacl/launch_frontier_validation.slurm
 ```
 
@@ -267,8 +237,8 @@ sbatch naacl/launch_frontier_validation.slurm
 
 ```bash
 python naacl/materialize_frontier_candidates.py \
-  --input $OUT/frontier_multi_author_qwen32_validated_v3_2048_16k.jsonl \
-  --output $OUT/frontier_multi_author_qwen32_candidates_v3_2048_16k.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_validated_v3_2048_16k_j32k.jsonl \
+  --output $OUT/frontier_multi_author_qwen32_candidates_v3_2048_16k_j32k.jsonl \
   --max-turn-candidates 4 \
   --spans-per-turn 2 \
   --controls 2
@@ -279,9 +249,9 @@ python naacl/materialize_frontier_candidates.py \
 ```bash
 TARGET_GPU_COUNT=3 \
 WORKERS_PER_TARGET=2 \
-INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates_v3_2048_16k.jsonl \
-OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k.jsonl \
-CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k \
+INPUT_FILE=$OUT/frontier_multi_author_qwen32_candidates_v3_2048_16k_j32k.jsonl \
+OUTPUT_FILE=$OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k_j32k.jsonl \
+CHECKPOINT_PREFIX=$OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k_j32k \
 sbatch naacl/launch_frontier_evidence.slurm
 ```
 
@@ -290,24 +260,19 @@ resume independently.
 
 ## B5 Dataset B
 
-Only after the B4 protocol audit passes:
-
 ```bash
 python naacl/prepare_frontier_dataset.py \
-  --input $OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k.jsonl \
+  --input $OUT/frontier_multi_author_qwen32_evidence_v4_2048_16k_j32k.jsonl \
   --output $OUT/naacl_frontier_prepared.jsonl \
   --benign-stress-output $OUT/naacl_frontier_hard_benign_stress.jsonl \
   --excluded-output $OUT/naacl_frontier_excluded.jsonl \
   --stats-output $OUT/naacl_frontier_prepared_stats.json
 
-python naacl/audit_frontier_dataset.py \
-  --input $OUT/naacl_frontier_prepared.jsonl
-
-python naacl/audit_frontier_stress.py \
-  --input $OUT/naacl_frontier_hard_benign_stress.jsonl
+python naacl/audit_frontier_dataset.py --input $OUT/naacl_frontier_prepared.jsonl
+python naacl/audit_frontier_stress.py --input $OUT/naacl_frontier_hard_benign_stress.jsonl
 ```
 
-Primary Dataset B stays complete-pair-only. Standalone hard benigns stay
+Primary Dataset B stays complete-pair-only. Standalone hard benigns remain
 training-ineligible evaluation stress.
 
 ## Merge frozen A + validated B and split exactly once
@@ -331,7 +296,4 @@ python naacl/split_consolidated.py \
 
 The primary split keeps complete frontier scenario families and legacy pairs
 indivisible and asserts no conversation, pair, scenario-family, or exact normalized
-user-trajectory leakage across train/dev/test. Mechanism families are balanced in
-the IID primary split; mechanism-held-out OOD remains a separate evaluation.
-
-Dataset A remains frozen throughout.
+user-trajectory leakage across train/dev/test. Dataset A remains frozen.
