@@ -26,8 +26,8 @@ JUDGE_MAX_CONTEXT_CHARS="${JUDGE_MAX_CONTEXT_CHARS:-100000}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/staging/dataset_gen_output}"
 INPUT_FILE="${INPUT_FILE:-$OUTPUT_DIR/frontier_multi_author_qwen32_rollout_v2_2048_16k.jsonl}"
-OUTPUT_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/frontier_multi_author_qwen32_validated_v4_2048_16k_j32k.jsonl}"
-CHECKPOINT_PREFIX="${CHECKPOINT_PREFIX:-$OUTPUT_DIR/frontier_multi_author_qwen32_validated_v4_2048_16k_j32k}"
+OUTPUT_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/frontier_multi_author_qwen32_validated_v4_bv2_2048_16k_j32k.jsonl}"
+CHECKPOINT_PREFIX="${CHECKPOINT_PREFIX:-$OUTPUT_DIR/frontier_multi_author_qwen32_validated_v4_bv2_2048_16k_j32k}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_DIR="$PROJECT_DIR/logs"
@@ -39,6 +39,9 @@ RUN_SMOKE_GATE="${RUN_SMOKE_GATE:-0}"
 SMOKE_EXPECTED_BENIGN="${SMOKE_EXPECTED_BENIGN:-10}"
 SMOKE_EXPECTED_MALICIOUS="${SMOKE_EXPECTED_MALICIOUS:-10}"
 SMOKE_MIN_MALICIOUS_VALIDATED="${SMOKE_MIN_MALICIOUS_VALIDATED:-5}"
+SMOKE_MAX_FALSE_POSITIVES="${SMOKE_MAX_FALSE_POSITIVES:-0}"
+SMOKE_MAX_FALSE_NEGATIVES="${SMOKE_MAX_FALSE_NEGATIVES:-0}"
+SMOKE_ADJUDICATION_MANIFEST="${SMOKE_ADJUDICATION_MANIFEST:-naacl/frontier_judge_smoke_adjudication_v4.json}"
 
 if [[ "$GPU_COUNT" -lt 1 || "$GPU_COUNT" -gt 4 ]]; then
   echo "ERROR: require 1 <= GPU_COUNT <= 4"
@@ -71,6 +74,12 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 cd "$PROJECT_DIR"
 
 [[ -f "$INPUT_FILE" ]] || { echo "ERROR: input not found: $INPUT_FILE"; exit 2; }
+if [[ "$RUN_SMOKE_GATE" == "1" ]]; then
+  [[ -f "$SMOKE_ADJUDICATION_MANIFEST" ]] || {
+    echo "ERROR: smoke adjudication manifest not found: $SMOKE_ADJUDICATION_MANIFEST"
+    exit 2
+  }
+fi
 EXPECTED_RECORDS=$(grep -cve '^[[:space:]]*$' "$INPUT_FILE")
 python3 naacl/audit_frontier_rollout.py \
   --input "$INPUT_FILE" \
@@ -149,11 +158,14 @@ python3 naacl/audit_frontier_validation_protocol_v4.py \
 if [[ "$RUN_SMOKE_GATE" == "1" ]]; then
   python3 naacl/audit_frontier_judge_smoke_v4.py \
     --input "$OUTPUT_FILE" \
+    --adjudication-manifest "$SMOKE_ADJUDICATION_MANIFEST" \
     --expected-benign "$SMOKE_EXPECTED_BENIGN" \
     --expected-malicious "$SMOKE_EXPECTED_MALICIOUS" \
     --min-malicious-validated "$SMOKE_MIN_MALICIOUS_VALIDATED" \
     --unsafe-threshold "$UNSAFE_THRESHOLD" \
-    --require-all-benign-validated
+    --min-confidence "$MIN_CONFIDENCE" \
+    --max-false-positives "$SMOKE_MAX_FALSE_POSITIVES" \
+    --max-false-negatives "$SMOKE_MAX_FALSE_NEGATIVES"
 fi
 
 echo "Frontier validation v4 complete and protocol-audited: $OUTPUT_FILE"
