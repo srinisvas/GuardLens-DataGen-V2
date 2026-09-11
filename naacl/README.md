@@ -1,238 +1,168 @@
-# GuardLens NAACL validity repair
+# Optimized Dataset B execution
 
-This branch implements the bounded NAACL revision path. It does not regenerate
-attacks and it does not rebuild the research project.
+Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7aac9b616a8fb`. The original `naacl-validity-repair` branch remains the reference. This branch consolidates the current pipeline and changes scheduling and recovery. GPU equivalence and throughput must still be measured on the A100s before the 3,000-record production run.
 
-Base commit: `b71238099e9baaf75f8e551fb500bb1fe60c768b`
+## Current entry points
 
-## Scientific scope
+| Task | Current files | Frozen scientific protocol |
+|---|---|---|
+| B1 rollout | `launch_b1.slurm`, `frontier_rollout.py` | `frontier_fixed_user_rollout_v3` |
+| B2 validation | `launch_b2.slurm`, `frontier_validation.py`, `frontier_judge.py` | `frontier_context_judge_v5`, `dual_boundary_union_v1` |
+| B3 candidates, CPU | `materialize_frontier_candidates.py` | `frontier_candidate_materialization_v2` |
+| B4 evidence | `launch_b4.slurm`, `frontier_evidence.py` | `frontier_context_paired_counterfactual_v6` |
+| Stage audits | `audit_frontier_rollout.py`, `audit_frontier_validation.py`, `audit_frontier_evidence.py` | Original completion, deterministic runtime, dual-pass and evidence checks |
+| Dataset assembly, CPU | `prepare_frontier_dataset.py`, `audit_frontier_dataset.py`, `audit_frontier_stress.py` | Current v3/v5/v6 provenance, original retention/sanitization rules |
+| Merge and split, CPU | `merge_training_corpora.py`, `split_consolidated.py` | Original grouping and leakage prevention |
+| Execution | `run_stage.py`, `execution.py`, `launch_job.py`, `launch_stage.sh` | Bounded queues, request recovery, supervised replicas |
+| Measurements | `probe_runtime.py`, `compare_outputs.py`, `report_performance.py` | Exact equality and measured performance |
+| Regression tests | `tests/` | Archived reference tests plus active executor tests |
+| Historical implementations | `legacy/` | Original files preserved unchanged |
 
-The repaired paper should claim **counterfactual evidence localization** and
-**evidence-bearing turns/spans**, not causal identification.
+The active pipeline has no runtime imports from `legacy/`. Run the supported entry points above. The old version wrappers and historical Slurm scripts remain reference material under `legacy/`.
 
-The repair addresses the validity issues found in v11:
+## Quality contract
 
-1. explicit independent-model behavioral validation;
-2. fresh paired baseline/intervention replays;
-3. no stored-assistant contamination;
-4. no position-dependent 12-message replay window;
-5. unmeasured effects represented as `null`, never zero;
-6. span tests are not gated on success of a historical pivot intervention;
-7. only supported evidence is exposed to attribution supervision;
-8. unknown malicious pivots are ignored by the pivot loss rather than trained as
-   a true no-pivot class;
-9. benign training trajectories are length controlled;
-10. the original untrimmed benign pool is retained as a stress set.
+All 3,000 input records remain in scope. B4 retains every record, including `not_applicable` rows, and runs every eligible record with the existing intervention selection rules.
 
-## Important protocol boundary
+| Invariant | Frozen value / behavior |
+|---|---|
+| Models | Qwen/Qwen2.5-32B-Instruct and mistralai/Mistral-Small-3.1-24B-Instruct-2503 |
+| Inference | vLLM 0.28.0, A100 80GB, BF16, tensor parallel size 1, batch invariant, eager |
+| Context / generation | Target 16,384 / 2,048 tokens. Judge 32,768 / 180 tokens, 100,000 transcript characters |
+| Seeds | Base 42, pair-aware record seeds, original per-turn, pass-B and retry offsets |
+| Judge | Both unchanged prompts, three parsing attempts per pass, original conservative union and confidence rules |
+| Evidence | Full fresh factual target replay and exact stored B1/B2 comparison before interventions |
+| Interventions | Original caps of 4 turns, 6 positive spans and 2 controls, original replacement selection and ordering |
+| Results | Full suffixes, raw passes, exact deltas, evidence turns, supervision tiers, loss weights and original record ordering |
+| Failure behavior | No incomplete, truncated, drifted or unaudited output is published |
 
-The original interactive Llama outcomes were judged in-loop by the Qwen
-generator. They remain useful provenance, but a legacy Qwen-only target judgment
-is **not sufficient** for repaired training eligibility.
+There is no span pruning, reduced dataset scope, changed precision, shorter context, sampled factual audit, or early termination of a scientifically assessable counterfactual. Existing proven-prefix reuse remains. Completed deterministic requests may be recovered by exact identity, but a B4 factual request cannot reuse a B1/B2 cache entry.
 
-The repaired behavioral gate requires at least one of:
+Model revisions are resolved from the existing cache's `refs/main`, checked for completeness, and pinned for model and tokenizer loading. Runtime versions, model/config/tokenizer fingerprints and server flags are recorded outside scientific outputs. If the cache or runtime changes, the executor rejects the old state directory.
 
-- a fresh Llama replay that crosses the unsafe threshold under the Mistral judge;
-- successful independent Mistral transfer validation.
+## What runs concurrently
 
-The paired evidence experiment uses Llama to generate assistant responses and
-Mistral only to judge those responses. The separate Mistral validation pass is a
-behavioral transfer check, not attribution ground truth.
+B1 uses a shared record queue across all target replicas. Turns within each conversation remain sequential. B2 submits immutable observable prefixes and both judge passes to a bounded pool, then assembles judgments in chronological order. B4 overlaps target generation with independent judgments and runs independent interventions concurrently after baseline verification. Each record owns its baseline, and intervention workers cannot overwrite another record's state.
 
-## 0. Inputs
+Per-server request limits bound GPU pressure. Soft target affinity favors an equally loaded previous server but permits work to move to free capacity. Each HTTP worker reuses its own connection. All server statistics remain enabled.
 
-Prefer the pre-causal adversarial artifact:
+Do not infer a safe concurrency of 6 or 8 from the A100 memory size alone. Inspect actual KV capacity in startup logs, prompt-token usage, preemptions, queueing and generated tokens/second. The approximately 43K target KV-token estimate in the review is a sizing hypothesis, not a measured capacity on this installation. Automatic chunked-prefill or scheduler changes are deliberately excluded.
 
-```bash
-$HOME/staging/dataset_gen_output/combined_dedup.jsonl
-```
+## CPU verification
 
-Reuse the separately generated clean benign pool:
-
-```bash
-$HOME/staging/dataset_gen_output/benign_clean.jsonl
-```
-
-Do not rerun adversarial generation.
-
-## 1. Independent Mistral behavioral validation
+From the repository root, in the existing dataset environment:
 
 ```bash
-INPUT_FILE=$HOME/staging/dataset_gen_output/combined_dedup.jsonl \
-OUTPUT_NAME=naacl_mistral_validation \
-VAL_MODEL=mistralai/Mistral-7B-Instruct-v0.3 \
-USE_COUNTERFACTUAL=false \
-N_VAL_SHARDS=2 \
-sbatch launch_val.slurm
+bash naacl/tests/run.sh
 ```
 
-Normalize provenance and transfer tiers:
+The original 86 CPU tests exercise the archived reference. Additional tests exercise the active code and compare entire B1/B2/B4 results against the untouched original executors through a deterministic local HTTP fixture. They check unchanged request payloads, concurrency, hidden raw-pass drift, target drift, interruption recovery, invalid/truncated results, checkpoint corruption, and final dataset preparation. Simulated model equality does not establish numerical invariance on GPUs.
+
+## GPU Gate 0 before throughput tuning
+
+Create the Slurm log directory before submission. Use the already completed deterministic B1 smoke artifact as the probe input. This job starts the frozen servers, compares solo and mixed-load outputs, captures metrics, then releases the allocation without running a stage.
 
 ```bash
-python naacl/merge_independent_validation.py \
-  --input $HOME/staging/dataset_gen_output/naacl_mistral_validation_validated.jsonl \
-  --output $HOME/staging/dataset_gen_output/naacl_independent_merged.jsonl
+mkdir -p logs
+export OUT=$HOME/staging/dataset_gen_output
+export REF_B1=$OUT/frontier_multi_author_smoke_qwen32_rollout_v3_bi_eager_2048_16k.jsonl
+
+INPUT_FILE=$REF_B1 \
+PROBE_INPUT=$REF_B1 PROBE_ONLY=1 PROBE_LEVELS_JSON='[1,2,4]' \
+STATE_DIR=$OUT/optimized_gate0_3plus1 \
+sbatch naacl/launch_b4.slurm
 ```
 
-Before continuing, inspect the printed model/provenance counts. The independent
-validator should be Mistral and validation failures must not be interpreted as
-negative outcomes.
+The B4 input preflight requires B2 provenance, so for this probe-only command the launcher validates `PROBE_INPUT` as B1 and does not run the B4 input audit. It still checks the frozen servers and runtime. All target and judge replicas are probed. Repeat at higher concurrency only after reviewing the preceding level's measurements. A passing probe covers only its tested prefixes, servers and load levels. It does not replace the full equivalence smoke.
 
-## 2. Paired evidence replay
+The probe selects observable prefixes across character lengths, including the longest. Real token counts come from the server response usage and metrics, not a character-to-token approximation. Judge prompts are constructed by the actual frozen dual-judge code.
 
-The hardened runner is `naacl/evidence_analysis_v3.py`, launched by:
+## Full equivalence smoke
+
+Use separate output/state paths so the original reference artifacts remain available. Run stages sequentially after each predecessor passes its audit.
 
 ```bash
-INPUT_FILE=$HOME/staging/dataset_gen_output/naacl_independent_merged.jsonl \
-OUTPUT_FILE=$HOME/staging/dataset_gen_output/naacl_evidence.jsonl \
-sbatch naacl/launch_evidence.slurm
+INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
+OUTPUT_FILE=$OUT/optimized_smoke_b1.jsonl \
+TARGET_INFLIGHT=2 RECORD_WORKERS=16 \
+sbatch naacl/launch_b1.slurm
 ```
-
-Default roles:
-
-- GPU 0: `meta-llama/Meta-Llama-3-8B-Instruct` response-generating target
-- GPU 1: `mistralai/Mistral-7B-Instruct-v0.3` outcome judge
-
-The runner derives its intervention anchor from the **fresh replay**, verifies
-span offsets before editing, prioritizes spans around the fresh unsafe
-transition, treats large effects on negative controls as violations using
-absolute delta, and fails closed on judge/runtime errors.
-
-The default cap is six positive candidate spans and two negative controls per
-malicious record.
-
-### Resume warning
-
-The default checkpoint is:
 
 ```bash
-$HOME/staging/dataset_gen_output/naacl_evidence_v3.checkpoint.jsonl
+INPUT_FILE=$OUT/optimized_smoke_b1.jsonl \
+OUTPUT_FILE=$OUT/optimized_smoke_b2.jsonl \
+JUDGE_INFLIGHT=4 RECORD_WORKERS=16 \
+sbatch naacl/launch_b2.slurm
 ```
-
-Resume that checkpoint only with the same model, seed, thresholds and span caps.
-If you intentionally change the protocol, delete it or set a new
-`CHECKPOINT_FILE`. Do not mix results from different protocols.
-
-The Slurm job runs the first audit automatically. You can also run:
 
 ```bash
-python naacl/audit_repaired_dataset.py \
-  --input $HOME/staging/dataset_gen_output/naacl_evidence.jsonl
+python naacl/materialize_frontier_candidates.py \
+  --input "$OUT/optimized_smoke_b2.jsonl" \
+  --output "$OUT/optimized_smoke_b3.jsonl" \
+  --max-turn-candidates 4 --spans-per-turn 2 --controls 2
+
+INPUT_FILE=$OUT/optimized_smoke_b3.jsonl \
+OUTPUT_FILE=$OUT/optimized_smoke_b4.jsonl \
+TARGET_INFLIGHT=2 JUDGE_INFLIGHT=4 RECORD_WORKERS=12 INTERVENTION_WORKERS=12 \
+sbatch naacl/launch_b4.slurm
 ```
 
-Any evidence-analysis error must be fixed/rerun before dataset preparation.
-
-## 3. Prepare repaired supervision and benign length control
+Compare all three GPU outputs with the completed deterministic reference artifacts. `compare_outputs.py` compares every scientific field, numerical type and record position. It does not mask differences in provenance, deltas, raw passes, weights or trajectories.
 
 ```bash
-python naacl/prepare_dataset.py \
-  --evidence-input $HOME/staging/dataset_gen_output/naacl_evidence.jsonl \
-  --benign-input $HOME/staging/dataset_gen_output/benign_clean.jsonl \
-  --output $HOME/staging/dataset_gen_output/naacl_dataset.jsonl \
-  --benign-stress-output $HOME/staging/dataset_gen_output/naacl_benign_untrimmed_stress.jsonl \
-  --stats-output $HOME/staging/dataset_gen_output/naacl_dataset_stats.json \
-  --seed 42
+python naacl/compare_outputs.py \
+  --reference "$REF_B1" --optimized "$OUT/optimized_smoke_b1.jsonl"
+python naacl/compare_outputs.py \
+  --reference "$OUT/frontier_multi_author_smoke_qwen32_validated_v5_dual_bi_eager_2048_16k_j32k.jsonl" \
+  --optimized "$OUT/optimized_smoke_b2.jsonl"
+python naacl/compare_outputs.py \
+  --reference "$OUT/frontier_multi_author_smoke_qwen32_evidence_v6_bi_eager_2048_16k_j32k.jsonl" \
+  --optimized "$OUT/optimized_smoke_b4.jsonl"
 ```
 
-Then require the prepared-data invariants:
+Require all stage audits, exact comparisons and zero replay errors. Then benchmark fresh state directories at target concurrency 2, 4, 6, and 8 as memory measurements permit. Keep all scientific settings fixed and compare complete outputs at each promoted level. Do not use a resumed/cached run as a throughput benchmark. Compare 3 target + 1 judge with 2 + 2 only if judge queue/latency measurements justify it. A topology change requires a new state directory and its own equality check.
+
+No 48-hour or 72-hour completion promise is supported yet. Project duration from measured completed eligible records, realized tokens and the actual B2 eligibility census. Include startup, tail latency and all three GPU stages.
+
+## Production and operational controls
+
+After the GPU checks pass, use the same launchers with the full input paths and measured concurrency. The 3,000-record B1 preflight enforces 1,200 pairs, 600 standalone records and 600 scenarios. B2/B4 preserve exact source membership and order. Final publication occurs only after the full audit succeeds.
+
+| Environment variable | Default / use |
+|---|---|
+| `INPUT_FILE` | Required |
+| `OUTPUT_FILE` | Input stem + stage + `_optimized.jsonl` under `OUTPUT_DIR` |
+| `STATE_DIR` | `<OUTPUT_FILE>.state` |
+| `GPU_COUNT` | All allocated GPUs for B1/B2 |
+| `TARGET_GPU_COUNT`, `JUDGE_GPU_COUNT` | B4 defaults to 3 targets and remaining GPUs for judging |
+| `TARGET_INFLIGHT` | 2 outstanding requests per target replica |
+| `JUDGE_INFLIGHT` | 4 outstanding requests per judge replica |
+| `RECORD_WORKERS` | At least 8, scaled to the topology |
+| `INTERVENTION_WORKERS` | At least 4, normally 4 per target replica |
+| `MODEL_CACHE`, `CONDA_ENV` | Existing `$HOME/work/hf_models` and `$HOME/work/conda_envs/dataset_gen` |
+| `PORT_BASE` | 8300, allocation-local loopback ports |
+| `PROBE_INPUT`, `PROBE_ONLY`, `PROBE_LEVELS_JSON` | Optional Gate 0 before stage execution or probe only |
+
+`WORKERS_PER_GPU`, `WORKERS_PER_TARGET` and `N_SHARDS` are obsolete. Use the controls above. Changing `GPU_COUNT` does not change a Slurm allocation. Match it with `sbatch --gres=gpu:N`. The launchers use Slurm's assigned CUDA devices, require every allocated GPU to have a role, and stop if a server exits.
+
+The default allocation is 12 hours with a ten-minute warning. Override with `sbatch --time=06:00:00` if desired. To pause cleanly, signal the supervisor:
 
 ```bash
-python naacl/audit_repaired_dataset.py \
-  --input $HOME/staging/dataset_gen_output/naacl_dataset.jsonl \
-  --require-prepared
+scancel --signal=USR1 --batch JOB_ID
 ```
 
-Preparation performs three important compatibility repairs:
+Resubmit with identical input, output, state, runtime and code to resume. Request concurrency and worker counts can change without invalidating completed work, but any promoted concurrency still needs GPU equivalence validation. Completed target responses, validated judge passes, interventions and records are journaled. Signals stop new admission while successful in-flight responses are saved. A hard kill may lose a request that had not committed yet. Transport failures stop admission because an HTTP timeout may leave work running on the server. Judge parsing retries and seed offsets remain unchanged. No failed/partial response is cached as success.
 
-- unsupported malicious spans become `EVIDENCE_CANDIDATE` with ignored
-  attribution supervision;
-- annotated benign spans are explicit attribution negatives;
-- a malicious record with no established evidence-bearing turn sets
-  `pivot_supervision_ignore=true`. Benign `pivot_turn_id=None` remains a true
-  supervised no-pivot example.
+Only one allocation/executor can own a state directory. State is SQLite with rollback journaling and full synchronization, requiring functioning POSIX locks and fsync on the shared filesystem. Do not copy a live state directory. Changing source content, model/runtime identity or active Python code requires a fresh state directory. Old deterministic whole-record checkpoints can be explicitly imported using `IMPORT_CHECKPOINTS_JSON='["/path/shard*.checkpoint.jsonl"]'`. Import requires matching input/config fingerprints, valid terminal outputs and no conflicting records. Nonterminal or incompatible imports fail rather than silently pass.
 
-## 4. Recreate splits
+Inspect progress and performance with:
 
 ```bash
-rm -rf $HOME/staging/dataset_gen_output/naacl_splits
-python split_dataset.py \
-  --input $HOME/staging/dataset_gen_output/naacl_dataset.jsonl \
-  --output-dir $HOME/staging/dataset_gen_output/naacl_splits \
-  --seed 42 \
-  --human-benchmark 100 \
-  --double-annotated 50
+python naacl/report_performance.py --state-dir "$OUT/optimized_smoke_b4.jsonl.state"
 ```
 
-The Transformer training job independently checks conversation-ID and pair-ID
-leakage across splits before training.
+Each state directory contains request timing/usage in `requests.jsonl` and an `allocation-JOB_ID/` directory with combined server logs, raw Prometheus/GPU samples and the executor command. A successful final output is the completeness signal. Request latency sums are not GPU wall time.
 
-## 5. Retrain unchanged architecture/baselines
+The precommitted held-out judge sampling/evaluation utilities remain active. Sampling still uses score-free B1 output and excludes the frozen design manifest in `tests/fixtures/`. Dataset preparation preserves pair retention, standalone benign stress separation and loss weights. It now directly validates the deterministic v3/v5/v6 chain.
 
-On `GuardLens-Transformer`, branch `naacl-validity-repair`:
-
-```bash
-SPLIT_DIR=$HOME/staging/dataset_gen_output/naacl_splits \
-BASE_OUTPUT=$HOME/work/results/guardlens_naacl/checkpoints \
-sbatch train_naacl.slurm
-```
-
-Before GPU training, `train_naacl.slurm` runs a **train/dev-only** length probe.
-The held-out test set is not used to decide whether preprocessing is acceptable.
-By default, dev length-only AUC above 0.65 stops training for investigation.
-
-The same five existing variants are retrained:
-
-- GuardLens
-- GuardLens-NoFusion
-- GuardLens-NoCF
-- turn-level classifier
-- ConversationDeBERTa
-
-## 6. Targeted evaluation
-
-```bash
-SPLIT_DIR=$HOME/staging/dataset_gen_output/naacl_splits \
-CKPT_DIR=$HOME/work/results/guardlens_naacl/checkpoints \
-OUT_DIR=$HOME/work/results/guardlens_naacl/results \
-sbatch eval_naacl.slurm
-```
-
-This runs, after the pipeline is frozen:
-
-- held-out length-only shortcut probe;
-- top-k evidence-turn localization;
-- leave-one-turn-out baseline;
-- attribution intervention metrics and evidence-tier analysis;
-- utility grid;
-- NoCF attribution/utility ablation;
-- original untrimmed benign stress evaluation when the stress file exists.
-
-Checkpoint loading falls back from `best_attribution.pt` to `best.pt` to
-`best_detection.pt`, so evaluation does not fail merely because attribution F1
-never exceeded the checkpoint-saving threshold.
-
-## 7. External MHJ
-
-If the NAACL manuscript retains the original MHJ generalization result, rerun
-MHJ with the **new repaired checkpoint** before reporting it. Do not copy the old
-v11 number into the revised paper. MHJ should be treated as external behavioral /
-intervention validation, not as repaired counterfactual evidence ground truth.
-
-## Go / no-go
-
-Proceed to the manuscript rewrite only when all of the following hold:
-
-1. both dataset audits pass;
-2. no validated-malicious evidence jobs remain in error state;
-3. the dev shortcut preflight passes, and the final held-out length-only probe
-   is not a strong classifier;
-4. a meaningful subset of malicious trajectories has supported evidence;
-5. GuardLens retains the qualitative classification/localization/intervention
-   story relative to direct baselines;
-6. NoCF and LOTO comparisons do not erase the claimed contribution;
-7. false positives remain acceptable on the untrimmed benign stress set;
-8. every external result retained in the manuscript is rerun with repaired
-   checkpoints.
-
-If those conditions hold, stop and write the NAACL paper. Do not expand this
-branch into the full Phase-2 rebuild.
+vLLM argument reference used for the pinned launcher is [v0.28.0 serve](https://docs.vllm.ai/en/v0.28.0/cli/serve/). No server throughput measurements were available in the development workspace.

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from frontier_common import load_jsonl
-from frontier_judge import PROTOCOL
+from frontier_judge_v5 import PROTOCOL
 
 
 def safe_div(a, b):

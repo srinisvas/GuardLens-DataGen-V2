@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from pathlib import Path
 import random
 from collections import Counter, defaultdict
 
@@ -157,7 +156,7 @@ def main():
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument(
         "--exclude-manifest",
-        default=str(Path(__file__).resolve().parent / "tests" / "fixtures" / "judge_design_manifest.json"),
+        default="naacl/frontier_judge_smoke_adjudication_v4.json",
         help="development/calibration IDs that must never enter paper holdout",
     )
     args = p.parse_args()

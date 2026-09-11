@@ -14,16 +14,15 @@ import statistics
 import sys
 from collections import Counter, defaultdict
 
-from frontier_runtime_determinism import assert_runtime_fields
 from frontier_common import config_fingerprint, load_jsonl, transcript_text
 from frontier_seed_policy import (
     SEED_POLICY,
     experiment_record_seed,
     experiment_seed_key,
 )
-from frontier_rollout import rollout_config
+from rollout_frontier_source import rollout_config
 
-ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v3"
+ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
@@ -63,8 +62,6 @@ def main() -> None:
         raise ValueError("near-cap-fraction must be in (0,1]")
 
     records = load_jsonl(args.input)
-    for record in records:
-        assert_runtime_fields(record.get("rollout_provenance", {}) or {})
     errors = []
     warnings = []
     seen = set()

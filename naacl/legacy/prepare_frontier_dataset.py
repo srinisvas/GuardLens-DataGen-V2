@@ -17,7 +17,6 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Dict, List
 
-from audit_frontier_evidence import audit_record as audit_b4_record
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
     DEFAULT_JUDGE_MAX_MODEL_LEN,
@@ -36,9 +35,9 @@ LOSS_WEIGHTS = {
 }
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v3"
-VALIDATION_PROTOCOL = "frontier_context_judge_v5"
-EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v6"
+ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v2"
+VALIDATION_PROTOCOL = "frontier_context_judge_v3"
+EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v4"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
 EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
@@ -61,34 +60,90 @@ def user_turn_count(record: Dict) -> int:
 
 
 def assert_expected_provenance(
-    record,
+    record: Dict,
     *,
     expected_target: str,
     expected_judge: str,
     require_evidence: bool,
 ) -> None:
+    """Require the exact reviewed B1→B4 protocol chain for every prepared record."""
     cid = str(record.get("conversation_id", ""))
-    audit_b4_record(
-        record,
-        target_model=expected_target,
-        judge_model=expected_judge,
-        max_tokens=EXPECTED_TARGET_MAX_TOKENS,
-        target_max_model_len=EXPECTED_TARGET_MAX_MODEL_LEN,
-        judge_max_model_len=EXPECTED_JUDGE_MAX_MODEL_LEN,
-        judge_max_context_chars=EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
-    )
+    rollout = record.get("rollout_provenance", {}) or {}
+    validation = record.get("frontier_behavioral_validation", {}) or {}
     analysis = record.get("frontier_evidence_analysis", {}) or {}
+
+    if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+        raise ValueError(f"{cid}: unsupported rollout protocol {rollout.get('protocol')!r}")
+    if rollout.get("completion_contract") != COMPLETION_CONTRACT:
+        raise ValueError(f"{cid}: rollout completion contract mismatch")
+    if rollout.get("target_model") != expected_target:
+        raise ValueError(
+            f"{cid}: rollout target {rollout.get('target_model')!r} != expected {expected_target!r}"
+        )
+    if int(rollout.get("max_tokens", -1)) != EXPECTED_TARGET_MAX_TOKENS:
+        raise ValueError(
+            f"{cid}: rollout max_tokens={rollout.get('max_tokens')!r} != "
+            f"expected {EXPECTED_TARGET_MAX_TOKENS}"
+        )
+    if int(rollout.get("max_model_len", -1)) != EXPECTED_TARGET_MAX_MODEL_LEN:
+        raise ValueError(
+            f"{cid}: rollout max_model_len={rollout.get('max_model_len')!r} != "
+            f"expected {EXPECTED_TARGET_MAX_MODEL_LEN}"
+        )
+    if rollout.get("authoring_metadata_exposed_to_target") is not False:
+        raise ValueError(f"{cid}: target metadata-exposure provenance is not fail-closed")
+
+    if validation.get("protocol") != VALIDATION_PROTOCOL:
+        raise ValueError(
+            f"{cid}: unsupported validation protocol {validation.get('protocol')!r}"
+        )
+    if validation.get("judge_model") != expected_judge:
+        raise ValueError(
+            f"{cid}: validation judge {validation.get('judge_model')!r} != expected {expected_judge!r}"
+        )
+    if int(validation.get("judge_max_model_len", -1)) != EXPECTED_JUDGE_MAX_MODEL_LEN:
+        raise ValueError(
+            f"{cid}: judge runtime context={validation.get('judge_max_model_len')!r} != "
+            f"expected {EXPECTED_JUDGE_MAX_MODEL_LEN}"
+        )
+    if int(validation.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
+        raise ValueError(
+            f"{cid}: judge context budget={validation.get('judge_max_context_chars')!r} != "
+            f"expected {EXPECTED_JUDGE_MAX_CONTEXT_CHARS}"
+        )
+    if validation.get("context_policy") != CONTEXT_POLICY:
+        raise ValueError(f"{cid}: validation context policy mismatch")
+    if validation.get("authoring_metadata_exposed_to_judge") is not False:
+        raise ValueError(f"{cid}: judge metadata-exposure provenance is not fail-closed")
+
+    if analysis.get("protocol") != EVIDENCE_PROTOCOL:
+        raise ValueError(f"{cid}: unsupported evidence protocol {analysis.get('protocol')!r}")
+    if analysis.get("target_model") != expected_target:
+        raise ValueError(f"{cid}: evidence target differs from primary target")
+    if analysis.get("judge_model") != expected_judge:
+        raise ValueError(f"{cid}: evidence judge differs from primary judge")
+    if int(analysis.get("max_tokens", -1)) != EXPECTED_TARGET_MAX_TOKENS:
+        raise ValueError(f"{cid}: evidence target token cap mismatch")
+    if int(analysis.get("target_max_model_len", EXPECTED_TARGET_MAX_MODEL_LEN)) != EXPECTED_TARGET_MAX_MODEL_LEN:
+        raise ValueError(f"{cid}: evidence target runtime context mismatch")
+    if int(analysis.get("judge_max_model_len", -1)) != EXPECTED_JUDGE_MAX_MODEL_LEN:
+        raise ValueError(f"{cid}: evidence judge runtime context mismatch")
+    if int(analysis.get("judge_max_context_chars", -1)) != EXPECTED_JUDGE_MAX_CONTEXT_CHARS:
+        raise ValueError(f"{cid}: evidence judge context budget mismatch")
+    if analysis.get("context_policy") != CONTEXT_POLICY:
+        raise ValueError(f"{cid}: evidence context policy mismatch")
+
     if require_evidence:
         if analysis.get("status") != "complete":
             raise ValueError(f"{cid}: malicious evidence analysis is not complete")
         if analysis.get("baseline_reproduced_stored_rollout") is not True:
-            raise ValueError(f"{cid}: fresh B4 baseline did not reproduce B1/B2-v5")
+            raise ValueError(f"{cid}: paired baseline did not reproduce stored rollout")
     else:
         if analysis.get("status") != "not_applicable":
             raise ValueError(
-                f"{cid}: benign evidence status={analysis.get('status')!r}; expected not_applicable"
+                f"{cid}: benign evidence envelope status={analysis.get('status')!r}, "
+                "expected not_applicable"
             )
-
 
 
 def sanitize_malicious(

@@ -1,3 +1,5 @@
+> On `naacl-validity-repair-optimized`, use the [current Dataset B pipeline and Slurm runbook](naacl/README.md). Historical NAACL versions are preserved in `naacl/legacy/`.
+
 # GuardLens Dataset Generation Pipeline — v11
 
 ## Overview

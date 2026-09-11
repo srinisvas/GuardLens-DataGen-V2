@@ -15,7 +15,7 @@ import unittest
 from collections import Counter
 
 # Pipeline scripts use sibling imports when executed as ``python naacl/foo.py``.
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+THIS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "legacy"))
 if THIS_DIR not in sys.path:
     sys.path.insert(0, THIS_DIR)
 

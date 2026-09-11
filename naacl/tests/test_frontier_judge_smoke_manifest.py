@@ -5,7 +5,7 @@ import json
 import os
 import unittest
 
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+THIS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "legacy"))
 MANIFEST = os.path.join(THIS_DIR, "frontier_judge_smoke_adjudication_v4.json")
 
 
