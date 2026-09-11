@@ -167,8 +167,6 @@ def main():
     probe_only = os.environ.get('PROBE_ONLY')=='1'
     lease = contextlib.nullcontext(None) if probe_only else Publication(output, os.environ['SLURM_JOB_ID'])
     with lease as publication:
-        if publication:
-            publication.start(stage=stage, mode=mode, input_path=str(input_path))
         state.mkdir(parents=True,exist_ok=True)
         owner = open(state/'allocation.lock','a+')
         fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -200,6 +198,10 @@ def main():
         worker = sampler = None
         auth = {'Authorization':'Bearer '+os.environ.get('VLLM_API_KEY','EMPTY')}
         base_port = positive_env('PORT_BASE',8300)
+        # Preserve prior success until preflight and runtime validation admit
+        # this trial. Destination ownership still covers the admission checks.
+        if publication:
+            publication.start(stage=stage, mode=mode, input_path=str(input_path))
         try:
             for i,(role,device) in enumerate(assignments):
                 port = base_port+i

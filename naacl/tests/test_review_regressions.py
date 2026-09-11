@@ -4,6 +4,55 @@ from test_optimized_contract import run_active
 
 
 class ReviewRegressionTests(unittest.TestCase):
+    def test_launcher_preserves_receipt_until_admission(self):
+        run_active('''
+            import os,sys,json,tempfile,subprocess
+            from pathlib import Path
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            from execution import Publication
+            from frontier_common import json_fingerprint
+            from compare_outputs import compare
+            import launch_job
+            for failure in ['cache','preflight','capture','mismatch','startup']:
+                with tempfile.TemporaryDirectory() as d:
+                    root=Path(d);output=root/'output.jsonl';state=root/'state'
+                    contract=dict(stage='b1',input_fingerprint='fixture',scientific_config={},runtime={},code={})
+                    with Publication(output,'previous') as publication:
+                        publication.start()
+                        publication.complete([{'conversation_id':'one'}],contract=contract,
+                            contract_fingerprint=json_fingerprint(contract),input_fingerprint='fixture')
+                    receipt=Path(str(output)+'.completion.json')
+                    previous_receipt=receipt.read_bytes();previous_output=output.read_bytes()
+                    reference=root/'reference.jsonl';reference.write_bytes(previous_output)
+                    env=dict(SLURM_JOB_ID='new',CUDA_VISIBLE_DEVICES='0',INPUT_FILE=str(root/'input.jsonl'),
+                        OUTPUT_FILE=str(output),STATE_DIR=str(state),RUN_MODE='smoke')
+                    if failure!='cache':env['MODEL_CACHE']=str(root/'cache')
+                    if failure=='mismatch':
+                        state.mkdir();(state/'runtime.json').write_text('{}')
+                    runtime={'server_flags':{'target':[]}}
+                    with patch.dict(os.environ,env,clear=True), patch.object(sys,'argv',['launch_job.py','b1']), \
+                         patch('launch_job.subprocess.run',side_effect=subprocess.CalledProcessError(1,'preflight') if failure=='preflight' else None), \
+                         patch('launch_job.capture_runtime',side_effect=RuntimeError('capture failed') if failure=='capture' else None,return_value=runtime), \
+                         patch('launch_job.signal.signal'), patch('launch_job.socket.socket'), \
+                         patch('launch_job.subprocess.Popen',side_effect=RuntimeError('startup failed')) as spawn:
+                        try:launch_job.main()
+                        except (KeyError,RuntimeError,subprocess.CalledProcessError):pass
+                        else:raise AssertionError('expected launcher rejection')
+                    assert output.read_bytes()==previous_output
+                    if failure=='startup':
+                        spawn.assert_called_once()
+                        current=json.loads(receipt.read_text())
+                        assert current['trial_id']=='new' and current['status']=='failed'
+                    else:
+                        spawn.assert_not_called()
+                        assert receipt.read_bytes()==previous_receipt,failure
+                        compare(SimpleNamespace(reference=str(reference),optimized=str(output),trial_id='previous'))
+                        try:compare(SimpleNamespace(reference=str(reference),optimized=str(output),trial_id='new'))
+                        except RuntimeError:pass
+                        else:raise AssertionError('rejected trial certified old output')
+        ''')
+
     def test_intervention_identity_survives_annotation_updates(self):
         run_active('''
             import threading,tempfile,copy

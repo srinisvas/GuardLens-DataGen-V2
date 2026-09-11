@@ -126,7 +126,7 @@ python naacl/compare_outputs.py \
   --optimized "$OUT/optimized_smoke_b4.jsonl" --trial-id "$B4_JOB_ID"
 ```
 
-Save the returned job IDs. Each comparison requires the ID of the trial being reviewed and a matching successful `<OUTPUT_FILE>.completion.json` receipt. The receipt binds the output digest and record count to the input fingerprint, code, runtime, scientific configuration and execution settings. Failed reruns invalidate success for the current attempt while preserving the previous data file. A previous successful file cannot satisfy a failed or different trial.
+Save the returned job IDs. Each comparison requires the ID of the trial being reviewed and a matching successful `<OUTPUT_FILE>.completion.json` receipt. The receipt binds the output digest and record count to the input fingerprint, code, runtime, scientific configuration and execution settings. The launcher preserves the previous receipt until preflight and runtime validation pass. Rejected submissions leave the previous trial verifiable, but cannot claim its success under their own job ID. Once admitted, a failed rerun invalidates success for that attempt while preserving the previous data file.
 
 Require all stage audits, exact comparisons and zero replay errors. Then benchmark fresh state directories at target concurrency 2, 4, 6, and 8 as memory measurements permit. Keep all scientific settings fixed and compare complete outputs at each promoted level. Do not use a resumed/cached run as a throughput benchmark. Compare 3 target + 1 judge with 2 + 2 only if judge queue/latency measurements justify it. A topology change requires a new state directory and its own equality check.
 
