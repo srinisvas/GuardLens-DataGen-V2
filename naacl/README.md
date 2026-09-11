@@ -1,6 +1,6 @@
 # Optimized Dataset B execution
 
-Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7aac9b616a8fb`. The original `naacl-validity-repair` branch remains the reference. This branch consolidates the current pipeline and changes scheduling and recovery. GPU equivalence and throughput must still be measured on the A100s before the 3,000-record production run.
+Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7aac9b616a8fb`. The original `naacl-validity-repair` branch remains the reference. This branch consolidates the current pipeline and changes scheduling and recovery. The review fixes add explicit production counts, trial-bound completion receipts, immutable checkpoint identities and output ownership. GPU equivalence and throughput must still be measured on the A100s before the 3,000-record production run.
 
 ## Current entry points
 
@@ -82,17 +82,21 @@ The probe selects observable prefixes across character lengths, including the lo
 Use separate output/state paths so the original reference artifacts remain available. Run stages sequentially after each predecessor passes its audit.
 
 ```bash
+B1_JOB_ID=$(RUN_MODE=smoke EXPECTED_RECORDS=20 \
 INPUT_FILE=$OUT/frontier_multi_author_smoke20.jsonl \
 OUTPUT_FILE=$OUT/optimized_smoke_b1.jsonl \
 TARGET_INFLIGHT=2 RECORD_WORKERS=16 \
-sbatch naacl/launch_b1.slurm
+sbatch --parsable naacl/launch_b1.slurm)
+B1_JOB_ID=${B1_JOB_ID%%;*}
 ```
 
 ```bash
+B2_JOB_ID=$(RUN_MODE=smoke EXPECTED_RECORDS=20 \
 INPUT_FILE=$OUT/optimized_smoke_b1.jsonl \
 OUTPUT_FILE=$OUT/optimized_smoke_b2.jsonl \
 JUDGE_INFLIGHT=4 RECORD_WORKERS=16 \
-sbatch naacl/launch_b2.slurm
+sbatch --parsable naacl/launch_b2.slurm)
+B2_JOB_ID=${B2_JOB_ID%%;*}
 ```
 
 ```bash
@@ -101,24 +105,28 @@ python naacl/materialize_frontier_candidates.py \
   --output "$OUT/optimized_smoke_b3.jsonl" \
   --max-turn-candidates 4 --spans-per-turn 2 --controls 2
 
+B4_JOB_ID=$(RUN_MODE=smoke EXPECTED_RECORDS=20 \
 INPUT_FILE=$OUT/optimized_smoke_b3.jsonl \
 OUTPUT_FILE=$OUT/optimized_smoke_b4.jsonl \
 TARGET_INFLIGHT=2 JUDGE_INFLIGHT=4 RECORD_WORKERS=12 INTERVENTION_WORKERS=12 \
-sbatch naacl/launch_b4.slurm
+sbatch --parsable naacl/launch_b4.slurm)
+B4_JOB_ID=${B4_JOB_ID%%;*}
 ```
 
 Compare all three GPU outputs with the completed deterministic reference artifacts. `compare_outputs.py` compares every scientific field, numerical type and record position. It does not mask differences in provenance, deltas, raw passes, weights or trajectories.
 
 ```bash
 python naacl/compare_outputs.py \
-  --reference "$REF_B1" --optimized "$OUT/optimized_smoke_b1.jsonl"
+  --reference "$REF_B1" --optimized "$OUT/optimized_smoke_b1.jsonl" --trial-id "$B1_JOB_ID"
 python naacl/compare_outputs.py \
   --reference "$OUT/frontier_multi_author_smoke_qwen32_validated_v5_dual_bi_eager_2048_16k_j32k.jsonl" \
-  --optimized "$OUT/optimized_smoke_b2.jsonl"
+  --optimized "$OUT/optimized_smoke_b2.jsonl" --trial-id "$B2_JOB_ID"
 python naacl/compare_outputs.py \
   --reference "$OUT/frontier_multi_author_smoke_qwen32_evidence_v6_bi_eager_2048_16k_j32k.jsonl" \
-  --optimized "$OUT/optimized_smoke_b4.jsonl"
+  --optimized "$OUT/optimized_smoke_b4.jsonl" --trial-id "$B4_JOB_ID"
 ```
+
+Save the returned job IDs. Each comparison requires the ID of the trial being reviewed and a matching successful `<OUTPUT_FILE>.completion.json` receipt. The receipt binds the output digest and record count to the input fingerprint, code, runtime, scientific configuration and execution settings. Failed reruns invalidate success for the current attempt while preserving the previous data file. A previous successful file cannot satisfy a failed or different trial.
 
 Require all stage audits, exact comparisons and zero replay errors. Then benchmark fresh state directories at target concurrency 2, 4, 6, and 8 as memory measurements permit. Keep all scientific settings fixed and compare complete outputs at each promoted level. Do not use a resumed/cached run as a throughput benchmark. Compare 3 target + 1 judge with 2 + 2 only if judge queue/latency measurements justify it. A topology change requires a new state directory and its own equality check.
 
@@ -126,22 +134,25 @@ No 48-hour or 72-hour completion promise is supported yet. Project duration from
 
 ## Production and operational controls
 
-After the GPU checks pass, use the same launchers with the full input paths and measured concurrency. The 3,000-record B1 preflight enforces 1,200 pairs, 600 standalone records and 600 scenarios. B2/B4 preserve exact source membership and order. Final publication occurs only after the full audit succeeds.
+After the GPU checks pass, use the same launchers with the full input paths and measured concurrency. `RUN_MODE=production` is the default and requires exactly 3,000 records in B1, B2 and B4. It never infers smoke mode from a smaller input. `RUN_MODE=smoke` must be explicit and defaults to `EXPECTED_RECORDS=20`. The production B1 preflight additionally enforces 1,200 pairs, 600 standalone records and 600 scenarios. B2/B4 preserve exact source membership and order. Final publication occurs only after the full audit succeeds.
 
 | Environment variable | Default / use |
 |---|---|
 | `INPUT_FILE` | Required |
+| `RUN_MODE`, `EXPECTED_RECORDS` | Production / 3,000 by default. Explicit smoke mode defaults to 20 |
 | `OUTPUT_FILE` | Input stem + stage + `_optimized.jsonl` under `OUTPUT_DIR` |
 | `STATE_DIR` | `<OUTPUT_FILE>.state` |
 | `GPU_COUNT` | All allocated GPUs for B1/B2 |
 | `TARGET_GPU_COUNT`, `JUDGE_GPU_COUNT` | B4 defaults to 3 targets and remaining GPUs for judging |
 | `TARGET_INFLIGHT` | 2 outstanding requests per target replica |
 | `JUDGE_INFLIGHT` | 4 outstanding requests per judge replica |
-| `RECORD_WORKERS` | At least 8, scaled to the topology |
-| `INTERVENTION_WORKERS` | At least 4, normally 4 per target replica |
+| `RECORD_WORKERS` | `max(8, 2 × targets × TARGET_INFLIGHT, judges × JUDGE_INFLIGHT)` |
+| `INTERVENTION_WORKERS` | `max(4, 2 × targets × TARGET_INFLIGHT)` |
 | `MODEL_CACHE`, `CONDA_ENV` | Existing `$HOME/work/hf_models` and `$HOME/work/conda_envs/dataset_gen` |
 | `PORT_BASE` | 8300, allocation-local loopback ports |
 | `PROBE_INPUT`, `PROBE_ONLY`, `PROBE_LEVELS_JSON` | Optional Gate 0 before stage execution or probe only |
+
+Worker defaults scale with request limits. Explicit smaller worker overrides are honored but produce a startup warning when they restrict target concurrency. The launcher prints the resulting request capacities and chain ceilings.
 
 `WORKERS_PER_GPU`, `WORKERS_PER_TARGET` and `N_SHARDS` are obsolete. Use the controls above. Changing `GPU_COUNT` does not change a Slurm allocation. Match it with `sbatch --gres=gpu:N`. The launchers use Slurm's assigned CUDA devices, require every allocated GPU to have a role, and stop if a server exits.
 
@@ -153,7 +164,7 @@ scancel --signal=USR1 --batch JOB_ID
 
 Resubmit with identical input, output, state, runtime and code to resume. Request concurrency and worker counts can change without invalidating completed work, but any promoted concurrency still needs GPU equivalence validation. Completed target responses, validated judge passes, interventions and records are journaled. Signals stop new admission while successful in-flight responses are saved. A hard kill may lose a request that had not committed yet. Transport failures stop admission because an HTTP timeout may leave work running on the server. Judge parsing retries and seed offsets remain unchanged. No failed/partial response is cached as success.
 
-Only one allocation/executor can own a state directory. State is SQLite with rollback journaling and full synchronization, requiring functioning POSIX locks and fsync on the shared filesystem. Do not copy a live state directory. Changing source content, model/runtime identity or active Python code requires a fresh state directory. Old deterministic whole-record checkpoints can be explicitly imported using `IMPORT_CHECKPOINTS_JSON='["/path/shard*.checkpoint.jsonl"]'`. Import requires matching input/config fingerprints, valid terminal outputs and no conflicting records. Nonterminal or incompatible imports fail rather than silently pass.
+Only one allocation/executor can own a state directory or output destination. The supervisor retains the output lock throughout the allocation and passes ownership to its executor through an inherited file descriptor. Output/receipt writes use unique temporary files and synchronized atomic renames. State is SQLite with rollback journaling and full synchronization, requiring functioning POSIX locks and fsync on the shared filesystem. Do not copy a live state directory. Changing source content, model/runtime identity or active Python code requires a fresh state directory. Old deterministic whole-record checkpoints can be explicitly imported using `IMPORT_CHECKPOINTS_JSON='["/path/shard*.checkpoint.jsonl"]'`. Import requires matching input/config fingerprints, valid terminal outputs and no conflicting records. Nonterminal or incompatible imports fail rather than silently pass.
 
 Inspect progress and performance with:
 
@@ -161,8 +172,12 @@ Inspect progress and performance with:
 python naacl/report_performance.py --state-dir "$OUT/optimized_smoke_b4.jsonl.state"
 ```
 
-Each state directory contains request timing/usage in `requests.jsonl` and an `allocation-JOB_ID/` directory with combined server logs, raw Prometheus/GPU samples and the executor command. A successful final output is the completeness signal. Request latency sums are not GPU wall time.
+Each state directory contains request timing/usage in `requests.jsonl` and an `allocation-JOB_ID/` directory with combined server logs, raw Prometheus/GPU samples and the executor command. A matching complete trial receipt with a verified output digest is the completeness signal. File existence alone is insufficient. Standalone `run_stage.py` runs generate and print a trial ID, or accept `--trial-id`; comparison requires that ID. Request latency sums are not GPU wall time.
 
 The precommitted held-out judge sampling/evaluation utilities remain active. Sampling still uses score-free B1 output and excludes the frozen design manifest in `tests/fixtures/`. Dataset preparation preserves pair retention, standalone benign stress separation and loss weights. It now directly validates the deterministic v3/v5/v6 chain.
 
 vLLM argument reference used for the pinned launcher is [v0.28.0 serve](https://docs.vllm.ai/en/v0.28.0/cli/serve/). No server throughput measurements were available in the development workspace.
+
+## Review regression gate
+
+`tests/test_review_regressions.py` and the expanded HTTP integration tests cover the six review findings. They exercise 2,999-record rejection, stale-output rejection after a failed trial, completed-intervention recovery despite concurrent annotation updates, worker-capacity sizing, exclusive/inherited output ownership, unique atomic temporary files and authenticated solo/concurrent probes. The original scientific differential tests remain mandatory.

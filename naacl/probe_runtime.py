@@ -7,6 +7,7 @@ measurement utility, not a replacement for the full B1/B2/B4 equivalence smoke.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import time
 
@@ -61,7 +62,7 @@ def main():
         model=TARGET if role=='target' else JUDGE
         cases=workload[role]
         for url in urls:
-            client=VLLMClient(model,url)
+            client=VLLMClient(model,url,api_key=os.environ.get("VLLM_API_KEY", "EMPTY"))
             if not client.health_check():raise RuntimeError(f'{url} unavailable')
             solo=[]
             for case in cases:
@@ -78,7 +79,7 @@ def main():
                     if repeat%2:jobs.reverse()
                     def call(i):
                         case=cases[i]
-                        return i,VLLMClient(model,url).chat_result(case['messages'],
+                        return i,VLLMClient(model,url,api_key=os.environ.get("VLLM_API_KEY", "EMPTY")).chat_result(case['messages'],
                             require_stop=True,require_usage=True,**case['kwargs'])
                     with ThreadPoolExecutor(max_workers=level) as pool:
                         for i,result in pool.map(call,jobs):

@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import Counter
 
@@ -51,6 +52,7 @@ class Oracle(BaseHTTPRequestHandler):
     maximum = 0
     drift = False
     judge_drift = False
+    required_key = None
     fail = False
     def log_message(self,*args):
         pass
@@ -64,6 +66,9 @@ class Oracle(BaseHTTPRequestHandler):
     def do_GET(self):
         self.reply({'data':[{'id':TARGET},{'id':JUDGE}]})
     def do_POST(self):
+        if self.required_key and self.headers.get('Authorization') != 'Bearer '+self.required_key:
+            self.reply({'error':'unauthorized'},401)
+            return
         payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         with self.lock:
             type(self).requests_seen.append(payload)
@@ -142,12 +147,66 @@ class OptimizedPipelineTests(unittest.TestCase):
         manifest.write_text(json.dumps(dict(runtime_determinism='vllm_batch_invariant_eager_v1',
             stage=stage,replicas={'target':int(stage!='b2'),'judge':int(stage!='b1')})))
         output = root/(stage+'optimized'+suffix+'.jsonl')
-        args = [stage,'--input',input_path,'--output',output,'--state-dir',root/(stage+'state'+suffix),
+        args = [stage,'--mode','smoke','--expected-records',len(input_path.read_text().splitlines()),'--input',input_path,'--output',output,'--state-dir',root/(stage+'state'+suffix),
             '--runtime-manifest',manifest,'--record-workers',workers,'--intervention-workers','4']
         if stage != 'b2': args += ['--target-urls',self.url]
         if stage != 'b1': args += ['--judge-urls',self.url]
         result = self.run_cli('run_stage.py',*args,success=success,interrupt_after=interrupt_after)
         return output,result
+    def tearDown(self):
+        Oracle.fail=Oracle.drift=Oracle.judge_drift=False
+        Oracle.required_key=None
+
+    def test_production_preflight_rejects_2999_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            source_path=Path(d)/'truncated.jsonl'
+            source_path.write_text(''.join(json.dumps(source(f'p{i}-m',1,'NORMAL'))+'\n' for i in range(2999)))
+            result=self.run_cli('run_stage.py','b1','--input',source_path,'--preflight-only',success=False)
+            self.assertIn('2999 records, expected 3000',result.stderr)
+            self.run_cli('run_stage.py','b1','--input',source_path,'--preflight-only',
+                         '--mode','production','--expected-records','2999',success=False)
+
+    def test_failed_trial_cannot_reuse_old_equivalence_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);src=root/'source.jsonl'
+            src.write_text(json.dumps(source('p1-m',1,'NORMAL'))+'\n')
+            output,_=self.optimized(root,'b1',src)
+            reference=root/'reference.jsonl';reference.write_bytes(output.read_bytes())
+            receipt_path=Path(str(output)+'.completion.json')
+            previous=json.loads(receipt_path.read_text())
+            self.run_cli('compare_outputs.py','--reference',reference,'--optimized',output,
+                         '--trial-id',previous['trial_id'])
+            Oracle.fail=True
+            self.run_cli('run_stage.py','b1','--mode','smoke','--expected-records','1',
+                '--input',src,'--output',output,'--state-dir',root/'fresh-state',
+                '--runtime-manifest',root/'b1runtime.json','--target-urls',self.url,
+                '--trial-id','failed-attempt',success=False)
+            self.assertEqual(output.read_bytes(),reference.read_bytes())
+            self.assertEqual(json.loads(receipt_path.read_text())['status'],'failed')
+            for trial in ['failed-attempt',previous['trial_id']]:
+                self.run_cli('compare_outputs.py','--reference',reference,'--optimized',output,
+                             '--trial-id',trial,success=False)
+            Oracle.fail=False
+            output,_=self.optimized(root,'b1',src)
+            receipt=json.loads(receipt_path.read_text())
+            self.run_cli('compare_outputs.py','--reference',reference,'--optimized',output,
+                         '--trial-id',receipt['trial_id'])
+            output.write_text(output.read_text()+'\n')
+            self.run_cli('compare_outputs.py','--reference',reference,'--optimized',output,
+                         '--trial-id',receipt['trial_id'],success=False)
+
+    def test_gate_zero_honors_api_key_for_solo_and_concurrent_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);src=root/'source.jsonl'
+            src.write_text(json.dumps(source('p1-m',1,'NORMAL'))+'\n')
+            output,_=self.optimized(root,'b1',src)
+            Oracle.required_key='review-test-key'
+            with patch.dict(os.environ,{'VLLM_API_KEY':Oracle.required_key}):
+                self.run_cli('probe_runtime.py','--input',output,'--target-urls',self.url,
+                    '--judge-urls',self.url,'--concurrency','1','2','--repeats','1',
+                    '--output',root/'gate0.json')
+            self.assertEqual(json.loads((root/'gate0.json').read_text())['status'],'passed')
+
     def test_full_pipeline_matches_reference_and_resumes(self):
         Oracle.drift = Oracle.fail = False
         with tempfile.TemporaryDirectory() as directory:

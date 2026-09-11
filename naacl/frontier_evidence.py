@@ -321,10 +321,12 @@ class EvidenceValidator:
 
     def submit_intervention(self, fn, *args, **kwargs):
         from execution import immediate
+        journal = getattr(self.target, 'journal', None)
+        # Freeze identity before dispatch. Span annotations are updated by the
+        # coordinator while other interventions are still running.
+        key = copy.deepcopy({"kind": "intervention", "scope": getattr(self.target, 'scope', None),
+                             "args": args[1:], "kwargs": kwargs})
         def execute():
-            journal = getattr(self.target, 'journal', None)
-            key = {"kind": "intervention", "scope": getattr(self.target, 'scope', None),
-                   "args": args[1:], "kwargs": kwargs}
             cached = journal.get(key) if journal else None
             if cached is not None:
                 return cached

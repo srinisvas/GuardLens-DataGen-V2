@@ -255,13 +255,97 @@ class Judge:
         return self.pool.submit(fn, *args, **kwargs)
 
 
-def atomic_jsonl(path, records):
+def _atomic_write(path, chunks):
+    import tempfile
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + '.tmp')
-    with open(tmp, 'w', encoding='utf-8') as f:
-        for row in records:
-            f.write(json.dumps(row, ensure_ascii=False) + '\n')
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    fd, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            for chunk in chunks:
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def atomic_jsonl(path, records):
+    _atomic_write(path, (json.dumps(row, ensure_ascii=False) + '\n' for row in records))
+
+
+class OutputLease:
+    """Exclusive destination ownership, including across different state directories."""
+    def __init__(self, output, inherited_fd=None):
+        self.path = Path(str(Path(output).resolve()) + '.lock')
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if inherited_fd is None:
+            self.owner = open(self.path, 'a+')
+        else:
+            stat = os.fstat(inherited_fd)
+            expected = self.path.stat()
+            if (stat.st_dev, stat.st_ino) != (expected.st_dev, expected.st_ino):
+                raise RuntimeError('inherited output lock does not match destination')
+            self.owner = os.fdopen(os.dup(inherited_fd), 'a+')
+        try:
+            fcntl.flock(self.owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.owner.close()
+            raise RuntimeError('output destination already has an active writer')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.owner.close()
+
+
+def file_digest(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+class Publication(OutputLease):
+    """A trial receipt makes old output distinguishable from current success."""
+    def __init__(self, output, trial_id=None, inherited_fd=None):
+        import uuid
+        super().__init__(output, inherited_fd)
+        self.output = Path(output).resolve()
+        self.receipt = Path(str(self.output) + '.completion.json')
+        self.trial_id = trial_id or uuid.uuid4().hex
+
+    def start(self, **metadata):
+        atomic_json(self.receipt, dict(status='running', trial_id=self.trial_id,
+            output=str(self.output), **metadata))
+        print(f'Trial ID: {self.trial_id}', flush=True)
+
+    def complete(self, records, **metadata):
+        atomic_jsonl(self.output, records)
+        atomic_json(self.receipt, dict(status='complete', trial_id=self.trial_id,
+            output=str(self.output), output_sha256=file_digest(self.output),
+            record_count=len(records), **metadata))
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            if self.receipt.exists():
+                receipt = json.loads(self.receipt.read_text())
+                if receipt.get('trial_id') == self.trial_id and receipt.get('status') != 'complete':
+                    receipt.update(status='failed', error=str(exc) if exc else 'trial did not complete')
+                    atomic_json(self.receipt, receipt)
+        finally:
+            super().__exit__(exc_type, exc, traceback)
+
+
+def atomic_json(path, value):
+    _atomic_write(path, [json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n'])

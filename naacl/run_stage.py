@@ -13,7 +13,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
-from execution import BoundedPool, Journal, Judge, Servers, Stopped, Target, atomic_jsonl
+from execution import Publication, BoundedPool, Journal, Judge, Servers, Stopped, Target, atomic_jsonl
 from frontier_common import json_fingerprint, load_jsonl
 from frontier_runtime_determinism import assert_batch_invariant_env
 import frontier_rollout as b1
@@ -77,11 +77,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage', choices=['b1', 'b2', 'b4'])
     p.add_argument('--input', required=True)
+    p.add_argument('--mode', choices=['production','smoke'], default='production')
+    p.add_argument('--expected-records', type=int)
+    p.add_argument('--trial-id', help='Unique execution attempt ID; Slurm supplies its job ID')
+    p.add_argument('--output-lock-fd', type=int, help=argparse.SUPPRESS)
     p.add_argument('--output')
     p.add_argument('--state-dir')
     p.add_argument('--preflight-only', action='store_true')
     p.add_argument('--runtime-manifest',
-                   help='Manifest produced by capture_runtime.py for these running servers')
+                   help='Manifest produced by launch_job.py for these running servers')
     p.add_argument('--target-urls', nargs='*', default=[])
     p.add_argument('--judge-urls', nargs='*', default=[])
     p.add_argument('--target-inflight', type=int, default=2, help='Outstanding requests per target server')
@@ -96,14 +100,27 @@ def main():
         p.error('--output, --state-dir and --runtime-manifest are required for execution')
     if args.output and Path(args.input).resolve() == Path(args.output).resolve():
         p.error('output must differ from input')
+    if args.preflight_only:
+        return run(args, None)
+    with Publication(args.output, args.trial_id, args.output_lock_fd) as publication:
+        publication.start(stage=args.stage, mode=args.mode, input_path=str(Path(args.input).resolve()))
+        return run(args, publication)
+
+
+def run(args, publication):
     assert_batch_invariant_env()
+    expected = args.expected_records if args.expected_records is not None else (3000 if args.mode == 'production' else 20)
+    if expected < 1 or (args.mode == 'production' and expected != 3000):
+        raise RuntimeError('production requires 3000 records; smoke requires a positive expected count')
     records = load_jsonl(args.input)
+    if len(records) != expected:
+        raise RuntimeError(f'{args.mode} input has {len(records)} records, expected {expected}')
     ids = [r.get('conversation_id') for r in records]
     if not records or any(not isinstance(x,str) or not x for x in ids) or len(set(ids)) != len(ids):
         raise RuntimeError('input must have nonempty, unique record IDs')
     if args.stage == 'b1':
         cmd = [sys.executable, str(HERE/'audit_frontier_source.py'), '--input', args.input]
-        if len(records) == 3000:
+        if args.mode == 'production':
             cmd += ['--expected-records','3000','--expected-pairs','1200','--expected-standalone','600','--expected-scenarios','600']
         else:
             cmd += ['--schema-only']
@@ -224,7 +241,11 @@ def main():
         atomic_jsonl(candidate,[completed[cid] for cid in ids])
         audit(args.stage,candidate,len(records))
         # Publish only after final full-stage audit, in source order.
-        atomic_jsonl(args.output,[completed[cid] for cid in ids])
+        publication.complete([completed[cid] for cid in ids], stage=args.stage, mode=args.mode,
+            input_path=str(Path(args.input).resolve()), input_fingerprint=json_fingerprint(records),
+            contract=contract, contract_fingerprint=json_fingerprint(contract),
+            execution=dict(record_workers=args.record_workers, intervention_workers=args.intervention_workers,
+                           target_inflight=args.target_inflight, judge_inflight=args.judge_inflight))
         print(f'{args.stage.upper()} COMPLETE AND AUDITED: {args.output}',flush=True)
     finally:
         # Intervention workers can still submit judge tasks, so close in order.
