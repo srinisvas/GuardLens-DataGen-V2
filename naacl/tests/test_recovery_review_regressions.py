@@ -126,26 +126,33 @@ class RecoveryPipelineReviewTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "gate0.json").read_text())["status"], "passed")
 
     def test_gate_zero_scales_timeout_with_adaptive_budget(self):
-        # This is a direct unit check of the Gate-0 client; execution.py has a
-        # separate regression for the same 10m/20m/40m timeout schedule.
-        from probe_runtime import ProbeVLLMClient
+        # Run against the active naacl module path, matching the other isolated
+        # contract tests. unittest discovery adds naacl/tests, not naacl itself,
+        # to this process's import path.
+        run_active(
+            r'''
+            from unittest.mock import Mock, patch
+            from probe_runtime import ProbeVLLMClient
+            from run_stage import TARGET
 
-        response = Mock(status_code=200)
-        response.json.return_value = {
-            "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
-            "usage": {"completion_tokens": 12},
-        }
-        response.raise_for_status.return_value = None
-        client = ProbeVLLMClient(pipeline.TARGET, "http://fixture")
-        with patch("probe_runtime.requests.post", return_value=response) as post:
-            client.chat_result(
-                [{"role": "user", "content": "fixture"}],
-                seed=42,
-                max_tokens=4096,
-                require_stop=True,
-                require_usage=True,
-            )
-        self.assertEqual(post.call_args.kwargs["timeout"], 1200)
+            response = Mock(status_code=200)
+            response.json.return_value = {
+                "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 12},
+            }
+            response.raise_for_status.return_value = None
+            client = ProbeVLLMClient(TARGET, "http://fixture")
+            with patch("probe_runtime.requests.post", return_value=response) as post:
+                client.chat_result(
+                    [{"role": "user", "content": "fixture"}],
+                    seed=42,
+                    max_tokens=4096,
+                    require_stop=True,
+                    require_usage=True,
+                )
+            assert post.call_args.kwargs["timeout"] == 1200
+            '''
+        )
 
 
 class RecoveryJournalReviewTests(unittest.TestCase):
