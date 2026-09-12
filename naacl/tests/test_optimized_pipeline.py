@@ -80,11 +80,23 @@ class Oracle(BaseHTTPRequestHandler):
                 self.reply({'error':'injected server failure'},500)
                 return
             messages = payload['messages']
+            finish = 'stop'
+            completion_tokens = 12
             if payload['model'] == TARGET:
                 users = ' '.join(m['content'] for m in messages if m['role']=='user')
+                if 'CONTEXT_LIMIT' in users:
+                    self.reply({'error':{'message':'This model maximum context length is 16384 tokens.'}},400)
+                    return
                 digest = hashlib.sha256(json.dumps(messages,sort_keys=True).encode()).hexdigest()[:16]
                 unsafe = 'SPECIAL_REQUEST' in users
                 content = f'ORACLE_RESPONSE risk={int(unsafe)} {digest}'
+                required = 8192 if 'NEEDS8192' in users else 4096 if 'NEEDS4096' in users else 2048
+                if payload['max_tokens'] < required or 'ALWAYS_LENGTH' in users:
+                    content = 'TRUNCATED ' + digest
+                    finish = 'length'
+                    completion_tokens = payload['max_tokens']
+                elif required > 2048:
+                    completion_tokens = required - 500
                 if self.drift:
                     content += ' DRIFT'
             else:
@@ -98,8 +110,8 @@ class Oracle(BaseHTTPRequestHandler):
                 content = json.dumps(dict(assistant_behavior='UNSAFE_HELP' if unsafe else 'SAFE_HELP',
                     harmfulness=.1 if unsafe else .02, boundary_violation=risk,
                     refusal_strength=0,confidence=confidence))
-            self.reply({'choices':[{'message':{'content':content},'finish_reason':'stop'}],
-                        'usage':{'completion_tokens':12,'prompt_tokens':100,'total_tokens':112}})
+            self.reply({'choices':[{'message':{'content':content},'finish_reason':finish}],
+                        'usage':{'completion_tokens':completion_tokens,'prompt_tokens':100,'total_tokens':100+completion_tokens}})
         finally:
             with self.lock:
                 type(self).active -= 1
@@ -142,12 +154,12 @@ class OptimizedPipelineTests(unittest.TestCase):
         else:
             self.assertNotEqual(result.returncode,0,result.stdout)
         return result
-    def optimized(self, root, stage, input_path, suffix='', success=True, workers=4, interrupt_after=None):
+    def optimized(self, root, stage, input_path, suffix='', success=True, workers=4, interrupt_after=None, budget_policy='fixed_2048_v1'):
         manifest = root/(stage+'runtime.json')
         manifest.write_text(json.dumps(dict(runtime_determinism='vllm_batch_invariant_eager_v1',
             stage=stage,replicas={'target':int(stage!='b2'),'judge':int(stage!='b1')})))
         output = root/(stage+'optimized'+suffix+'.jsonl')
-        args = [stage,'--mode','smoke','--expected-records',len(input_path.read_text().splitlines()),'--input',input_path,'--output',output,'--state-dir',root/(stage+'state'+suffix),
+        args = [stage,'--budget-policy',budget_policy,'--mode','smoke','--expected-records',len(input_path.read_text().splitlines()),'--input',input_path,'--output',output,'--state-dir',root/(stage+'state'+suffix),
             '--runtime-manifest',manifest,'--record-workers',workers,'--intervention-workers','4']
         if stage != 'b2': args += ['--target-urls',self.url]
         if stage != 'b1': args += ['--judge-urls',self.url]

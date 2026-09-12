@@ -13,6 +13,7 @@ cannot proceed to behavioral validation.
 from __future__ import annotations
 
 import copy
+from completion_policy import (FIXED, ROLLOUT_V4, policy_fields, policy_from, target_completion, generation_budget_fields, assert_budget_generation, RecordCompletionError)
 
 from frontier_common import DEFAULT_TARGET_MAX_MODEL_LEN, DEFAULT_TARGET_MAX_TOKENS, VLLMClient, assert_frontier_source_record, config_fingerprint, json_fingerprint
 from frontier_seed_policy import (
@@ -27,9 +28,10 @@ DEFAULT_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 
 
-def _base_rollout_config(*, model: str, base_seed: int, max_tokens: int, max_model_len: int):
+def _base_rollout_config(*, model: str, base_seed: int, max_tokens: int, max_model_len: int, budget_policy: str = FIXED):
     return {
-        "protocol": PROTOCOL,
+        "protocol": PROTOCOL if budget_policy == FIXED else ROLLOUT_V4,
+        **policy_fields(budget_policy),
         "target_model": model,
         "base_seed": int(base_seed),
         "seed_policy": SEED_POLICY,
@@ -85,6 +87,7 @@ def rollout_record(
     base_seed: int,
     max_tokens: int,
     max_model_len: int,
+    budget_policy: str = FIXED,
 ):
     assert_frontier_source_record(record)
     r = copy.deepcopy(record)
@@ -97,6 +100,7 @@ def rollout_record(
         base_seed=base_seed,
         max_tokens=max_tokens,
         max_model_len=max_model_len,
+        budget_policy=budget_policy,
     )
 
     messages = []
@@ -120,14 +124,12 @@ def rollout_record(
         messages.append({"role": "user", "content": text})
 
         response_seed = record_seed + 1009 * (user_index + 1)
-        result = client.chat_result(
-            messages,
-            seed=response_seed,
-            temperature=0.0,
-            max_tokens=max_tokens,
-            require_stop=False,
-            require_usage=False,
-        )
+        try:
+            result = target_completion(client, messages, seed=response_seed,
+                                       max_tokens=max_tokens, policy=budget_policy)
+        except RecordCompletionError as exc:
+            exc.details.update(conversation_id=cid, user_turn_id=user_turn_id)
+            raise
         response = result["content"]
         finish_reason = result.get("finish_reason")
         completion_tokens = result.get("completion_tokens")
@@ -150,6 +152,7 @@ def rollout_record(
                 "max_model_len": max_model_len,
                 "finish_reason": finish_reason,
                 "completion_tokens": completion_tokens,
+                **generation_budget_fields(result, budget_policy),
             },
         }
         realized_turns.append(assistant_turn)
@@ -231,7 +234,7 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
     expected_seed = experiment_record_seed(cfg["base_seed"], source_record)
     expected_key = experiment_seed_key(source_record)
     if not (
-        provenance.get("protocol") == PROTOCOL
+        provenance.get("protocol") == cfg["protocol"]
         and provenance.get("seed_policy") == SEED_POLICY
         and provenance.get("completion_contract") == COMPLETION_CONTRACT
         and provenance.get("input_fingerprint") == json_fingerprint(source_record)
@@ -258,7 +261,12 @@ def cached_rollout_is_reusable(cached, source_record, cfg) -> bool:
             return False
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             return False
-        if generation.get("max_tokens") != cfg["max_tokens"]:
+        try:
+            assert_budget_generation(generation, policy_from(cfg), initial_max_tokens=cfg['max_tokens'],
+                                     response_fingerprint=json_fingerprint(turn['text']))
+        except (RuntimeError, ValueError):
+            return False
+        if tokens > generation['max_tokens']:
             return False
         if generation.get("max_model_len") != cfg["max_model_len"]:
             return False

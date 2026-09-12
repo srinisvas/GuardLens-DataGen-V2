@@ -14,6 +14,8 @@ import random
 from collections import Counter
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from completion_policy import (FIXED, EVIDENCE_V7, policy_fields, policy_from, target_completion,
+                               generation_budget_fields, assert_budget_generation)
 from frontier_common import DEFAULT_JUDGE_MAX_CONTEXT_CHARS, DEFAULT_TARGET_MAX_TOKENS, VLLMClient, config_fingerprint, json_fingerprint
 
 TURN_REPLACEMENTS = [
@@ -97,6 +99,7 @@ def build_evidence_config(
     judge_max_context_chars: int,
     target_max_model_len: int = 16384,
     judge_max_model_len: int = 32768,
+    budget_policy: str = FIXED,
 ) -> Dict:
     cfg = _base_evidence_config(
         target_model=target_model,
@@ -115,7 +118,8 @@ def build_evidence_config(
     )
     cfg.update(
         {
-            "protocol": EVIDENCE_PROTOCOL,
+            "protocol": EVIDENCE_PROTOCOL if budget_policy == FIXED else EVIDENCE_V7,
+            **policy_fields(budget_policy),
             "seed_policy": SEED_POLICY,
             "record_seed_source": RECORD_SEED_SOURCE,
             "target_max_model_len": int(target_max_model_len),
@@ -251,8 +255,11 @@ def resolve_trajectory(items):
     resolved = []
     for item in items:
         if isinstance(item, tuple):
-            tid, future, response = item
+            tid, future, response = item[:3]
+            generation = item[3] if len(item) == 4 else None
             item = _trajectory_item(tid, future.result(), response)
+            if generation is not None:
+                item['target_generation'] = generation
         resolved.append(item)
     return resolved
 
@@ -265,10 +272,13 @@ class EvidenceValidator:
         *,
         max_tokens: int = DEFAULT_TARGET_MAX_TOKENS,
         judge_max_context_chars: int = DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+        budget_policy: str = FIXED,
     ):
         self.target = target
         self.judge = judge
         self.max_tokens = max_tokens
+        self.budget_policy = budget_policy
+        policy_fields(budget_policy)
         self.judge_max_context_chars = judge_max_context_chars
         self._baseline_key = None
         self._baseline = None
@@ -357,12 +367,18 @@ class EvidenceValidator:
                 raise RuntimeError(f"empty user turn at turn_id={tid}")
             messages.append({"role": "user", "content": text})
             response_seed = seed + 1009 * (user_index + 1)
-            response = self.target.chat(
-                messages,
-                seed=response_seed,
-                temperature=0.0,
-                max_tokens=self.max_tokens,
-            )
+            generation = None
+            if self.budget_policy == FIXED:
+                response = self.target.chat(messages, seed=response_seed, temperature=0.0,
+                                            max_tokens=self.max_tokens)
+            else:
+                result = target_completion(self.target, messages, seed=response_seed,
+                                           max_tokens=self.max_tokens, policy=self.budget_policy)
+                response = result['content']
+                generation = dict(model=self.target.model, seed=response_seed, temperature=0.0,
+                    max_model_len=16384, finish_reason=result['finish_reason'],
+                    completion_tokens=result['completion_tokens'],
+                    **generation_budget_fields(result, self.budget_policy))
             messages.append({"role": "assistant", "content": response})
             judge_seed = seed + 1_000_003 + 1013 * (user_index + 1)
             judged = submit_judgment(
@@ -371,7 +387,7 @@ class EvidenceValidator:
                 seed=judge_seed,
                 max_context_chars=self.judge_max_context_chars,
             )
-            trajectory.append((tid, judged, response))
+            trajectory.append((tid, judged, response, generation))
             user_index += 1
         trajectory = resolve_trajectory(trajectory)
         if not trajectory:
@@ -473,12 +489,18 @@ class EvidenceValidator:
 
             messages.append({"role": "user", "content": text})
             response_seed = seed + 1009 * (user_index + 1)
-            response = self.target.chat(
-                messages,
-                seed=response_seed,
-                temperature=0.0,
-                max_tokens=self.max_tokens,
-            )
+            generation = None
+            if self.budget_policy == FIXED:
+                response = self.target.chat(messages, seed=response_seed, temperature=0.0,
+                                            max_tokens=self.max_tokens)
+            else:
+                result = target_completion(self.target, messages, seed=response_seed,
+                                           max_tokens=self.max_tokens, policy=self.budget_policy)
+                response = result['content']
+                generation = dict(model=self.target.model, seed=response_seed, temperature=0.0,
+                    max_model_len=16384, finish_reason=result['finish_reason'],
+                    completion_tokens=result['completion_tokens'],
+                    **generation_budget_fields(result, self.budget_policy))
             messages.append({"role": "assistant", "content": response})
             judge_seed = seed + 1_000_003 + 1013 * (user_index + 1)
             judged = submit_judgment(
@@ -487,7 +509,7 @@ class EvidenceValidator:
                 seed=judge_seed,
                 max_context_chars=self.judge_max_context_chars,
             )
-            trajectory.append((tid, judged, response))
+            trajectory.append((tid, judged, response, generation))
 
         if not intervention_seen:
             raise RuntimeError(
@@ -537,6 +559,12 @@ def assert_baseline_reproducible(
         tid = int(user.get("turn_id", -1))
         if int(fresh_item.get("user_turn_id", -1)) != tid or int(stored_item.get("user_turn_id", -1)) != tid:
             raise RuntimeError(f"{cid}: baseline user-turn mismatch at position {idx}")
+        if policy_from(record.get('rollout_provenance', {})) != FIXED:
+            generation = fresh_item.get('target_generation', {})
+            assert_budget_generation(generation, policy_from(record['rollout_provenance']),
+                                     response_fingerprint=fresh_item.get('response_fingerprint'))
+            if generation != assistant.get('generation_provenance'):
+                raise RuntimeError(f'{cid}: target baseline budget/usage provenance drift at user turn {tid}')
         if fresh_item.get("response_fingerprint") != json_fingerprint(str(assistant.get("text", ""))):
             raise RuntimeError(f"{cid}: target baseline response drift at user turn {tid}")
         for field in exact:
@@ -668,9 +696,12 @@ def assert_primary_provenance(
     min_confidence,
     target_max_tokens,
     judge_max_context_chars,
+    budget_policy=FIXED,
 ):
     cid = str(record.get("conversation_id", ""))
     rollout = record.get("rollout_provenance", {}) or {}
+    if policy_from(rollout) != budget_policy:
+        raise RuntimeError(f"{cid}: B4 target budget policy differs from B1")
     if int(rollout.get("max_tokens", -1)) != int(target_max_tokens):
         raise RuntimeError(f"{cid}: B4 target max_tokens differs from B1")
     if int(rollout.get("max_model_len", -1)) != int(16384):
@@ -720,9 +751,10 @@ def analyze_record(
         max_negative_spans=max_negative_spans,
         max_tokens=validator.max_tokens,
         judge_max_context_chars=validator.judge_max_context_chars,
+        budget_policy=getattr(validator, "budget_policy", FIXED),
     )
     input_fp = json_fingerprint(record)
-    r["frontier_evidence_version"] = PROTOCOL
+    r["frontier_evidence_version"] = cfg["protocol"]
 
     if r.get("label") != 1 or r.get("validation_status") != "validated":
         r["frontier_evidence_analysis"] = {
@@ -747,6 +779,7 @@ def analyze_record(
         min_confidence=min_confidence,
         target_max_tokens=validator.max_tokens,
         judge_max_context_chars=validator.judge_max_context_chars,
+        budget_policy=getattr(validator, "budget_policy", FIXED),
     )
     seed = experiment_record_seed(base_seed, r)
     baseline = validator.replay(r.get("turns", []), seed=seed)
@@ -851,6 +884,8 @@ def analyze_record(
             span["counterfactual_delta"] = result["delta"]
             span["evidence_baseline_post_unsafe"] = result["baseline_post_unsafe"]
             span["evidence_cf_post_unsafe"] = result["counterfactual_post_unsafe"]
+            if getattr(validator, 'budget_policy', FIXED) != FIXED:
+                span['counterfactual_post_trajectory'] = copy.deepcopy(result.get('counterfactual_post_trajectory', []))
             span["evidence_replacement"] = replacement
             if result["status"] == "supported_strong":
                 span["causal_type"] = "causal"
@@ -915,6 +950,8 @@ def analyze_record(
             span["counterfactual_delta"] = delta
             span["evidence_baseline_post_unsafe"] = result["baseline_post_unsafe"]
             span["evidence_cf_post_unsafe"] = result["counterfactual_post_unsafe"]
+            if getattr(validator, 'budget_policy', FIXED) != FIXED:
+                span['counterfactual_post_trajectory'] = copy.deepcopy(result.get('counterfactual_post_trajectory', []))
             span["evidence_replacement"] = replacement
             counts[status] += 1
         pending.append((future, accept))

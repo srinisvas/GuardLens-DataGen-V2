@@ -20,6 +20,7 @@ from pathlib import Path
 import requests
 
 from frontier_common import VLLMClient, json_fingerprint, parse_chat_completion_data
+from completion_policy import RecordCompletionError
 
 
 class Stopped(RuntimeError):
@@ -72,6 +73,7 @@ class Journal:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS results (key TEXT PRIMARY KEY, value TEXT, digest TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS failures (key TEXT PRIMARY KEY, value TEXT, digest TEXT)")
         encoded = json.dumps(contract, sort_keys=True)
         old = self.db.execute("SELECT value FROM meta WHERE key='contract'").fetchone()
         if old and old[0] != encoded:
@@ -103,6 +105,21 @@ class Journal:
                 raise RuntimeError("conflicting scientific result for identical work identity")
             self.db.execute("INSERT OR IGNORE INTO results VALUES (?, ?, ?)", (key, value, digest))
             self.db.commit()
+
+    def failure(self, identity, value=None):
+        key = json_fingerprint(identity)
+        with self.lock:
+            if value is not None:
+                self.db.execute('INSERT OR REPLACE INTO failures VALUES (?, ?, ?)',
+                                (key, json.dumps(value, sort_keys=True), json_fingerprint(value)))
+                self.db.commit()
+            row = self.db.execute('SELECT value,digest FROM failures WHERE key=?', (key,)).fetchone()
+        if row is None:
+            return None
+        result = json.loads(row[0])
+        if json_fingerprint(result) != row[1]:
+            raise RuntimeError('failure checkpoint digest mismatch')
+        return result
 
     def event(self, **values):
         with self.lock:
@@ -178,7 +195,21 @@ class Servers:
         try:
             response = session.post(url + '/v1/chat/completions', json=payload,
                                     headers={'Authorization': 'Bearer ' + os.environ.get('VLLM_API_KEY', 'EMPTY')},
-                                    timeout=(10, 600))
+                                    timeout=(10, 600 * max(1, (payload['max_tokens'] + 2047)//2048)))
+            if response.status_code == 400 and self.model == 'Qwen/Qwen2.5-32B-Instruct':
+                # Only explicit context-envelope errors are record-local. Model,
+                # authentication, malformed-request and transport errors stay fatal.
+                try:
+                    error = response.json().get('error', {})
+                    message = error.get('message', '') if isinstance(error, dict) else ''
+                except ValueError:
+                    message = ''
+                if any(marker in message.lower() for marker in (
+                    'maximum context length', 'max_tokens is too large',
+                    "'max_tokens' or 'max_completion_tokens' is too large")):
+                    raise RecordCompletionError('target request exceeds the frozen context envelope',
+                        details=dict(server_message=message, request_fingerprint=event['request_fingerprint'],
+                                     max_tokens=payload['max_tokens']))
             response.raise_for_status()
             data = response.json()
             event.update(usage=data.get('usage'), finish_reason=(data.get('choices') or [{}])[0].get('finish_reason'))
@@ -220,6 +251,21 @@ class Target:
         result = self.servers.request(messages, **kwargs)
         tokens = result.get('completion_tokens')
         if result.get('finish_reason') == 'stop' and type(tokens) is int and 0 < tokens <= kwargs['max_tokens']:
+            self.journal.put(identity, result)
+        return result
+
+    def budget_attempt(self, messages, **kwargs):
+        # Length attempts are diagnostic evidence, never successful target
+        # results. Their separate namespace supports interrupted escalation.
+        identity = dict(scope=self.scope, kind='target_length_attempt', messages=messages,
+                        kwargs=kwargs, model=self.model)
+        cached = self.journal.get(identity)
+        if cached is not None:
+            if cached.get('finish_reason') != 'length' or cached.get('completion_tokens') != kwargs['max_tokens']:
+                raise RuntimeError('invalid cached length attempt')
+            return cached
+        result = self.chat_result(messages, **kwargs)
+        if result.get('finish_reason') == 'length' and type(result.get('completion_tokens')) is int and result['completion_tokens'] == kwargs['max_tokens']:
             self.journal.put(identity, result)
         return result
 

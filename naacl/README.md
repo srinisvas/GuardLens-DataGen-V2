@@ -1,5 +1,7 @@
 # Optimized Dataset B execution
 
+**Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v7, while the B2 v5 rubric stays unchanged.
+
 Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7aac9b616a8fb`. The original `naacl-validity-repair` branch remains the reference. This branch consolidates the current pipeline and changes scheduling and recovery. The review fixes add explicit production counts, trial-bound completion receipts, immutable checkpoint identities and output ownership. GPU equivalence and throughput must still be measured on the A100s before the 3,000-record production run.
 
 ## Current entry points
@@ -144,6 +146,7 @@ After the GPU checks pass, use the same launchers with the full input paths and 
 | `STATE_DIR` | `<OUTPUT_FILE>.state` |
 | `GPU_COUNT` | All allocated GPUs for B1/B2 |
 | `TARGET_GPU_COUNT`, `JUDGE_GPU_COUNT` | B4 defaults to 3 targets and remaining GPUs for judging |
+| `TARGET_BUDGET_POLICY` | `fixed_2048_v1` by default. Approved opt-in `length_retry_2048_4096_8192_v1` for recovery and downstream stages |
 | `TARGET_INFLIGHT` | 2 outstanding requests per target replica |
 | `JUDGE_INFLIGHT` | 4 outstanding requests per judge replica |
 | `RECORD_WORKERS` | `max(8, 2 × targets × TARGET_INFLIGHT, judges × JUDGE_INFLIGHT)` |
@@ -162,7 +165,7 @@ The default allocation is 12 hours with a ten-minute warning. Override with `sba
 scancel --signal=USR1 --batch JOB_ID
 ```
 
-Resubmit with identical input, output, state, runtime and code to resume. Request concurrency and worker counts can change without invalidating completed work, but any promoted concurrency still needs GPU equivalence validation. Completed target responses, validated judge passes, interventions and records are journaled. Signals stop new admission while successful in-flight responses are saved. A hard kill may lose a request that had not committed yet. Transport failures stop admission because an HTTP timeout may leave work running on the server. Judge parsing retries and seed offsets remain unchanged. No failed/partial response is cached as success.
+Resubmit with identical input, output, state, runtime and code to resume. Request concurrency and worker counts can change without invalidating completed work, but any promoted concurrency still needs GPU equivalence validation. Completed target responses, validated judge passes, interventions and records are journaled. Signals stop new admission while successful in-flight responses are saved. A hard kill may lose a request that had not committed yet. Transport failures stop admission because an HTTP timeout may leave work running on the server. Judge parsing retries and seed offsets remain unchanged. No failed/partial response is cached as success. In adaptive mode, length-limited attempts are retained in a separate diagnostic namespace so an interrupted escalation can resume. Record-local completion failures are persisted separately and do not stop independent records, but block final publication.
 
 Only one allocation/executor can own a state directory or output destination. The supervisor retains the output lock throughout the allocation and passes ownership to its executor through an inherited file descriptor. Output/receipt writes use unique temporary files and synchronized atomic renames. State is SQLite with rollback journaling and full synchronization, requiring functioning POSIX locks and fsync on the shared filesystem. Do not copy a live state directory. Changing source content, model/runtime identity or active Python code requires a fresh state directory. Old deterministic whole-record checkpoints can be explicitly imported using `IMPORT_CHECKPOINTS_JSON='["/path/shard*.checkpoint.jsonl"]'`. Import requires matching input/config fingerprints, valid terminal outputs and no conflicting records. Nonterminal or incompatible imports fail rather than silently pass.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from completion_policy import policy_from, assert_budget_generation
 from collections import Counter
 
 from frontier_common import DEFAULT_JUDGE_MAX_MODEL_LEN, VLLMClient, config_fingerprint, json_fingerprint
@@ -76,15 +77,13 @@ def assert_realized_rollout(record) -> None:
             raise RuntimeError(
                 f"{cid}: assistant turn {tid} missing/invalid completion_tokens"
             )
-        if generation.get("max_tokens") != rollout_max_tokens:
-            raise RuntimeError(
-                f"{cid}: assistant turn {tid} max_tokens differs from rollout protocol"
-            )
+        assert_budget_generation(generation, policy_from(rollout), initial_max_tokens=rollout_max_tokens,
+                                 response_fingerprint=json_fingerprint(turn['text']))
         if generation.get("max_model_len") != rollout_max_model_len:
             raise RuntimeError(
                 f"{cid}: assistant turn {tid} max_model_len differs from rollout protocol"
             )
-        if completion_tokens > rollout_max_tokens:
+        if completion_tokens > generation["max_tokens"]:
             raise RuntimeError(
                 f"{cid}: assistant turn {tid} completion_tokens exceeds max_tokens"
             )

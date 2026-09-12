@@ -8,6 +8,7 @@ from collections import Counter
 from audit_frontier_validation import audit_record as audit_b2_v5_record
 from frontier_runtime_determinism import assert_runtime_fields
 from frontier_common import config_fingerprint, load_jsonl
+from completion_policy import FIXED, EVIDENCE_V7, policy_from, assert_budget_generation
 from frontier_evidence import (
     AGGREGATION,
     EVIDENCE_PROTOCOL,
@@ -85,6 +86,7 @@ def reconstructed_config(analysis, *, target_max_model_len: int, judge_max_model
         judge_max_context_chars=int(analysis.get("judge_max_context_chars", -1)),
         target_max_model_len=target_max_model_len,
         judge_max_model_len=judge_max_model_len,
+        budget_policy=policy_from(analysis),
     )
 
 
@@ -117,8 +119,11 @@ def audit_record(
     if status not in ALLOWED_EVIDENCE_STATUSES:
         raise RuntimeError(f"{cid}: non-terminal evidence status={status!r}")
 
+    policy = policy_from(analysis)
+    if policy != policy_from(record.get('rollout_provenance', {})):
+        raise RuntimeError(f'{cid}: evidence/rollout budget policy mismatch')
     expected = {
-        "protocol": EVIDENCE_PROTOCOL,
+        "protocol": EVIDENCE_PROTOCOL if policy == FIXED else EVIDENCE_V7,
         "target_model": target_model,
         "judge_model": judge_model,
         "max_tokens": int(max_tokens),
@@ -178,6 +183,25 @@ def audit_record(
                 )
             for j, item in enumerate(trace):
                 _audit_v5_judgment(cid, item, f"turn_intervention[{idx}].trace[{j}]")
+        if policy != FIXED:
+            traces = [baseline]
+            traces += [x.get('counterfactual_post_trajectory', []) for x in analysis.get('turn_interventions', [])]
+            for turn in record.get('turns', []):
+                for span in turn.get('span_annotations', []):
+                    if 'evidence_cf_post_unsafe' in span:
+                        if 'counterfactual_post_trajectory' not in span:
+                            raise RuntimeError(f'{cid}: missing adaptive span target trace')
+                        traces.append(span['counterfactual_post_trajectory'])
+            from frontier_seed_policy import experiment_record_seed
+            seed = experiment_record_seed(42, record)
+            for trace in traces:
+                for item in trace:
+                    generation = item.get('target_generation', {})
+                    assert_budget_generation(generation, policy, response_fingerprint=item['response_fingerprint'])
+                    if (generation.get('model') != target_model or generation.get('max_model_len') != target_max_model_len
+                        or generation.get('temperature') != 0.0
+                        or generation.get('seed') != seed + 1009 * (int(item['user_turn_id'])//2 + 1)):
+                        raise RuntimeError(f'{cid}: adaptive evidence target envelope mismatch')
     elif status != "not_applicable":
         raise RuntimeError(f"{cid}: non-evidence record has unexpected evidence status={status!r}")
 
@@ -220,9 +244,9 @@ def main() -> None:
     print(f"Judge protocol: {JUDGE_PROTOCOL}")
     print(f"Judge rubric: {RUBRIC_VERSION}")
     print(f"Aggregation: {AGGREGATION}")
-    print(f"Evidence protocol: {EVIDENCE_PROTOCOL}")
+    print(f"Evidence protocols: {sorted({r['frontier_evidence_analysis']['protocol'] for r in records})}")
     print(f"Execution optimization: {EXECUTION_OPTIMIZATION}")
-    print("B4 V6 PROTOCOL AUDIT PASSED")
+    print("B4 V7 PROTOCOL AUDIT PASSED" if any(policy_from(r["frontier_evidence_analysis"]) != FIXED for r in records) else "B4 V6 PROTOCOL AUDIT PASSED")
 
 
 if __name__ == "__main__":

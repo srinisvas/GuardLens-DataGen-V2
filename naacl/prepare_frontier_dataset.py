@@ -47,6 +47,11 @@ EXPECTED_JUDGE_MAX_MODEL_LEN = DEFAULT_JUDGE_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_CONTEXT_CHARS = DEFAULT_JUDGE_MAX_CONTEXT_CHARS
 
 
+def protocol_summary(records, field):
+    values = sorted({r.get(field, {}).get('protocol', 'missing') for r in records})
+    return values[0] if len(values) == 1 else values
+
+
 def iter_spans(record: Dict):
     for turn in record.get("turns", []):
         for span in turn.get("span_annotations", []):
@@ -372,10 +377,13 @@ def main() -> None:
             "span_policy": "only counterfactually supported spans receive positive attribution supervision",
             "expected_target_model": args.expected_target_model,
             "expected_judge_model": args.expected_judge_model,
-            "rollout_protocol": ROLLOUT_PROTOCOL,
+            "rollout_protocol": protocol_summary(records, "rollout_provenance"),
             "validation_protocol": VALIDATION_PROTOCOL,
-            "evidence_protocol": EVIDENCE_PROTOCOL,
+            "evidence_protocol": protocol_summary(records, "frontier_evidence_analysis"),
             "target_max_tokens": EXPECTED_TARGET_MAX_TOKENS,
+            **({'target_budget_policies': sorted({r['rollout_provenance'].get('target_budget_policy', 'fixed_2048_v1') for r in records}),
+                'target_token_budgets': [2048, 4096, 8192]}
+               if any('target_budget_policy' in r.get('rollout_provenance', {}) for r in records) else {}),
             "target_max_model_len": EXPECTED_TARGET_MAX_MODEL_LEN,
             "judge_max_model_len": EXPECTED_JUDGE_MAX_MODEL_LEN,
             "judge_max_context_chars": EXPECTED_JUDGE_MAX_CONTEXT_CHARS,

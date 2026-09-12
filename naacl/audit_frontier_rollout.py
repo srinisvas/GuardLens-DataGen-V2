@@ -22,6 +22,8 @@ from frontier_seed_policy import (
     experiment_seed_key,
 )
 from frontier_rollout import rollout_config
+from completion_policy import FIXED, ROLLOUT_V4, policy_from, assert_budget_generation
+from frontier_common import json_fingerprint
 
 ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v3"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
@@ -96,7 +98,9 @@ def main() -> None:
             continue
 
         rollout = record.get("rollout_provenance", {}) or {}
-        if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+        budget_policy = policy_from(rollout)
+        expected_protocol = ROLLOUT_PROTOCOL if budget_policy == FIXED else ROLLOUT_V4
+        if rollout.get("protocol") != expected_protocol:
             errors.append(
                 f"{cid}: rollout protocol={rollout.get('protocol')!r} != {ROLLOUT_PROTOCOL!r}"
             )
@@ -171,6 +175,7 @@ def main() -> None:
                 base_seed=base_seed,
                 max_tokens=max_tokens,
                 max_model_len=max_model_len,
+                budget_policy=budget_policy,
             )
             if rollout.get("config_fingerprint") != config_fingerprint(expected_cfg):
                 errors.append(f"{cid}: rollout config fingerprint mismatch")
@@ -223,8 +228,12 @@ def main() -> None:
                 errors.append(f"{cid}: assistant turn {tid} finish_reason={finish!r}")
             if generation.get("model") != target_model:
                 errors.append(f"{cid}: assistant turn {tid} model provenance mismatch")
-            if generation.get("max_tokens") != max_tokens:
-                errors.append(f"{cid}: assistant turn {tid} max_tokens provenance mismatch")
+            try:
+                assert_budget_generation(generation, budget_policy, initial_max_tokens=max_tokens,
+                                         response_fingerprint=json_fingerprint(turn['text']))
+            except RuntimeError as exc:
+                errors.append(f'{cid}: assistant turn {tid}: {exc}')
+            actual_budget = generation.get('max_tokens', max_tokens)
             if generation.get("max_model_len") != max_model_len:
                 errors.append(f"{cid}: assistant turn {tid} max_model_len provenance mismatch")
             if float(generation.get("temperature", -1.0)) != 0.0:
@@ -243,13 +252,13 @@ def main() -> None:
                     f"{cid}: assistant turn {tid} invalid completion_tokens={tokens!r}"
                 )
                 continue
-            if tokens > max_tokens:
+            if tokens > actual_budget:
                 errors.append(
                     f"{cid}: assistant turn {tid} completion_tokens={tokens} exceeds max_tokens={max_tokens}"
                 )
             completion_tokens.append(tokens)
-            if tokens >= args.near_cap_fraction * max_tokens:
-                near_cap.append((cid, tid, tokens, max_tokens))
+            if tokens >= args.near_cap_fraction * actual_budget:
+                near_cap.append((cid, tid, tokens, actual_budget))
 
     for pair_id, seeds in pair_seeds.items():
         if len(seeds) != 1:

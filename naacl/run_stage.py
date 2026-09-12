@@ -13,6 +13,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
+from completion_policy import FIXED, POLICIES, policy_from, RecordCompletionError
 from execution import Publication, BoundedPool, Journal, Judge, Servers, Stopped, Target, atomic_jsonl
 from frontier_common import json_fingerprint, load_jsonl
 from frontier_runtime_determinism import assert_batch_invariant_env
@@ -43,14 +44,14 @@ def audit(stage, path, count):
     subprocess.run(args, check=True)
 
 
-def stage_config(stage):
+def stage_config(stage, budget_policy=FIXED):
     if stage == 'b1':
-        return b1.rollout_config(model=TARGET, **B1)
+        return b1.rollout_config(model=TARGET, budget_policy=budget_policy, **B1)
     if stage == 'b2':
         return b2.validation_config(judge_model=JUDGE, **B2)
     return b4.build_evidence_config(target_model=TARGET, judge_model=JUDGE, **B4,
         max_tokens=2048, judge_max_context_chars=100000,
-        target_max_model_len=16384, judge_max_model_len=32768)
+        target_max_model_len=16384, judge_max_model_len=32768, budget_policy=budget_policy)
 
 
 def reusable(stage, out, record, cfg):
@@ -63,7 +64,7 @@ def audit_record(stage, out):
     if stage == 'b1':
         b2.assert_realized_rollout(out)
         if out.get('rollout_status') != 'complete':
-            raise RuntimeError('B1 incomplete generation')
+            raise RecordCompletionError(out.get('rollout_error', 'B1 incomplete generation'), details=out)
     elif stage == 'b2':
         audit_b2(out, target_model=TARGET, judge_model=JUDGE,
                  judge_max_model_len=32768, judge_max_context_chars=100000)
@@ -73,10 +74,17 @@ def audit_record(stage, out):
                  judge_max_context_chars=100000)
 
 
+def execution_contract(stage, records, runtime, budget_policy=FIXED):
+    code = {f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(HERE.glob('*.py'))}
+    return dict(stage=stage, input_fingerprint=json_fingerprint(records),
+                scientific_config=stage_config(stage, budget_policy), runtime=runtime, code=code)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage', choices=['b1', 'b2', 'b4'])
     p.add_argument('--input', required=True)
+    p.add_argument('--budget-policy', choices=POLICIES, default=FIXED)
     p.add_argument('--mode', choices=['production','smoke'], default='production')
     p.add_argument('--expected-records', type=int)
     p.add_argument('--trial-id', help='Unique execution attempt ID; Slurm supplies its job ID')
@@ -129,6 +137,8 @@ def run(args, publication):
         audit('b1', args.input, len(records))
         if args.stage == 'b4':
             audit('b2', args.input, len(records))
+    if args.stage != 'b1' and any(policy_from(r.get('rollout_provenance', {})) != args.budget_policy for r in records):
+        raise RuntimeError('input target budget policy differs from requested execution policy')
     if args.preflight_only:
         return
     runtime = json.loads(Path(args.runtime_manifest).read_text())
@@ -139,12 +149,10 @@ def run(args, publication):
     for role, urls in [('target',args.target_urls),('judge',args.judge_urls)]:
         if len(urls) != runtime.get('replicas',{}).get(role,0):
             raise RuntimeError(f'{role} endpoint count differs from runtime manifest')
-    cfg = stage_config(args.stage)
+    cfg = stage_config(args.stage, args.budget_policy)
     # Runtime and semantic identity are fixed. Worker counts deliberately are not
     # part of checkpoint identity, allowing a safe concurrency change on resume.
-    code = {f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(HERE.glob('*.py'))}
-    contract = dict(stage=args.stage, input_fingerprint=json_fingerprint(records),
-                    scientific_config=cfg, runtime=runtime, code=code)
+    contract = execution_contract(args.stage, records, runtime, args.budget_policy)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
         signal.signal(sig, lambda *_: stop.set())
@@ -193,16 +201,19 @@ def run(args, publication):
                     raise RuntimeError('cached record is not reusable')
                 audit_record(args.stage,cached)
                 return cached
+            failed = journal.failure(key)
+            if failed is not None:
+                raise RecordCompletionError(failed['error'], details=failed['details'])
             scope = [args.stage,r['conversation_id'],json_fingerprint(r)]
             t = Target(target,journal,scope) if target else None
             j = Judge(judge,journal,scope,passes) if judge else None
             if args.stage == 'b1':
                 with t.chain():
-                    out = b1.rollout_record(r,t,**B1)
+                    out = b1.rollout_record(r,t,budget_policy=args.budget_policy,**B1)
             elif args.stage == 'b2':
                 out = b2.validate_record(r,j,**B2)
             else:
-                validator = b4.EvidenceValidator(t,j,max_tokens=2048,judge_max_context_chars=100000)
+                validator = b4.EvidenceValidator(t,j,max_tokens=2048,judge_max_context_chars=100000, budget_policy=args.budget_policy)
                 validator.intervention_pool = interventions
                 out = b4.analyze_record(r,validator,**B4)
             audit_record(args.stage,out)
@@ -211,6 +222,7 @@ def run(args, publication):
             journal.put(key,out)
             return out
         completed = {}
+        failed_records = {}
         pending = {}
         source = iter(records)
         with ThreadPoolExecutor(max_workers=args.record_workers) as workers:
@@ -228,6 +240,14 @@ def run(args, publication):
                     try:
                         completed[cid] = future.result()
                         print(f'Completed {len(completed)}/{len(records)} {cid}',flush=True)
+                    except RecordCompletionError as exc:
+                        failure = dict(conversation_id=cid, error=str(exc), details=exc.details)
+                        journal.failure(identity(lookup[cid]), failure)
+                        failed_records[cid] = failure
+                        atomic_jsonl(Path(args.state_dir)/'failed-records.jsonl',
+                                     [failed_records[x] for x in ids if x in failed_records])
+                        journal.event(kind='record_completion_failure', record=cid, error=str(exc), details=exc.details)
+                        print(f'RECORD COMPLETION FAILED {cid}: {exc}; continuing independent records', flush=True)
                     except BaseException as exc:
                         stop.set()
                         journal.event(kind='record_error',record=cid,error=repr(exc))
@@ -235,6 +255,9 @@ def run(args, publication):
                             f.cancel()
                         raise
                 fill()
+        if failed_records:
+            raise RuntimeError(f'{len(failed_records)} unresolved completion failures; {len(completed)}/{len(records)} records complete. '
+                               f'Output not published. Inspect {args.state_dir}/failed-records.jsonl')
         if stop.is_set() or set(completed) != set(ids):
             raise Stopped('allocation drained; incomplete output not published')
         candidate = Path(args.state_dir)/'audited-candidate.jsonl'

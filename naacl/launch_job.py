@@ -22,6 +22,7 @@ import requests
 from check_frontier_environment import snapshot_ready
 from run_stage import TARGET, JUDGE, HERE
 from execution import Publication
+from completion_policy import FIXED, POLICIES
 
 
 def positive_env(name, default):
@@ -143,6 +144,8 @@ def main():
     devices = [d.strip() for d in os.environ.get('CUDA_VISIBLE_DEVICES','').split(',') if d.strip()]
     if not devices or len(set(devices)) != len(devices):
         raise RuntimeError('Slurm must provide a nonempty, unique CUDA_VISIBLE_DEVICES allocation')
+    budget_policy = os.environ.get('TARGET_BUDGET_POLICY', FIXED)
+    if budget_policy not in POLICIES:raise ValueError('unknown TARGET_BUDGET_POLICY')
     mode = os.environ.get('RUN_MODE', 'production')
     if mode not in {'production','smoke'}:raise ValueError('RUN_MODE must be production or smoke')
     expected = positive_env('EXPECTED_RECORDS', 3000 if mode=='production' else 20)
@@ -182,7 +185,7 @@ def main():
             audit('b1',probe_input,len(load_jsonl(probe_input)))
         else:
             subprocess.run([sys.executable,str(HERE/'run_stage.py'),stage,'--input',str(input_path),
-                            '--preflight-only','--mode',mode,'--expected-records',str(expected)],check=True)
+                            '--preflight-only','--mode',mode,'--expected-records',str(expected),'--budget-policy',budget_policy],check=True)
         runtime = capture_runtime(stage,cache,assignments)
         manifest = state/'runtime.json'
         if manifest.exists() and json.loads(manifest.read_text()) != runtime:
@@ -276,7 +279,7 @@ def main():
                 raise ValueError('PROBE_ONLY requires PROBE_INPUT')
             command=[sys.executable,str(HERE/'run_stage.py'),stage,'--input',str(input_path),
                 '--output',str(output),'--state-dir',str(state),'--runtime-manifest',str(manifest),
-                '--mode',mode,'--expected-records',str(expected),'--trial-id',publication.trial_id,
+                '--mode',mode,'--expected-records',str(expected),'--budget-policy',budget_policy,'--trial-id',publication.trial_id,
                 '--output-lock-fd',str(publication.owner.fileno()),
                 '--record-workers',str(concurrency['records']),
                 '--intervention-workers',str(concurrency['interventions']),

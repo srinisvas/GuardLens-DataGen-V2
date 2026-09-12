@@ -158,7 +158,9 @@ def main():
 
 
 from frontier_runtime_determinism import assert_runtime_fields
-from frontier_rollout import PROTOCOL as ROLLOUT_PROTOCOL
+from frontier_rollout import PROTOCOL as ROLLOUT_PROTOCOL, rollout_config
+from frontier_validation import assert_realized_rollout
+from completion_policy import FIXED, ROLLOUT_V4, policy_from
 
 def audit_record(record, *, target_model, judge_model, judge_max_model_len, judge_max_context_chars):
     _audit_record(record, target_model=target_model, judge_model=judge_model,
@@ -166,7 +168,14 @@ def audit_record(record, *, target_model, judge_model, judge_max_model_len, judg
 
     cid = str(record.get("conversation_id", ""))
     rollout = record.get("rollout_provenance", {}) or {}
-    if rollout.get("protocol") != ROLLOUT_PROTOCOL:
+    policy = policy_from(rollout)
+    if policy != FIXED:
+        assert_realized_rollout(record)
+        cfg = rollout_config(model=target_model, base_seed=42, max_tokens=2048,
+                             max_model_len=16384, budget_policy=policy)
+        if any(rollout.get(k) != v for k,v in cfg.items()) or rollout.get('config_fingerprint') != config_fingerprint(cfg):
+            raise RuntimeError(f'{cid}: adaptive rollout config mismatch')
+    if rollout.get("protocol") != (ROLLOUT_PROTOCOL if policy == FIXED else ROLLOUT_V4):
         raise RuntimeError(
             f"{cid}: B2 source rollout protocol={rollout.get('protocol')!r} != {ROLLOUT_PROTOCOL!r}"
         )
