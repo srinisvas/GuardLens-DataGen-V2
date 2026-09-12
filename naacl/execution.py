@@ -69,17 +69,45 @@ class Journal:
             raise RuntimeError("state directory already has an active executor")
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.root / "progress.sqlite", check_same_thread=False)
+        encoded = json.dumps(contract, sort_keys=True)
+
+        # Compatibility is a read-only gate. Existing checkpoint state must be
+        # rejected before any PRAGMA that can change journal state or any schema
+        # migration such as adding the failures table. This keeps an incompatible
+        # database byte/schema-identical for forensic recovery and migration.
+        tables = {
+            str(row[0])
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if tables:
+            if "meta" not in tables:
+                self.db.close()
+                self.owner.close()
+                raise RuntimeError(
+                    "checkpoint schema missing contract metadata; use a new state directory"
+                )
+            old = self.db.execute(
+                "SELECT value FROM meta WHERE key='contract'"
+            ).fetchone()
+            if old is None:
+                self.db.close()
+                self.owner.close()
+                raise RuntimeError(
+                    "checkpoint schema missing contract metadata; use a new state directory"
+                )
+            if old[0] != encoded:
+                self.db.close()
+                self.owner.close()
+                raise RuntimeError("checkpoint contract mismatch; use a new state directory")
+
+        # Only a fresh or contract-compatible database may be configured/migrated.
         self.db.execute("PRAGMA journal_mode=DELETE")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS results (key TEXT PRIMARY KEY, value TEXT, digest TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS failures (key TEXT PRIMARY KEY, value TEXT, digest TEXT)")
-        encoded = json.dumps(contract, sort_keys=True)
-        old = self.db.execute("SELECT value FROM meta WHERE key='contract'").fetchone()
-        if old and old[0] != encoded:
-            self.db.close()
-            self.owner.close()
-            raise RuntimeError("checkpoint contract mismatch; use a new state directory")
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('contract', ?)", (encoded,))
         self.db.commit()
         self.telemetry = open(self.root / "requests.jsonl", "a", buffering=1)
