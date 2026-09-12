@@ -21,9 +21,11 @@ from frontier_evidence import (
     RECORD_SEED_SOURCE,
     RUBRIC_VERSION,
     UNSAFE_SCORE_FORMULA,
+    assert_baseline_reproducible,
     build_evidence_config,
     pass_a_prompt_fingerprint,
     pass_b_prompt_fingerprint,
+    qualified_post_score,
 )
 from frontier_seed_policy import SEED_POLICY
 
@@ -67,6 +69,49 @@ def _audit_v5_judgment(cid: str, item, where: str) -> None:
     expected_union = max(float(a["unsafe_score"]), float(b["unsafe_score"]))
     if abs(float(item["unsafe_score"]) - expected_union) > 1e-9:
         raise RuntimeError(f"{cid}: {where} violates v5 union score formula")
+
+
+def _expected_suffix_turns(record, start_turn_id: int):
+    return [
+        int(turn.get("turn_id", -1))
+        for turn in record.get("turns", [])
+        if str(turn.get("role", "")).lower() == "user"
+        and int(turn.get("turn_id", -1)) >= int(start_turn_id)
+    ]
+
+
+def _audit_complete_counterfactual_trace(
+    cid: str,
+    record,
+    trace,
+    *,
+    start_turn_id: int,
+    reported_score,
+    analysis,
+    where: str,
+) -> None:
+    if not isinstance(trace, list) or not trace:
+        raise RuntimeError(f"{cid}: {where} assessed counterfactual has no complete trace")
+    expected_turns = _expected_suffix_turns(record, start_turn_id)
+    observed_turns = [int(item.get("user_turn_id", -1)) for item in trace]
+    if observed_turns != expected_turns:
+        raise RuntimeError(
+            f"{cid}: {where} counterfactual trace turns={observed_turns!r} "
+            f"!= expected suffix={expected_turns!r}"
+        )
+    for idx, item in enumerate(trace):
+        _audit_v5_judgment(cid, item, f"{where}.trace[{idx}]")
+    recomputed = qualified_post_score(
+        trace,
+        start_turn_id,
+        min_confidence=float(analysis.get("min_confidence_threshold", -1)),
+        unsafe_threshold=float(analysis.get("unsafe_threshold", -1)),
+    )
+    if recomputed is None or abs(float(recomputed) - float(reported_score)) > 1e-9:
+        raise RuntimeError(
+            f"{cid}: {where} reported counterfactual score={reported_score!r} "
+            f"does not match audited trace score={recomputed!r}"
+        )
 
 
 def reconstructed_config(analysis, *, target_max_model_len: int, judge_max_model_len: int):
@@ -120,8 +165,8 @@ def audit_record(
         raise RuntimeError(f"{cid}: non-terminal evidence status={status!r}")
 
     policy = policy_from(analysis)
-    if policy != policy_from(record.get('rollout_provenance', {})):
-        raise RuntimeError(f'{cid}: evidence/rollout budget policy mismatch')
+    if policy != policy_from(record.get("rollout_provenance", {})):
+        raise RuntimeError(f"{cid}: evidence/rollout budget policy mismatch")
     expected = {
         "protocol": EVIDENCE_PROTOCOL if policy == FIXED else EVIDENCE_V7,
         "target_model": target_model,
@@ -173,35 +218,87 @@ def audit_record(
         baseline = (analysis.get("baseline", {}) or {}).get("trajectory", []) or []
         if not baseline:
             raise RuntimeError(f"{cid}: audited evidence record missing fresh baseline trajectory")
+
+        # The final/public audit must independently prove the executor's factual
+        # replay claim. This binds response text, adaptive attempt history and the
+        # complete frozen v5 judgment back to the stored B1/B2 artifact.
+        assert_baseline_reproducible(record, {"trajectory": baseline})
         for idx, item in enumerate(baseline):
             _audit_v5_judgment(cid, item, f"baseline[{idx}]")
+
         for idx, intervention in enumerate(analysis.get("turn_interventions", []) or []):
             trace = intervention.get("counterfactual_post_trajectory", []) or []
-            if intervention.get("counterfactual_post_unsafe") is not None and not trace:
-                raise RuntimeError(
-                    f"{cid}: turn intervention {idx} has counterfactual score but no v5 trace"
+            reported = intervention.get("counterfactual_post_unsafe")
+            if reported is not None:
+                _audit_complete_counterfactual_trace(
+                    cid,
+                    record,
+                    trace,
+                    start_turn_id=int(intervention.get("turn_id", -1)),
+                    reported_score=reported,
+                    analysis=analysis,
+                    where=f"turn_intervention[{idx}]",
                 )
-            for j, item in enumerate(trace):
-                _audit_v5_judgment(cid, item, f"turn_intervention[{idx}].trace[{j}]")
+            else:
+                for j, item in enumerate(trace):
+                    _audit_v5_judgment(cid, item, f"turn_intervention[{idx}].trace[{j}]")
+
+        # Adaptive span/control decisions carry their replay traces in the final
+        # artifact. Any span with a reported CF score is assessed and therefore
+        # must have a nonempty, complete suffix trace whose judge output yields
+        # exactly that score. Untested/non-assessable spans may legitimately lack
+        # a trace.
         if policy != FIXED:
+            for turn_index, turn in enumerate(record.get("turns", [])):
+                tid = int(turn.get("turn_id", -1))
+                for span_index, span in enumerate(turn.get("span_annotations", [])):
+                    if "evidence_cf_post_unsafe" not in span:
+                        continue
+                    trace = span.get("counterfactual_post_trajectory", []) or []
+                    reported = span.get("evidence_cf_post_unsafe")
+                    where = f"turns[{turn_index}].span_annotations[{span_index}]"
+                    if reported is not None:
+                        _audit_complete_counterfactual_trace(
+                            cid,
+                            record,
+                            trace,
+                            start_turn_id=tid,
+                            reported_score=reported,
+                            analysis=analysis,
+                            where=where,
+                        )
+                    else:
+                        for j, item in enumerate(trace):
+                            _audit_v5_judgment(cid, item, f"{where}.trace[{j}]")
+
             traces = [baseline]
-            traces += [x.get('counterfactual_post_trajectory', []) for x in analysis.get('turn_interventions', [])]
-            for turn in record.get('turns', []):
-                for span in turn.get('span_annotations', []):
-                    if 'evidence_cf_post_unsafe' in span:
-                        if 'counterfactual_post_trajectory' not in span:
-                            raise RuntimeError(f'{cid}: missing adaptive span target trace')
-                        traces.append(span['counterfactual_post_trajectory'])
+            traces += [
+                x.get("counterfactual_post_trajectory", [])
+                for x in analysis.get("turn_interventions", [])
+            ]
+            for turn in record.get("turns", []):
+                for span in turn.get("span_annotations", []):
+                    if "counterfactual_post_trajectory" in span:
+                        traces.append(span.get("counterfactual_post_trajectory", []) or [])
             from frontier_seed_policy import experiment_record_seed
+
             seed = experiment_record_seed(42, record)
             for trace in traces:
                 for item in trace:
-                    generation = item.get('target_generation', {})
-                    assert_budget_generation(generation, policy, response_fingerprint=item['response_fingerprint'])
-                    if (generation.get('model') != target_model or generation.get('max_model_len') != target_max_model_len
-                        or generation.get('temperature') != 0.0
-                        or generation.get('seed') != seed + 1009 * (int(item['user_turn_id'])//2 + 1)):
-                        raise RuntimeError(f'{cid}: adaptive evidence target envelope mismatch')
+                    generation = item.get("target_generation", {})
+                    assert_budget_generation(
+                        generation,
+                        policy,
+                        response_fingerprint=item["response_fingerprint"],
+                    )
+                    if (
+                        generation.get("model") != target_model
+                        or generation.get("max_model_len") != target_max_model_len
+                        or generation.get("temperature") != 0.0
+                        or generation.get("seed")
+                        != seed + 1009 * (int(item["user_turn_id"]) // 2 + 1)
+                    ):
+                        raise RuntimeError(f"{cid}: adaptive evidence target envelope mismatch")
     elif status != "not_applicable":
         raise RuntimeError(f"{cid}: non-evidence record has unexpected evidence status={status!r}")
 
@@ -244,9 +341,16 @@ def main() -> None:
     print(f"Judge protocol: {JUDGE_PROTOCOL}")
     print(f"Judge rubric: {RUBRIC_VERSION}")
     print(f"Aggregation: {AGGREGATION}")
-    print(f"Evidence protocols: {sorted({r['frontier_evidence_analysis']['protocol'] for r in records})}")
+    print(
+        "Evidence protocols: "
+        f"{sorted({r['frontier_evidence_analysis']['protocol'] for r in records})}"
+    )
     print(f"Execution optimization: {EXECUTION_OPTIMIZATION}")
-    print("B4 V7 PROTOCOL AUDIT PASSED" if any(policy_from(r["frontier_evidence_analysis"]) != FIXED for r in records) else "B4 V6 PROTOCOL AUDIT PASSED")
+    print(
+        "B4 V7 PROTOCOL AUDIT PASSED"
+        if any(policy_from(r["frontier_evidence_analysis"]) != FIXED for r in records)
+        else "B4 V6 PROTOCOL AUDIT PASSED"
+    )
 
 
 if __name__ == "__main__":
