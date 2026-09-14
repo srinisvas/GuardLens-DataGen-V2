@@ -175,6 +175,54 @@ Inspect progress and performance with:
 python naacl/report_performance.py --state-dir "$OUT/optimized_smoke_b4.jsonl.state"
 ```
 
+For B4 supervision accrual, run the standard-library reporter **after the allocation
+has exited, before submitting the next allocation**. It reads the saved executor
+command to locate the original input, checks the input/record identities and every
+result/failure digest, and opens SQLite read-only. It refuses to run while either
+the allocation or executor owns the state. It writes only a report under
+`STATE_DIR/reports/`, without changing journals or publication receipts.
+
+```bash
+# After the first production allocation (including any imported smoke records).
+python naacl/tools/report_b4_progress.py \
+  --state-dir "$B4_STATE" --job-id "$B4_JOB_ID"
+
+# Keep this path before replacing B4_JOB_ID with the next submitted job ID.
+export B4_PREVIOUS_REPORT="$B4_STATE/reports/b4-progress-${B4_JOB_ID}.json"
+
+# After the next allocation exits.
+python naacl/tools/report_b4_progress.py \
+  --state-dir "$B4_STATE" --job-id "$B4_JOB_ID" \
+  --previous "$B4_PREVIOUS_REPORT"
+```
+
+`cumulative` reports all committed records. `added_since_previous` reports the
+snapshot difference, split into `newly_imported` and `newly_computed`. These include
+separate `complete` and `not_applicable` counts, record tiers (`cf_strong_records`,
+`cf_weak_records`, `llm_confirmed_records`), supported evidence turns, span tiers,
+control violations and context-unassessable interventions. Record tiers are
+exclusive: a record with both strong and weak spans is one `cf_strong` record,
+while both span types are counted separately. Imports do not count as new work.
+
+Report snapshots retain per-record IDs/digests and cannot be overwritten with
+different contents. The previous snapshot must belong to the same state and
+contract, and all previously counted records must remain identical. Keep import
+source files available for provenance accounting. If an end-of-job snapshot is
+missed, the next report lists every allocation in that reporting interval. The
+database has no per-record completion timestamp, so exact historical daily totals
+cannot be reconstructed retroactively. Without `--previous`, the interval begins
+at the start of the state, not at the start of the latest allocation.
+
+`records_without_complete_result` includes unresolved failures, which are also
+listed separately. `pending_without_persisted_failure` excludes those failures.
+`cached_nonrecord_results` counts saved subtasks/attempts across **both completed
+and unfinished records**; it is not a count of partially completed records. Partial
+work has no final record tier. This is a progress report, not a replacement for the
+final scientific audit and publication receipt.
+
+The reporter is deliberately under `naacl/tools/`. Adding it does not change the
+executor's `naacl/*.py` code fingerprint or invalidate an existing resumable state.
+
 Each state directory contains request timing/usage in `requests.jsonl` and an `allocation-JOB_ID/` directory with combined server logs, raw Prometheus/GPU samples and the executor command. A matching complete trial receipt with a verified output digest is the completeness signal. File existence alone is insufficient. Standalone `run_stage.py` runs generate and print a trial ID, or accept `--trial-id`; comparison requires that ID. Request latency sums are not GPU wall time.
 
 The precommitted held-out judge sampling/evaluation utilities remain active. Sampling still uses score-free B1 output and excludes the frozen design manifest in `tests/fixtures/`. Dataset preparation preserves pair retention, standalone benign stress separation and loss weights. It directly validates the deterministic v3/v5/v6 fixed chain or the v4/v5/v8 adaptive chain.
