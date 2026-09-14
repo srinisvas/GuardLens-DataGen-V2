@@ -38,11 +38,14 @@ class BudgetPipelineTests(unittest.TestCase):
                          '--max-turn-candidates','4','--spans-per-turn','2','--controls','2')
             b4,_ = self.optimized(root,'b4',b3,budget_policy=ADAPTIVE)
             evidence = [json.loads(x) for x in b4.read_text().splitlines()]
-            self.assertEqual(evidence[0]['frontier_evidence_analysis']['protocol'],'frontier_context_paired_counterfactual_v7')
+            self.assertEqual(evidence[0]['frontier_evidence_analysis']['protocol'],'frontier_context_paired_counterfactual_v8')
             for row in evidence:
                 for item in row['frontier_evidence_analysis'].get('baseline',{}).get('trajectory',[]):
-                    original = row['turns'][item['user_turn_id']+1]['generation_provenance']
-                    self.assertEqual(item['target_generation'],original)
+                    original = dict(row['turns'][item['user_turn_id']+1]['generation_provenance'])
+                    replay = dict(item['target_generation'])
+                    self.assertEqual(original.pop('max_model_len'),16384)
+                    self.assertEqual(replay.pop('max_model_len'),32768)
+                    self.assertEqual(replay,original)
             self.run_cli('prepare_frontier_dataset.py','--input',b4,'--output',root/'training.jsonl',
                          '--benign-stress-output',root/'stress.jsonl','--excluded-output',root/'excluded.jsonl',
                          '--stats-output',root/'stats.json')

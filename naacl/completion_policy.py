@@ -10,6 +10,13 @@ POLICIES = (FIXED, ADAPTIVE)
 BUDGETS = (2048, 4096, 8192)
 ROLLOUT_V4 = 'frontier_fixed_user_rollout_v4'
 EVIDENCE_V7 = 'frontier_context_paired_counterfactual_v7'
+EVIDENCE_V8 = 'frontier_context_paired_counterfactual_v8'
+
+
+def target_context_length(stage, policy):
+    """Return the frozen target envelope for a stage and completion policy."""
+    policy_fields(policy)
+    return 32768 if stage == 'b4' and policy == ADAPTIVE else 16384
 
 
 class RecordCompletionError(RuntimeError):

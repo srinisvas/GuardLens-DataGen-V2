@@ -8,7 +8,13 @@ from collections import Counter
 from audit_frontier_validation import audit_record as audit_b2_v5_record
 from frontier_runtime_determinism import assert_runtime_fields
 from frontier_common import config_fingerprint, load_jsonl
-from completion_policy import FIXED, EVIDENCE_V7, policy_from, assert_budget_generation
+from completion_policy import (
+    EVIDENCE_V7,
+    EVIDENCE_V8,
+    FIXED,
+    assert_budget_generation,
+    policy_from,
+)
 from frontier_evidence import (
     AGGREGATION,
     EVIDENCE_PROTOCOL,
@@ -23,6 +29,7 @@ from frontier_evidence import (
     UNSAFE_SCORE_FORMULA,
     assert_baseline_reproducible,
     build_evidence_config,
+    evidence_protocol,
     pass_a_prompt_fingerprint,
     pass_b_prompt_fingerprint,
     qualified_post_score,
@@ -114,6 +121,51 @@ def _audit_complete_counterfactual_trace(
         )
 
 
+def _audit_context_unassessable(
+    cid: str,
+    value,
+    trace,
+    where: str,
+    *,
+    intervention_turn_id: int,
+    delta_field: str,
+) -> None:
+    if trace:
+        raise RuntimeError(f"{cid}: {where} context failure carries an incomplete trace")
+    if value.get(delta_field) is not None:
+        raise RuntimeError(f"{cid}: {where} context failure carries a causal delta")
+    if value.get("counterfactual_post_axes") is not None:
+        raise RuntimeError(f"{cid}: {where} context failure carries counterfactual axes")
+    failure = value.get("counterfactual_failure")
+    if (
+        not isinstance(failure, dict)
+        or failure.get("error")
+        != "target request exceeds the frozen context envelope"
+    ):
+        raise RuntimeError(f"{cid}: {where} missing context-envelope failure provenance")
+    details = failure.get("details")
+    if not isinstance(details, dict):
+        raise RuntimeError(f"{cid}: {where} missing context-envelope details")
+    if details.get("replay_kind") not in {"counterfactual_suffix", "full_counterfactual"}:
+        raise RuntimeError(f"{cid}: {where} invalid context-envelope replay kind")
+    failed_turn = details.get("user_turn_id")
+    if type(failed_turn) is not int or failed_turn < intervention_turn_id:
+        raise RuntimeError(f"{cid}: {where} missing failed user turn")
+    if details.get("intervention_turn_id") != intervention_turn_id:
+        raise RuntimeError(f"{cid}: {where} context failure intervention mismatch")
+    if details.get("max_tokens") not in {2048, 4096, 8192}:
+        raise RuntimeError(f"{cid}: {where} invalid failed output budget")
+    fingerprint = details.get("request_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in fingerprint)
+    ):
+        raise RuntimeError(f"{cid}: {where} invalid failed request fingerprint")
+    if "maximum context length" not in str(details.get("server_message", "")).lower():
+        raise RuntimeError(f"{cid}: {where} missing server context-limit message")
+
+
 def reconstructed_config(analysis, *, target_max_model_len: int, judge_max_model_len: int):
     return build_evidence_config(
         target_model=str(analysis.get("target_model", "")),
@@ -168,7 +220,7 @@ def audit_record(
     if policy != policy_from(record.get("rollout_provenance", {})):
         raise RuntimeError(f"{cid}: evidence/rollout budget policy mismatch")
     expected = {
-        "protocol": EVIDENCE_PROTOCOL if policy == FIXED else EVIDENCE_V7,
+        "protocol": evidence_protocol(policy, target_max_model_len),
         "target_model": target_model,
         "judge_model": judge_model,
         "max_tokens": int(max_tokens),
@@ -222,13 +274,18 @@ def audit_record(
         # The final/public audit must independently prove the executor's factual
         # replay claim. This binds response text, adaptive attempt history and the
         # complete frozen v5 judgment back to the stored B1/B2 artifact.
-        assert_baseline_reproducible(record, {"trajectory": baseline})
+        assert_baseline_reproducible(
+            record,
+            {"trajectory": baseline},
+            target_max_model_len=target_max_model_len,
+        )
         for idx, item in enumerate(baseline):
             _audit_v5_judgment(cid, item, f"baseline[{idx}]")
 
         for idx, intervention in enumerate(analysis.get("turn_interventions", []) or []):
             trace = intervention.get("counterfactual_post_trajectory", []) or []
             reported = intervention.get("counterfactual_post_unsafe")
+            status_value = intervention.get("status")
             if reported is not None:
                 _audit_complete_counterfactual_trace(
                     cid,
@@ -238,6 +295,15 @@ def audit_record(
                     reported_score=reported,
                     analysis=analysis,
                     where=f"turn_intervention[{idx}]",
+                )
+            elif status_value == "not_assessable_context_envelope":
+                _audit_context_unassessable(
+                    cid,
+                    intervention,
+                    trace,
+                    f"turn_intervention[{idx}]",
+                    intervention_turn_id=int(intervention.get("turn_id", -1)),
+                    delta_field="delta",
                 )
             else:
                 for j, item in enumerate(trace):
@@ -256,6 +322,7 @@ def audit_record(
                         continue
                     trace = span.get("counterfactual_post_trajectory", []) or []
                     reported = span.get("evidence_cf_post_unsafe")
+                    status_value = span.get("evidence_status")
                     where = f"turns[{turn_index}].span_annotations[{span_index}]"
                     if reported is not None:
                         _audit_complete_counterfactual_trace(
@@ -266,6 +333,15 @@ def audit_record(
                             reported_score=reported,
                             analysis=analysis,
                             where=where,
+                        )
+                    elif status_value == "not_assessable_context_envelope":
+                        _audit_context_unassessable(
+                            cid,
+                            span,
+                            trace,
+                            where,
+                            intervention_turn_id=tid,
+                            delta_field="counterfactual_delta",
                         )
                     else:
                         for j, item in enumerate(trace):
@@ -310,7 +386,11 @@ def main() -> None:
     p.add_argument("--target-model", default="Qwen/Qwen2.5-32B-Instruct")
     p.add_argument("--judge-model", default="mistralai/Mistral-Small-3.1-24B-Instruct-2503")
     p.add_argument("--max-tokens", type=int, default=2048)
-    p.add_argument("--target-max-model-len", type=int, default=16384)
+    p.add_argument(
+        "--target-max-model-len",
+        type=int,
+        help="Expected B4 target envelope; inferred fail-closed from a homogeneous artifact when omitted",
+    )
     p.add_argument("--judge-max-model-len", type=int, default=32768)
     p.add_argument("--judge-max-context-chars", type=int, default=100000)
     args = p.parse_args()
@@ -321,6 +401,22 @@ def main() -> None:
     ids = [str(r.get("conversation_id", "")) for r in records]
     if len(ids) != len(set(ids)):
         raise RuntimeError("duplicate conversation_id values in evidence file")
+
+    if args.target_max_model_len is None:
+        try:
+            target_contexts = {
+                int(record["frontier_evidence_analysis"]["target_max_model_len"])
+                for record in records
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "cannot infer B4 target envelope from every record"
+            ) from exc
+        if len(target_contexts) != 1 or not target_contexts <= {16384, 32768}:
+            raise RuntimeError(
+                f"input has mixed/unsupported B4 target envelopes: {sorted(target_contexts)}"
+            )
+        args.target_max_model_len = next(iter(target_contexts))
 
     statuses = Counter()
     for record in records:
@@ -346,11 +442,16 @@ def main() -> None:
         f"{sorted({r['frontier_evidence_analysis']['protocol'] for r in records})}"
     )
     print(f"Execution optimization: {EXECUTION_OPTIMIZATION}")
-    print(
-        "B4 V7 PROTOCOL AUDIT PASSED"
-        if any(policy_from(r["frontier_evidence_analysis"]) != FIXED for r in records)
-        else "B4 V6 PROTOCOL AUDIT PASSED"
-    )
+    protocols = {
+        r["frontier_evidence_analysis"]["protocol"] for r in records
+    }
+    if protocols == {EVIDENCE_V8}:
+        message = "B4 V8 PROTOCOL AUDIT PASSED"
+    elif protocols == {EVIDENCE_V7}:
+        message = "B4 V7 PROTOCOL AUDIT PASSED"
+    else:
+        message = "B4 V6 PROTOCOL AUDIT PASSED"
+    print(message)
 
 
 if __name__ == "__main__":

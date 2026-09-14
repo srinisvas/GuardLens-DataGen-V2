@@ -14,8 +14,17 @@ import random
 from collections import Counter
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from completion_policy import (FIXED, EVIDENCE_V7, policy_fields, policy_from, target_completion,
-                               generation_budget_fields, assert_budget_generation)
+from completion_policy import (
+    EVIDENCE_V7,
+    EVIDENCE_V8,
+    FIXED,
+    RecordCompletionError,
+    assert_budget_generation,
+    generation_budget_fields,
+    policy_fields,
+    policy_from,
+    target_completion,
+)
 from frontier_common import DEFAULT_JUDGE_MAX_CONTEXT_CHARS, DEFAULT_TARGET_MAX_TOKENS, VLLMClient, config_fingerprint, json_fingerprint
 
 TURN_REPLACEMENTS = [
@@ -58,6 +67,20 @@ from audit_frontier_validation import audit_record as audit_b2_v5_record
 EVIDENCE_PROTOCOL = PROTOCOL
 EXECUTION_OPTIMIZATION = "verified_identical_prefix_reuse_v1"
 RECORD_SEED_SOURCE = "stage_b1_rollout_provenance"
+
+
+def evidence_protocol(budget_policy: str, target_max_model_len: int) -> str:
+    if budget_policy == FIXED:
+        if int(target_max_model_len) != 16384:
+            raise ValueError("fixed B4 protocol requires the frozen 16K target envelope")
+        return EVIDENCE_PROTOCOL
+    if int(target_max_model_len) == 16384:
+        return EVIDENCE_V7
+    if int(target_max_model_len) == 32768:
+        return EVIDENCE_V8
+    raise ValueError("adaptive B4 target envelope must be 16K or 32K")
+
+
 def _base_evidence_config(
     *, target_model: str, judge_model: str, base_seed: int,
     unsafe_threshold: float, min_confidence: float, weak_threshold: float,
@@ -118,7 +141,7 @@ def build_evidence_config(
     )
     cfg.update(
         {
-            "protocol": EVIDENCE_PROTOCOL if budget_policy == FIXED else EVIDENCE_V7,
+            "protocol": evidence_protocol(budget_policy, target_max_model_len),
             **policy_fields(budget_policy),
             "seed_policy": SEED_POLICY,
             "record_seed_source": RECORD_SEED_SOURCE,
@@ -273,12 +296,15 @@ class EvidenceValidator:
         max_tokens: int = DEFAULT_TARGET_MAX_TOKENS,
         judge_max_context_chars: int = DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
         budget_policy: str = FIXED,
+        target_max_model_len: int = 16384,
     ):
         self.target = target
         self.judge = judge
         self.max_tokens = max_tokens
         self.budget_policy = budget_policy
         policy_fields(budget_policy)
+        self.target_max_model_len = int(target_max_model_len)
+        evidence_protocol(budget_policy, self.target_max_model_len)
         self.judge_max_context_chars = judge_max_context_chars
         self._baseline_key = None
         self._baseline = None
@@ -372,11 +398,19 @@ class EvidenceValidator:
                 response = self.target.chat(messages, seed=response_seed, temperature=0.0,
                                             max_tokens=self.max_tokens)
             else:
-                result = target_completion(self.target, messages, seed=response_seed,
-                                           max_tokens=self.max_tokens, policy=self.budget_policy)
+                try:
+                    result = target_completion(self.target, messages, seed=response_seed,
+                                               max_tokens=self.max_tokens, policy=self.budget_policy)
+                except RecordCompletionError as exc:
+                    details = copy.deepcopy(exc.details)
+                    details["user_turn_id"] = tid
+                    details["replay_kind"] = "factual_baseline" if not replacements else "full_counterfactual"
+                    if len(replacements) == 1:
+                        details["intervention_turn_id"] = int(next(iter(replacements)))
+                    raise RecordCompletionError(str(exc), details=details) from exc
                 response = result['content']
                 generation = dict(model=self.target.model, seed=response_seed, temperature=0.0,
-                    max_model_len=16384, finish_reason=result['finish_reason'],
+                    max_model_len=self.target_max_model_len, finish_reason=result['finish_reason'],
                     completion_tokens=result['completion_tokens'],
                     **generation_budget_fields(result, self.budget_policy))
             messages.append({"role": "assistant", "content": response})
@@ -494,11 +528,20 @@ class EvidenceValidator:
                 response = self.target.chat(messages, seed=response_seed, temperature=0.0,
                                             max_tokens=self.max_tokens)
             else:
-                result = target_completion(self.target, messages, seed=response_seed,
-                                           max_tokens=self.max_tokens, policy=self.budget_policy)
+                try:
+                    result = target_completion(self.target, messages, seed=response_seed,
+                                               max_tokens=self.max_tokens, policy=self.budget_policy)
+                except RecordCompletionError as exc:
+                    details = copy.deepcopy(exc.details)
+                    details.update(
+                        user_turn_id=tid,
+                        replay_kind="counterfactual_suffix",
+                        intervention_turn_id=intervention_turn_id,
+                    )
+                    raise RecordCompletionError(str(exc), details=details) from exc
                 response = result['content']
                 generation = dict(model=self.target.model, seed=response_seed, temperature=0.0,
-                    max_model_len=16384, finish_reason=result['finish_reason'],
+                    max_model_len=self.target_max_model_len, finish_reason=result['finish_reason'],
                     completion_tokens=result['completion_tokens'],
                     **generation_budget_fields(result, self.budget_policy))
             messages.append({"role": "assistant", "content": response})
@@ -525,7 +568,11 @@ class EvidenceValidator:
         }
 
 def assert_baseline_reproducible(
-    record: Dict, baseline: Dict, tolerance: float = 1e-6
+    record: Dict,
+    baseline: Dict,
+    tolerance: float = 1e-6,
+    *,
+    target_max_model_len: Optional[int] = None,
 ) -> None:
     """Require exact B1 target replay and exact B2-v5 judge replay."""
     cid = str(record.get("conversation_id", ""))
@@ -563,7 +610,21 @@ def assert_baseline_reproducible(
             generation = fresh_item.get('target_generation', {})
             assert_budget_generation(generation, policy_from(record['rollout_provenance']),
                                      response_fingerprint=fresh_item.get('response_fingerprint'))
-            if generation != assistant.get('generation_provenance'):
+            stored_generation = assistant.get('generation_provenance', {})
+            expected_context = int(
+                target_max_model_len
+                if target_max_model_len is not None
+                else stored_generation.get('max_model_len', -1)
+            )
+            if int(generation.get('max_model_len', -1)) != expected_context:
+                raise RuntimeError(f'{cid}: target baseline runtime context drift at user turn {tid}')
+            comparable_generation = copy.deepcopy(generation)
+            comparable_stored = copy.deepcopy(stored_generation)
+            if expected_context == 32768 and int(comparable_stored.get('max_model_len', -1)) == 16384:
+                # The v8 server has more KV capacity. The actual prompt, response,
+                # seed, usage and complete adaptive attempt history remain exact.
+                comparable_generation['max_model_len'] = 16384
+            if comparable_generation != comparable_stored:
                 raise RuntimeError(f'{cid}: target baseline budget/usage provenance drift at user turn {tid}')
         if fresh_item.get("response_fingerprint") != json_fingerprint(str(assistant.get("text", ""))):
             raise RuntimeError(f"{cid}: target baseline response drift at user turn {tid}")
@@ -651,9 +712,24 @@ def analyze_intervention(
             "baseline_post_axes": baseline_axes,
         }
 
-    counterfactual = validator.replay(
-        turns, seed=seed, replacements={turn_id: replacement_text}
-    )
+    try:
+        counterfactual = validator.replay(
+            turns, seed=seed, replacements={turn_id: replacement_text}
+        )
+    except RecordCompletionError as exc:
+        if "context envelope" not in str(exc):
+            raise
+        return {
+            "status": "not_assessable_context_envelope",
+            "delta": None,
+            "baseline_post_unsafe": baseline_score,
+            "counterfactual_post_unsafe": None,
+            "baseline_post_axes": baseline_axes,
+            "counterfactual_failure": {
+                "error": str(exc),
+                "details": copy.deepcopy(exc.details),
+            },
+        }
     cf_score = qualified_post_score(
         counterfactual["trajectory"],
         turn_id,
@@ -751,6 +827,7 @@ def analyze_record(
         max_negative_spans=max_negative_spans,
         max_tokens=validator.max_tokens,
         judge_max_context_chars=validator.judge_max_context_chars,
+        target_max_model_len=validator.target_max_model_len,
         budget_policy=getattr(validator, "budget_policy", FIXED),
     )
     input_fp = json_fingerprint(record)
@@ -783,7 +860,9 @@ def analyze_record(
     )
     seed = experiment_record_seed(base_seed, r)
     baseline = validator.replay(r.get("turns", []), seed=seed)
-    assert_baseline_reproducible(r, baseline)
+    assert_baseline_reproducible(
+        r, baseline, target_max_model_len=validator.target_max_model_len
+    )
     anchor = first_unsafe_turn(baseline["trajectory"], unsafe_threshold, min_confidence)
     analysis = {
         "status": "complete" if anchor is not None else "baseline_not_unsafe",
@@ -886,6 +965,8 @@ def analyze_record(
             span["evidence_cf_post_unsafe"] = result["counterfactual_post_unsafe"]
             if getattr(validator, 'budget_policy', FIXED) != FIXED:
                 span['counterfactual_post_trajectory'] = copy.deepcopy(result.get('counterfactual_post_trajectory', []))
+            if result.get("counterfactual_failure") is not None:
+                span["counterfactual_failure"] = copy.deepcopy(result["counterfactual_failure"])
             span["evidence_replacement"] = replacement
             if result["status"] == "supported_strong":
                 span["causal_type"] = "causal"
@@ -952,6 +1033,8 @@ def analyze_record(
             span["evidence_cf_post_unsafe"] = result["counterfactual_post_unsafe"]
             if getattr(validator, 'budget_policy', FIXED) != FIXED:
                 span['counterfactual_post_trajectory'] = copy.deepcopy(result.get('counterfactual_post_trajectory', []))
+            if result.get("counterfactual_failure") is not None:
+                span["counterfactual_failure"] = copy.deepcopy(result["counterfactual_failure"])
             span["evidence_replacement"] = replacement
             counts[status] += 1
         pending.append((future, accept))

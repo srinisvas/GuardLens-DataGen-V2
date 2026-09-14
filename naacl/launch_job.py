@@ -22,7 +22,7 @@ import requests
 from check_frontier_environment import snapshot_ready
 from run_stage import TARGET, JUDGE, HERE
 from execution import Publication
-from completion_policy import FIXED, POLICIES
+from completion_policy import FIXED, POLICIES, target_context_length
 
 
 def positive_env(name, default):
@@ -68,10 +68,11 @@ def snapshot(cache, model):
     return dict(model=model,revision=revision,tokenizer_revision=revision,artifacts=artifacts)
 
 
-def server_flags(role, identity):
+def server_flags(role, identity, *, stage, budget_policy):
+    max_model_len = target_context_length(stage, budget_policy) if role == 'target' else 32768
     flags = ['--model',identity['model'],'--revision',identity['revision'],
         '--tokenizer-revision',identity['tokenizer_revision'], '--dtype','bfloat16',
-        '--tensor-parallel-size','1','--max-model-len','16384' if role=='target' else '32768',
+        '--tensor-parallel-size','1','--max-model-len',str(max_model_len),
         '--gpu-memory-utilization','0.92' if role=='target' else '0.90',
         '--enable-prefix-caching','--enforce-eager','--no-enable-log-requests']
     if role=='judge':
@@ -91,7 +92,7 @@ print(json.dumps(dict(name=p.name,capability=[p.major,p.minor],memory=p.total_me
     return info
 
 
-def capture_runtime(stage, cache, assignments):
+def capture_runtime(stage, cache, assignments, budget_policy=FIXED):
     import vllm.envs
     if 'VLLM_BATCH_INVARIANT' not in vllm.envs.environment_variables:
         raise RuntimeError('Installed vLLM does not support batch invariance')
@@ -110,7 +111,10 @@ def capture_runtime(stage, cache, assignments):
     return dict(stage=stage,runtime_determinism='vllm_batch_invariant_eager_v1',
         replicas={r:sum(role==r for role,_ in assignments) for r in ['target','judge']},
         models=models,packages=packages,hardware=hardware,driver=sorted(set(driver)),
-        server_flags={r:server_flags(r,models[r]) for r in models},
+        server_flags={
+            r: server_flags(r, models[r], stage=stage, budget_policy=budget_policy)
+            for r in models
+        },
         environment={k:v for k,v in sorted(os.environ.items())
                      if k.startswith(('VLLM_','NCCL_','TORCH_','CUBLAS_','CUDA_'))
                      and k not in {'VLLM_API_KEY','CUDA_VISIBLE_DEVICES','VLLM_PORT','VLLM_HOST_IP'}})
@@ -186,7 +190,7 @@ def main():
         else:
             subprocess.run([sys.executable,str(HERE/'run_stage.py'),stage,'--input',str(input_path),
                             '--preflight-only','--mode',mode,'--expected-records',str(expected),'--budget-policy',budget_policy],check=True)
-        runtime = capture_runtime(stage,cache,assignments)
+        runtime = capture_runtime(stage,cache,assignments,budget_policy)
         manifest = state/'runtime.json'
         if manifest.exists() and json.loads(manifest.read_text()) != runtime:
             raise RuntimeError('State runtime differs; do not mix revisions, hardware, topology or server options')

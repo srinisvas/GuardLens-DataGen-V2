@@ -1,6 +1,6 @@
 # Optimized Dataset B execution
 
-**Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v7, while the B2 v5 rubric stays unchanged.
+**Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v8, while the B2 v5 rubric stays unchanged. B1 remains at 16K; adaptive B4 uses Qwen's native 32K context envelope so a valid 4K/8K replay budget is not rejected merely because its counterfactual prefix is longer than the factual one.
 
 Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7aac9b616a8fb`. The original `naacl-validity-repair` branch remains the reference. This branch consolidates the current pipeline and changes scheduling and recovery. The review fixes add explicit production counts, trial-bound completion receipts, immutable checkpoint identities and output ownership. GPU equivalence and throughput must still be measured on the A100s before the 3,000-record production run.
 
@@ -30,13 +30,13 @@ All 3,000 input records remain in scope. B4 retains every record, including `not
 |---|---|
 | Models | Qwen/Qwen2.5-32B-Instruct and mistralai/Mistral-Small-3.1-24B-Instruct-2503 |
 | Inference | vLLM 0.28.0, A100 80GB, BF16, tensor parallel size 1, batch invariant, eager |
-| Context / generation | Target 16,384 / 2,048 tokens. Judge 32,768 / 180 tokens, 100,000 transcript characters |
+| Context / generation | B1 target 16,384; fixed B4 target 16,384; adaptive B4 target 32,768. Target output starts at 2,048 and adaptive mode retries only genuine length finishes at 4,096/8,192. Judge 32,768 / 180 tokens, 100,000 transcript characters |
 | Seeds | Base 42, pair-aware record seeds, original per-turn, pass-B and retry offsets |
 | Judge | Both unchanged prompts, three parsing attempts per pass, original conservative union and confidence rules |
 | Evidence | Full fresh factual target replay and exact stored B1/B2 comparison before interventions |
 | Interventions | Original caps of 4 turns, 6 positive spans and 2 controls, original replacement selection and ordering |
 | Results | Full suffixes, raw passes, exact deltas, evidence turns, supervision tiers, loss weights and original record ordering |
-| Failure behavior | No incomplete, truncated, drifted or unaudited output is published |
+| Failure behavior | No incomplete, truncated, drifted or unaudited output is published. A counterfactual that alone exceeds adaptive B4's 32K envelope is retained as explicitly unassessable with audited failure provenance; it never becomes causal supervision |
 
 There is no span pruning, reduced dataset scope, changed precision, shorter context, sampled factual audit, or early termination of a scientifically assessable counterfactual. Existing proven-prefix reuse remains. Completed deterministic requests may be recovered by exact identity, but a B4 factual request cannot reuse a B1/B2 cache entry.
 
@@ -177,7 +177,7 @@ python naacl/report_performance.py --state-dir "$OUT/optimized_smoke_b4.jsonl.st
 
 Each state directory contains request timing/usage in `requests.jsonl` and an `allocation-JOB_ID/` directory with combined server logs, raw Prometheus/GPU samples and the executor command. A matching complete trial receipt with a verified output digest is the completeness signal. File existence alone is insufficient. Standalone `run_stage.py` runs generate and print a trial ID, or accept `--trial-id`; comparison requires that ID. Request latency sums are not GPU wall time.
 
-The precommitted held-out judge sampling/evaluation utilities remain active. Sampling still uses score-free B1 output and excludes the frozen design manifest in `tests/fixtures/`. Dataset preparation preserves pair retention, standalone benign stress separation and loss weights. It now directly validates the deterministic v3/v5/v6 chain.
+The precommitted held-out judge sampling/evaluation utilities remain active. Sampling still uses score-free B1 output and excludes the frozen design manifest in `tests/fixtures/`. Dataset preparation preserves pair retention, standalone benign stress separation and loss weights. It directly validates the deterministic v3/v5/v6 fixed chain or the v4/v5/v8 adaptive chain.
 
 vLLM argument reference used for the pinned launcher is [v0.28.0 serve](https://docs.vllm.ai/en/v0.28.0/cli/serve/). No server throughput measurements were available in the development workspace.
 

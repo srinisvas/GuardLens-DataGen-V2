@@ -42,7 +42,7 @@ EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v6"
 COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
 EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
-EXPECTED_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
+EXPECTED_ROLLOUT_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_MODEL_LEN = DEFAULT_JUDGE_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_CONTEXT_CHARS = DEFAULT_JUDGE_MAX_CONTEXT_CHARS
 
@@ -65,6 +65,19 @@ def user_turn_count(record: Dict) -> int:
     )
 
 
+def evidence_target_max_model_len(record: Dict) -> int:
+    """Read the declared B4 envelope; the evidence audit validates its protocol binding."""
+    cid = str(record.get("conversation_id", ""))
+    analysis = record.get("frontier_evidence_analysis", {}) or {}
+    try:
+        value = int(analysis["target_max_model_len"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{cid}: missing/invalid B4 target context envelope") from exc
+    if value not in {16384, 32768}:
+        raise ValueError(f"{cid}: unsupported B4 target context envelope {value}")
+    return value
+
+
 def assert_expected_provenance(
     record,
     *,
@@ -78,7 +91,7 @@ def assert_expected_provenance(
         target_model=expected_target,
         judge_model=expected_judge,
         max_tokens=EXPECTED_TARGET_MAX_TOKENS,
-        target_max_model_len=EXPECTED_TARGET_MAX_MODEL_LEN,
+        target_max_model_len=evidence_target_max_model_len(record),
         judge_max_model_len=EXPECTED_JUDGE_MAX_MODEL_LEN,
         judge_max_context_chars=EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
     )
@@ -259,6 +272,17 @@ def main() -> None:
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
+    if not records:
+        raise RuntimeError("input evidence dataset is empty")
+    evidence_target_contexts = {
+        evidence_target_max_model_len(record) for record in records
+    }
+    if len(evidence_target_contexts) != 1:
+        raise RuntimeError(
+            "input mixes B4 target context envelopes: "
+            f"{sorted(evidence_target_contexts)}"
+        )
+    evidence_target_context = next(iter(evidence_target_contexts))
     prepared: List[Dict] = []
     benign_stress: List[Dict] = []
     excluded: List[Dict] = []
@@ -384,7 +408,11 @@ def main() -> None:
             **({'target_budget_policies': sorted({r['rollout_provenance'].get('target_budget_policy', 'fixed_2048_v1') for r in records}),
                 'target_token_budgets': [2048, 4096, 8192]}
                if any('target_budget_policy' in r.get('rollout_provenance', {}) for r in records) else {}),
-            "target_max_model_len": EXPECTED_TARGET_MAX_MODEL_LEN,
+            "rollout_target_max_model_len": EXPECTED_ROLLOUT_TARGET_MAX_MODEL_LEN,
+            "evidence_target_max_model_len": evidence_target_context,
+            # Backward-compatible stats key; before v8 both target envelopes
+            # were identical, so this represented the B4 evidence runtime too.
+            "target_max_model_len": evidence_target_context,
             "judge_max_model_len": EXPECTED_JUDGE_MAX_MODEL_LEN,
             "judge_max_context_chars": EXPECTED_JUDGE_MAX_CONTEXT_CHARS,
             "judge_context_policy": CONTEXT_POLICY,
