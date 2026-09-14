@@ -13,6 +13,7 @@ from completion_policy import (
     EVIDENCE_V8,
     FIXED,
     assert_budget_generation,
+    is_context_envelope_error,
     policy_from,
 )
 from frontier_evidence import (
@@ -162,7 +163,7 @@ def _audit_context_unassessable(
         or any(char not in "0123456789abcdef" for char in fingerprint)
     ):
         raise RuntimeError(f"{cid}: {where} invalid failed request fingerprint")
-    if "maximum context length" not in str(details.get("server_message", "")).lower():
+    if not is_context_envelope_error(details.get("server_message")):
         raise RuntimeError(f"{cid}: {where} missing server context-limit message")
 
 

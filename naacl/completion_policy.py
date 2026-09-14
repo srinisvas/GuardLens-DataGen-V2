@@ -13,6 +13,15 @@ EVIDENCE_V7 = 'frontier_context_paired_counterfactual_v7'
 EVIDENCE_V8 = 'frontier_context_paired_counterfactual_v8'
 
 
+def is_context_envelope_error(message):
+    """Recognize only the explicit target context-limit messages we support."""
+    return isinstance(message, str) and any(marker in message.lower() for marker in (
+        'maximum context length',
+        'max_tokens is too large',
+        "'max_tokens' or 'max_completion_tokens' is too large",
+    ))
+
+
 def target_context_length(stage, policy):
     """Return the frozen target envelope for a stage and completion policy."""
     policy_fields(policy)

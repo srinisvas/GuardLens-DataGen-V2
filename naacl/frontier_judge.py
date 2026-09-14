@@ -316,6 +316,19 @@ class JudgmentFuture:
     def result(self):
         return aggregate_passes(self.a.result(), self.b.result())
 
+    def drain(self):
+        """Observe both passes even if one failed before target replay stopped."""
+        results = []
+        errors = []
+        for future in (self.a, self.b):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
+        return aggregate_passes(*results)
+
 
 def submit_judgment(judge, conversation_prefix, *, seed, max_context_chars):
     import copy

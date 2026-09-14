@@ -287,6 +287,20 @@ def resolve_trajectory(items):
     return resolved
 
 
+def drain_judgments(items):
+    """Observe every pending judgment before accepting a target failure."""
+    errors = []
+    for item in items:
+        if isinstance(item, tuple):
+            future = item[1]
+            try:
+                getattr(future, 'drain', future.result)()
+            except Exception as exc:
+                errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
 class EvidenceValidator:
     def __init__(
         self,
@@ -402,6 +416,7 @@ class EvidenceValidator:
                     result = target_completion(self.target, messages, seed=response_seed,
                                                max_tokens=self.max_tokens, policy=self.budget_policy)
                 except RecordCompletionError as exc:
+                    drain_judgments(trajectory)
                     details = copy.deepcopy(exc.details)
                     details["user_turn_id"] = tid
                     details["replay_kind"] = "factual_baseline" if not replacements else "full_counterfactual"
@@ -532,6 +547,7 @@ class EvidenceValidator:
                     result = target_completion(self.target, messages, seed=response_seed,
                                                max_tokens=self.max_tokens, policy=self.budget_policy)
                 except RecordCompletionError as exc:
+                    drain_judgments(trajectory)
                     details = copy.deepcopy(exc.details)
                     details.update(
                         user_turn_id=tid,

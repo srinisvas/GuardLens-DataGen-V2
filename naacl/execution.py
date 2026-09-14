@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 
 from frontier_common import VLLMClient, json_fingerprint, parse_chat_completion_data
-from completion_policy import RecordCompletionError
+from completion_policy import RecordCompletionError, is_context_envelope_error
 
 
 class Stopped(RuntimeError):
@@ -232,9 +232,7 @@ class Servers:
                     message = error.get('message', '') if isinstance(error, dict) else ''
                 except ValueError:
                     message = ''
-                if any(marker in message.lower() for marker in (
-                    'maximum context length', 'max_tokens is too large',
-                    "'max_tokens' or 'max_completion_tokens' is too large")):
+                if is_context_envelope_error(message):
                     raise RecordCompletionError('target request exceeds the frozen context envelope',
                         details=dict(server_message=message, request_fingerprint=event['request_fingerprint'],
                                      max_tokens=payload['max_tokens']))
