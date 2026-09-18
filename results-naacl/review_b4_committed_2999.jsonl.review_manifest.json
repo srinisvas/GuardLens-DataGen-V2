@@ -1,0 +1,48 @@
+{
+  "export_protocol": "raw_b4_review_export_v1",
+  "purpose": "manual_and_agent_review_only",
+  "final_publication_audit_passed": false,
+  "source_state": "/gpfs/stage/s001/ssubram7/dataset_naacl/production_b4_3000_adaptive_v8.state",
+  "source_input": "/gpfs/stage/s001/ssubram7/dataset_naacl/production_b3_3000_adaptive_v1.jsonl",
+  "contract_fingerprint": "6499a9a94908bd75ae876b94402b0c145c3049d04506eee1d6fa9b830960ddef",
+  "snapshot_digest": "7f219e4b78e09595bd3849306b09606111d3f6c20fe02ce98eb3a577e51c02f1",
+  "records_exported": 2999,
+  "statuses": {
+    "not_applicable": 2122,
+    "complete": 877
+  },
+  "input_order_preserved": true,
+  "record_fields_unchanged": true,
+  "jsonl_sha256": "74fe911313e23fa75cf48ed195957ce71346d4ab517d99081ec3864d069af37d",
+  "missing_records": [
+    {
+      "conversation_id": "c1fd7a44-d06e-5f54-8234-54fa5dbf074f",
+      "details": {
+        "attempts": [
+          {
+            "completion_tokens": 2048,
+            "finish_reason": "length",
+            "max_tokens": 2048,
+            "response_fingerprint": "549bf86c8f43b385f7d230799cb2742e09cd0fb49d875afaa40ad569f9b2604e"
+          },
+          {
+            "completion_tokens": 4096,
+            "finish_reason": "length",
+            "max_tokens": 4096,
+            "response_fingerprint": "69c8ed8b5e065795028db1221c9ee59a1ed5a7baf96a5f77b782d4e9eed9a7b5"
+          },
+          {
+            "completion_tokens": 8192,
+            "finish_reason": "length",
+            "max_tokens": 8192,
+            "response_fingerprint": "149619abd65a8d069be700a24c8483e4e2ed056a8ddce888568a0c7ecf4f4cae"
+          }
+        ],
+        "intervention_turn_id": 12,
+        "replay_kind": "counterfactual_suffix",
+        "user_turn_id": 14
+      },
+      "error": "target exhausted all completion budgets"
+    }
+  ]
+}
