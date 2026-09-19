@@ -38,10 +38,7 @@ LOSS_WEIGHTS = {
 }
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-ROLLOUT_PROTOCOL = "frontier_fixed_user_rollout_v3"
 VALIDATION_PROTOCOL = "frontier_context_judge_v5"
-EVIDENCE_PROTOCOL = "frontier_context_paired_counterfactual_v6"
-COMPLETION_CONTRACT = "finish_reason=stop and completion_tokens recorded"
 CONTEXT_POLICY = "full_observable_prefix_or_fail_closed"
 EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
 EXPECTED_ROLLOUT_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
