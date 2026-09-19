@@ -18,6 +18,7 @@ from audit_final_data_prep import (
     audit_casefold_trajectory_duplicates,
     audit_frontier_excluded_contract,
     audit_frontier_stress_contract,
+    assert_partition_exactly,
     casefold_user_trajectory_hash,
     expected_frontier_membership,
     split_source_label_report,
@@ -231,6 +232,53 @@ class FinalMembershipContractTests(unittest.TestCase):
         bad_excluded = dict(excluded, exclusion_reason="")
         with self.assertRaisesRegex(RuntimeError, "lacks exclusion_reason"):
             audit_frontier_excluded_contract([bad_excluded])
+
+    def test_split_partition_rejects_record_content_mutation(self):
+        parent = [
+            {
+                "conversation_id": "c1",
+                "label": 0,
+                "metadata": {
+                    "consolidated_split_group": "g1",
+                    "normalized_user_trajectory_hash": "h1",
+                },
+                "turns": [{"role": "user", "text": "original"}],
+            },
+            {
+                "conversation_id": "c2",
+                "label": 1,
+                "metadata": {
+                    "consolidated_split_group": "g2",
+                    "normalized_user_trajectory_hash": "h2",
+                },
+                "turns": [{"role": "user", "text": "second"}],
+            },
+            {
+                "conversation_id": "c3",
+                "label": 0,
+                "metadata": {
+                    "consolidated_split_group": "g3",
+                    "normalized_user_trajectory_hash": "h3",
+                },
+                "turns": [{"role": "user", "text": "third"}],
+            },
+        ]
+        splits = {
+            "train": [dict(parent[0])],
+            "dev": [dict(parent[1])],
+            "test": [dict(parent[2])],
+        }
+        assert_partition_exactly(parent, splits, where="fixture")
+        mutated = {
+            name: [dict(record) for record in records]
+            for name, records in splits.items()
+        }
+        mutated["train"][0] = {
+            **mutated["train"][0],
+            "turns": [{"role": "user", "text": "changed"}],
+        }
+        with self.assertRaisesRegex(RuntimeError, "content changed"):
+            assert_partition_exactly(parent, mutated, where="fixture")
 
     def test_casefold_duplicate_check_catches_trivial_cross_group_variation(self):
         one = {

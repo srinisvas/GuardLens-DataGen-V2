@@ -156,7 +156,9 @@ def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
                 raise RuntimeError(f"duplicate conversation_id across split material: {cid}")
             ids.add(cid)
             metadata = r.get("metadata", {}) or {}
-            group = str(metadata.get("consolidated_split_group", ""))
+            group = str(metadata.get("consolidated_split_group", "")).strip()
+            if not group:
+                raise RuntimeError(f"{cid}: missing consolidated_split_group in split material")
             previous = owner.setdefault(group, split_name)
             if previous != split_name:
                 raise RuntimeError(f"split leakage: group {group} appears in {previous} and {split_name}")

@@ -17,7 +17,7 @@ from typing import Dict, Iterable, List
 
 from audit_frontier_auxiliary import audit as audit_auxiliary
 from audit_review_export import audit_review_export
-from frontier_common import load_jsonl
+from frontier_common import json_fingerprint, load_jsonl
 from merge_training_corpora import (
     EXPECTED_COMBINED_PER_LABEL,
     EXPECTED_COMBINED_RECORDS,
@@ -295,6 +295,20 @@ def assert_partition_exactly(
             f"{where}: split membership does not exactly partition parent; "
             f"missing={missing[:10]} extra={extra[:10]}"
         )
+
+    parent_fingerprints = {
+        str(record["conversation_id"]): json_fingerprint(record)
+        for record in parent
+    }
+    for split_name, records in splits.items():
+        for record in records:
+            cid = str(record["conversation_id"])
+            observed = json_fingerprint(record)
+            expected = parent_fingerprints[cid]
+            if observed != expected:
+                raise RuntimeError(
+                    f"{where}: {cid} content changed in {split_name} after splitting"
+                )
     assert_no_leakage(splits)
 
 
