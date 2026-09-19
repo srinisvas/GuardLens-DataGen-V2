@@ -8,15 +8,15 @@ Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7
 
 | Task | Current files | Frozen scientific protocol |
 |---|---|---|
-| B1 rollout | `launch_b1.slurm`, `frontier_rollout.py` | `frontier_fixed_user_rollout_v3` |
+| B1 rollout | `launch_b1.slurm`, `frontier_rollout.py` | v3 fixed; v4 adaptive. Frozen review source uses v4 |
 | B2 validation | `launch_b2.slurm`, `frontier_validation.py`, `frontier_judge.py` | `frontier_context_judge_v5`, `dual_boundary_union_v1` |
 | B3 candidates, CPU | `materialize_frontier_candidates.py` | `frontier_candidate_materialization_v2` |
-| B4 evidence | `launch_b4.slurm`, `frontier_evidence.py` | `frontier_context_paired_counterfactual_v6` |
+| B4 evidence | `launch_b4.slurm`, `frontier_evidence.py` | v6 fixed; v7/v8 adaptive by context envelope. Frozen review source uses v8 |
 | Stage audits | `audit_frontier_rollout.py`, `audit_frontier_validation.py`, `audit_frontier_evidence.py` | Original completion, deterministic runtime, dual-pass and evidence checks |
-| Dataset assembly, CPU | `prepare_frontier_dataset.py`, `audit_frontier_dataset.py`, `audit_frontier_stress.py` | Current v3/v5/v6 provenance, original retention/sanitization rules |
+| Dataset assembly, CPU | `prepare_frontier_dataset.py`, `audit_frontier_dataset.py`, `audit_frontier_stress.py` | Record-bound provenance audit. Frozen review source is adaptive v4/v5/v8 |
 | Merge and split, CPU | `merge_training_corpora.py`, `split_consolidated.py`, `attach_training_auxiliary.py` | Grouped primary split, exact-hash leakage prevention, frozen eval partitions |
 | Raw review freeze, CPU | `audit_review_export.py` | Exact B4 review SHA-256, manifest, counts, missing-record contract |
-| Final data freeze, CPU | `audit_final_data_prep.py` | Raw→primary/stress/excluded partition, artifact hashes, A+B membership, shortcut controls, split isolation, auxiliary contract |
+| Final data freeze, CPU | `audit_final_data_prep.py` | Raw-derived primary/stress/excluded membership, artifact hashes, A+B membership, shortcut controls, split isolation, exact auxiliary rejected-set contract |
 | Execution | `run_stage.py`, `execution.py`, `launch_job.py`, `launch_stage.sh` | Bounded queues, request recovery, supervised replicas |
 | Measurements | `probe_runtime.py`, `compare_outputs.py`, `report_performance.py` | Exact equality and measured performance |
 | Regression tests | `tests/` | Archived reference tests plus active executor tests |
@@ -26,7 +26,12 @@ The active pipeline has no runtime imports from `legacy/`. Run the supported ent
 
 ## Quality contract
 
-All 3,000 input records remain in scope. B4 retains every record, including `not_applicable` rows, and runs every eligible record with the existing intervention selection rules.
+The production source had 3,000 intended records. The frozen review export used
+for data preparation contains 2,999 records because one malicious B4 replay
+exhausted all approved completion budgets. Its exact missing-record declaration,
+JSONL SHA-256, contract fingerprint, and snapshot digest are pinned by
+`audit_review_export.py`. B4 otherwise retains `not_applicable` rows rather
+than silently dropping them.
 
 | Invariant | Frozen value / behavior |
 |---|---|

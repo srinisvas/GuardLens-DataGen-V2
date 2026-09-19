@@ -84,6 +84,63 @@ def audit_internal_identifier_leakage(records: Iterable[Dict]) -> None:
         )
 
 
+def expected_frontier_membership(raw_records: Iterable[Dict]):
+    pair_groups = defaultdict(list)
+    standalone = []
+    for record in raw_records:
+        pair_id = record.get("pair_id")
+        if pair_id in (None, ""):
+            standalone.append(record)
+        else:
+            pair_groups[str(pair_id)].append(record)
+
+    primary_ids = set()
+    for pair_id, group in pair_groups.items():
+        labels = Counter(r.get("label") for r in group)
+        if len(group) != 2 or labels != Counter({0: 1, 1: 1}):
+            continue
+        malicious = next(r for r in group if r.get("label") == 1)
+        benign = next(r for r in group if r.get("label") == 0)
+        scenarios = {
+            str((r.get("metadata", {}) or {}).get("scenario_family", "")).strip()
+            for r in group
+        }
+        if "" in scenarios or len(scenarios) != 1:
+            continue
+        if malicious.get("validation_status") != "validated":
+            continue
+        if (
+            (malicious.get("frontier_evidence_analysis", {}) or {}).get("status")
+            != "complete"
+        ):
+            continue
+        if benign.get("validation_status") != "validated":
+            continue
+        if (
+            (benign.get("frontier_evidence_analysis", {}) or {}).get("status")
+            != "not_applicable"
+        ):
+            continue
+        primary_ids.update(str(r.get("conversation_id", "")) for r in group)
+
+    stress_ids = {
+        str(r.get("conversation_id", ""))
+        for r in standalone
+        if r.get("label") == 0
+        and r.get("validation_status") == "validated"
+        and (r.get("frontier_evidence_analysis", {}) or {}).get("status")
+        == "not_applicable"
+    }
+    raw_ids = {str(r.get("conversation_id", "")) for r in raw_records}
+    excluded_ids = raw_ids - primary_ids - stress_ids
+    auxiliary_ids = {
+        str(r.get("conversation_id", ""))
+        for r in raw_records
+        if r.get("validation_status") == "rejected"
+    }
+    return primary_ids, stress_ids, excluded_ids, auxiliary_ids
+
+
 def audit_frontier_stress_contract(records: Iterable[Dict]) -> None:
     for record in records:
         cid = str(record.get("conversation_id", ""))
@@ -219,6 +276,26 @@ def main() -> None:
             "frontier primary/stress/excluded do not exactly partition the raw review; "
             f"missing={missing[:10]} extra={extra[:10]}"
         )
+
+    (
+        expected_primary_ids,
+        expected_stress_ids,
+        expected_excluded_ids,
+        expected_auxiliary_ids,
+    ) = expected_frontier_membership(raw_review)
+    for name, observed, expected in (
+        ("primary", frontier_ids, expected_primary_ids),
+        ("stress", frontier_stress_ids, expected_stress_ids),
+        ("excluded", frontier_excluded_ids, expected_excluded_ids),
+    ):
+        if observed != expected:
+            missing = sorted(expected - observed)
+            extra = sorted(observed - expected)
+            raise RuntimeError(
+                f"frontier {name} membership differs from raw-derived admission rule; "
+                f"missing={missing[:10]} extra={extra[:10]}"
+            )
+
     audit_frontier_stress_contract(frontier_stress)
     audit_frontier_excluded_contract(frontier_excluded)
 
@@ -311,6 +388,12 @@ def main() -> None:
         },
         "construction_language_visibility": construction_language_report(merged),
         "frontier_review_partition": "passed",
+        "frontier_membership_reconstructed_from_raw": {
+            "primary": len(expected_primary_ids),
+            "stress": len(expected_stress_ids),
+            "excluded": len(expected_excluded_ids),
+            "auxiliary_rejected_candidates": len(expected_auxiliary_ids),
+        },
         "frontier_stress_contract": "passed",
         "frontier_excluded_contract": "passed",
         "primary_split_leakage": "passed",
@@ -318,12 +401,23 @@ def main() -> None:
 
     if args.auxiliary_input:
         auxiliary = load_jsonl(args.auxiliary_input)
+        auxiliary_ids = unique_ids(auxiliary, "auxiliary")
+        if auxiliary_ids != expected_auxiliary_ids:
+            missing = sorted(expected_auxiliary_ids - auxiliary_ids)
+            extra = sorted(auxiliary_ids - expected_auxiliary_ids)
+            raise RuntimeError(
+                "auxiliary membership differs from the complete raw B2-rejected set; "
+                f"missing={missing[:10]} extra={extra[:10]}"
+            )
         aux_report = audit_auxiliary(
             auxiliary,
             expect_full_review_export=args.expect_final_naacl_counts,
             validate_provenance=True,
         )
-        report["auxiliary"] = aux_report
+        report["auxiliary"] = {
+            **aux_report,
+            "raw_rejected_membership_exact": True,
+        }
         report["artifact_sha256"]["auxiliary_input"] = file_sha256(args.auxiliary_input)
 
         if args.auxiliary_candidate_split_dir:

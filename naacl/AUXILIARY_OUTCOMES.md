@@ -182,6 +182,8 @@ A pass requires all of the following:
 - Primary Dataset B has 1,402 records, or 701 complete pairs.
 - Primary B, standalone benign stress, and excluded B artifacts are mutually
   disjoint and together account for all 2,999 frozen review records exactly.
+- Their exact conversation-ID memberships are independently reconstructed from
+  raw pair structure, B2 status, B4 status, and scenario-family consistency.
 - Every stress record is benign, evaluation-only, standalone, and non-trainable.
 - Every excluded record is explicitly non-trainable and carries an exclusion reason.
 - The merged primary corpus has 2,454 records and 1,227 examples per class.
@@ -191,8 +193,9 @@ A pass requires all of the following:
 - The primary train/dev/test files form an exact, disjoint partition with no
   group, pair, scenario-family, or exact-user-trajectory leakage.
 - No internal conversation/pair identifier appears in model-visible text.
-- The auxiliary artifact is exactly 512 records with 190 unsafe outcomes and
-  322 safe outcomes, and its B2/B4 protocol provenance re-audits successfully.
+- The auxiliary artifact is exactly the complete set of 512 raw B2-rejected
+  conversation IDs, with 190 unsafe outcomes and 322 safe outcomes, and its
+  B2/B4 protocol provenance re-audits successfully.
 - The auxiliary candidate contains auxiliary records only in train.
 - Auxiliary train records cannot duplicate a primary dev/test user trajectory,
   even under a different scenario-family identifier.
@@ -204,30 +207,18 @@ remain visible in conversation text by source and class. This is diagnostic,
 because those phrases are intentionally preserved in the raw conversation while
 their adjudicated spans are removed from positive token supervision.
 
-## Trainer integration gate
+## Training integration boundary
 
-This repository checkout does not contain the final model-training package, so no
-trainer is modified here. Before using the optional joint split, inspect the
-actual trainer and require all of the following:
+Training/model integration is intentionally outside this data-preparation freeze.
+The frozen artifacts expose the contracts the later trainer audit must consume,
+including `detection_label`, `detection_loss_weight`,
+`pivot_supervision_ignore`, `localization_supervision_ignore`, span
+`supervision_tier`, and the supplied family-preserving split assignments.
 
-1. Auxiliary records use `detection_label` for trajectory detection.
-2. `detection_loss_weight` is applied to detection loss.
-3. `pivot_loss_weight=0` and `span_loss_weight=0` are respected exactly.
-4. The trainer does not infer localization negatives from auxiliary records.
-5. Unknown primary pivots remain masked rather than converted to true no-pivot
-   negatives.
-6. Token/span targets are mapped after the trainer's real tokenizer and truncation
-   policy are known.
-7. Family-preserving split assignments are consumed as supplied, not re-split at
-   the record level.
-
-The 21 reviewed construction-language spans are now masked upstream from positive
-token supervision by `semantic_span_policy.py` while their raw B4 evidence status
-and counterfactual deltas remain intact. The trainer must consume the prepared
-`supervision_tier=ignore` / `semantic_token_supervision_ignore` state. The
-remaining training concerns around v8 adapter semantics, legacy `max_turns=16`
-behavior, and character clipping still block a training smoke. None of these
-requires mutating the raw B4 artifact or running another generation job.
+The data freeze makes no claim about tokenizer mapping, truncation, model-visible
+windows, loss construction, or optimization. Those checks belong to the separate
+GuardLens-Transformer review before any training run. No data-preparation gate
+should be weakened to accommodate a trainer implementation.
 
 ## Scope
 
