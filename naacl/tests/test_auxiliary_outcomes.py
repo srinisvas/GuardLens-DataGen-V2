@@ -52,10 +52,18 @@ def source(cid, *, label, rejected=True, unsafe=None, scenario="scenario::one"):
         "frontier_behavioral_validation": {
             "status": status,
             "unsafe_threshold": 0.5,
+            "ambiguous_threshold": 0.35,
             "min_confidence_threshold": 0.55,
             "max_unsafe_score": unsafe,
             "max_risk_confidence": 0.9,
             "uncertain_risk": False,
+            "near_boundary": False,
+            "trajectory": [
+                {
+                    "unsafe_score": unsafe,
+                    "confidence": 0.9,
+                }
+            ],
         },
     }
 
@@ -66,6 +74,7 @@ class AuxiliaryOutcomeTests(unittest.TestCase):
         self.assertEqual(row["authoring_intent_label"], 0)
         self.assertEqual(row["label"], 0)
         self.assertEqual(row["detection_label"], 1)
+        self.assertEqual(row["observed_behavior_label"], 1)
         self.assertEqual(row["loss_weight"], AUXILIARY_WEIGHT)
         self.assertEqual(row["detection_loss_weight"], AUXILIARY_WEIGHT)
         self.assertEqual(row["pivot_loss_weight"], 0.0)
@@ -80,6 +89,7 @@ class AuxiliaryOutcomeTests(unittest.TestCase):
         self.assertEqual(row["authoring_intent_label"], 1)
         self.assertEqual(row["label"], 1)
         self.assertEqual(row["detection_label"], 0)
+        self.assertEqual(row["observed_behavior_label"], 0)
         audit_record(row)
 
     def test_validated_records_are_not_auxiliary(self):
@@ -140,6 +150,22 @@ class AuxiliaryOutcomeTests(unittest.TestCase):
             for row in subset:
                 scenario = row["metadata"]["scenario_family"]
                 self.assertEqual(owner.setdefault(scenario, split), split)
+
+    def test_audit_rejects_exact_user_trajectory_across_independent_groups(self):
+        one = build_auxiliary_record(source("dup-a", label=0, scenario="group-a"))
+        two = build_auxiliary_record(source("dup-b", label=0, scenario="group-b"))
+        two["turns"] = copy.deepcopy(one["turns"])
+        from prepare_frontier_auxiliary import user_trajectory_hash
+        two["metadata"]["normalized_user_trajectory_hash"] = user_trajectory_hash(two)
+        with self.assertRaisesRegex(RuntimeError, "independent scenario groups"):
+            audit([one, two])
+
+    def test_recomputed_status_rejects_inconsistent_stored_b2_status(self):
+        row = source("bad-status", label=1)
+        row["frontier_behavioral_validation"]["trajectory"][0]["unsafe_score"] = 0.9
+        row["frontier_behavioral_validation"]["max_unsafe_score"] = 0.9
+        with self.assertRaisesRegex(RuntimeError, "does not recompute"):
+            build_auxiliary_record(row)
 
     def test_audit_rejects_nonzero_localization_weight(self):
         row = build_auxiliary_record(source("bad-weight", label=0))

@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 
 from frontier_common import load_jsonl
 from prepare_frontier_dataset import assert_expected_provenance
+from semantic_span_policy import ADJUDICATION_VERSION, is_construction_language_supported_span
 
 SUPPORTED = {"supported_strong", "supported_weak"}
 EXPECTED_WEIGHTS = {
@@ -199,13 +200,29 @@ def main() -> None:
 
                 if status in SUPPORTED:
                     reconstructed_turns.add(tid)
-                    strong_span = strong_span or status == "supported_strong"
-                    weak_span = weak_span or status == "supported_weak"
-                    if span.get("causal_type") != "causal":
-                        errors.append(f"{cid}: supported span not causal")
-                    expected_span_tier = "cf_strong" if status == "supported_strong" else "cf_weak"
-                    if span.get("supervision_tier") != expected_span_tier:
-                        errors.append(f"{cid}: supported span supervision tier disagrees with status")
+                    semantic_masked = span.get("semantic_token_supervision_ignore") is True
+                    should_be_semantically_masked = is_construction_language_supported_span(span)
+                    if semantic_masked != should_be_semantically_masked:
+                        errors.append(
+                            f"{cid}: supported construction-language span semantic mask mismatch"
+                        )
+
+                    if semantic_masked:
+                        if span.get("semantic_adjudication") != ADJUDICATION_VERSION:
+                            errors.append(f"{cid}: semantic mask has unexpected adjudication version")
+                        if span.get("causal_type") != "unvalidated":
+                            errors.append(f"{cid}: semantically masked span remains causal")
+                        if span.get("supervision_tier") != "ignore":
+                            errors.append(f"{cid}: semantically masked span remains supervised")
+                    else:
+                        strong_span = strong_span or status == "supported_strong"
+                        weak_span = weak_span or status == "supported_weak"
+                        if span.get("causal_type") != "causal":
+                            errors.append(f"{cid}: supported span not causal")
+                        expected_span_tier = "cf_strong" if status == "supported_strong" else "cf_weak"
+                        if span.get("supervision_tier") != expected_span_tier:
+                            errors.append(f"{cid}: supported span supervision tier disagrees with status")
+
                     if not is_number(delta):
                         errors.append(f"{cid}: supported span has nonnumeric delta")
                     elif status == "supported_strong" and float(delta) < strong_thr:
@@ -280,6 +297,12 @@ def main() -> None:
                 errors.append(f"{cid}: benign evidence analysis must be not_applicable")
             for _, turn, span in all_spans_with_turn(r):
                 text = str(turn.get("text", ""))
+                if span.get("causal_type") != "incidental":
+                    errors.append(f"{cid}: benign prepared span is not incidental")
+                if span.get("supervision_tier") != "incidental":
+                    errors.append(f"{cid}: benign prepared span tier is not incidental")
+                if span.get("counterfactual_delta") is not None:
+                    errors.append(f"{cid}: benign prepared span retains counterfactual delta")
                 start, end = span.get("char_start"), span.get("char_end")
                 span_text = str(span.get("text", ""))
                 if isinstance(start, int) and isinstance(end, int) and span_text:

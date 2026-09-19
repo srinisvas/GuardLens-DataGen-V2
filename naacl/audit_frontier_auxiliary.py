@@ -11,13 +11,22 @@ from frontier_common import load_jsonl
 from prepare_frontier_auxiliary import (
     AUXILIARY_SOURCE,
     AUXILIARY_WEIGHT,
+    DEFAULT_JUDGE,
+    DEFAULT_TARGET,
+    assert_auxiliary_source_provenance,
     assert_expected_full_export_counts,
     detection_label_for_rejected,
     user_trajectory_hash,
 )
 
 
-def audit_record(record: Dict) -> None:
+def audit_record(
+    record: Dict,
+    *,
+    validate_provenance: bool = False,
+    expected_target: str = DEFAULT_TARGET,
+    expected_judge: str = DEFAULT_JUDGE,
+) -> None:
     cid = str(record.get("conversation_id", ""))
     if not cid:
         raise RuntimeError("auxiliary record missing conversation_id")
@@ -25,9 +34,17 @@ def audit_record(record: Dict) -> None:
         raise RuntimeError(f"{cid}: unexpected corpus_source {record.get('corpus_source')!r}")
     if record.get("validation_status") != "rejected":
         raise RuntimeError(f"{cid}: auxiliary record is not B2-rejected")
+    if validate_provenance:
+        assert_auxiliary_source_provenance(
+            record,
+            expected_target=expected_target,
+            expected_judge=expected_judge,
+        )
     expected = detection_label_for_rejected(record)
     if record.get("detection_label") != expected:
         raise RuntimeError(f"{cid}: detection_label does not match realized B2 outcome")
+    if record.get("observed_behavior_label") != expected:
+        raise RuntimeError(f"{cid}: observed_behavior_label does not match realized B2 outcome")
     if record.get("authoring_intent_label") != record.get("label"):
         raise RuntimeError(f"{cid}: authoring label provenance changed")
     if record.get("training_eligible") is not True or record.get("auxiliary_detection_only") is not True:
@@ -62,18 +79,43 @@ def audit_record(record: Dict) -> None:
         raise RuntimeError(f"{cid}: normalized user-trajectory hash mismatch")
 
 
-def audit(records: Iterable[Dict], *, expect_full_review_export: bool = False) -> Dict:
+def audit(
+    records: Iterable[Dict],
+    *,
+    expect_full_review_export: bool = False,
+    validate_provenance: bool = False,
+    expected_target: str = DEFAULT_TARGET,
+    expected_judge: str = DEFAULT_JUDGE,
+) -> Dict:
     rows: List[Dict] = list(records)
     ids = set()
     groups = defaultdict(set)
+    hash_groups = defaultdict(set)
     for record in rows:
-        audit_record(record)
+        audit_record(
+            record,
+            validate_provenance=validate_provenance,
+            expected_target=expected_target,
+            expected_judge=expected_judge,
+        )
         cid = str(record["conversation_id"])
         if cid in ids:
             raise RuntimeError(f"duplicate auxiliary conversation_id: {cid}")
         ids.add(cid)
-        groups[record["metadata"]["consolidated_split_group"]].add(
-            int(record["detection_label"])
+        group = record["metadata"]["consolidated_split_group"]
+        groups[group].add(int(record["detection_label"]))
+        trajectory_hash = record["metadata"]["normalized_user_trajectory_hash"]
+        hash_groups[trajectory_hash].add(group)
+
+    cross_group_hashes = [
+        trajectory_hash
+        for trajectory_hash, owners in hash_groups.items()
+        if len(owners) > 1
+    ]
+    if cross_group_hashes:
+        raise RuntimeError(
+            "exact normalized auxiliary user trajectories occur across independent "
+            f"scenario groups: {cross_group_hashes[:10]}"
         )
     if expect_full_review_export:
         assert_expected_full_export_counts(rows)
@@ -92,10 +134,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--expect-full-review-export", action="store_true")
+    parser.add_argument("--expected-target-model", default=DEFAULT_TARGET)
+    parser.add_argument("--expected-judge-model", default=DEFAULT_JUDGE)
     args = parser.parse_args()
     report = audit(
         load_jsonl(args.input),
         expect_full_review_export=args.expect_full_review_export,
+        validate_provenance=True,
+        expected_target=args.expected_target_model,
+        expected_judge=args.expected_judge_model,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
 

@@ -32,20 +32,26 @@ def source(cid, *, label, scenario):
         "frontier_behavioral_validation": {
             "status": "rejected",
             "unsafe_threshold": 0.5,
+            "ambiguous_threshold": 0.35,
             "min_confidence_threshold": 0.55,
             "max_unsafe_score": unsafe,
             "max_risk_confidence": 0.9,
             "uncertain_risk": False,
+            "near_boundary": False,
+            "trajectory": [{"unsafe_score": unsafe, "confidence": 0.9}],
         },
     }
 
 
-def primary(cid, group):
+def primary(cid, group, trajectory_hash=None):
     return {
         "conversation_id": cid,
         "label": 0,
         "training_eligible": True,
-        "metadata": {"consolidated_split_group": group},
+        "metadata": {
+            "consolidated_split_group": group,
+            "normalized_user_trajectory_hash": trajectory_hash or f"hash::{cid}",
+        },
         "turns": [{"turn_id": 0, "role": "user", "text": cid}],
     }
 
@@ -74,6 +80,28 @@ class AttachTrainingAuxiliaryTests(unittest.TestCase):
         self.assertEqual(stats["auxiliary_disposition"]["withheld_primary_dev_family"], 1)
         self.assertEqual(stats["auxiliary_disposition"]["withheld_primary_test_family"], 1)
         self.assertTrue(stats["dev_test_primary_only"])
+
+    def test_auxiliary_exact_user_trajectory_owned_by_eval_is_withheld(self):
+        train = [primary("p-train", "frontier::train-family")]
+        aux = build_auxiliary_record(source("a-other-family", label=0, scenario="other-family"))
+        shared_hash = aux["metadata"]["normalized_user_trajectory_hash"]
+        dev = [
+            primary(
+                "p-dev",
+                "frontier::dev-family",
+                trajectory_hash=shared_hash,
+            )
+        ]
+
+        splits, stats = attach_training_auxiliary(train, dev, [], [aux])
+        self.assertEqual(
+            {r["conversation_id"] for r in splits["train"]},
+            {"p-train"},
+        )
+        self.assertEqual(
+            stats["auxiliary_disposition"]["withheld_primary_dev_exact_user_trajectory"],
+            1,
+        )
 
     def test_primary_group_leakage_fails_closed(self):
         train = [primary("p1", "frontier::same")]

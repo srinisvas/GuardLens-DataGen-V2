@@ -39,36 +39,53 @@ def raw_flagged_map(records: Iterable[Dict]) -> Dict[Tuple, str]:
     return result
 
 
-def prepared_masked_map(records: Iterable[Dict]) -> Dict[Tuple, str]:
-    result = {}
+def prepared_span_maps(records: Iterable[Dict]) -> Tuple[Dict[Tuple, str], set]:
+    masked = {}
+    all_keys = set()
     for record in records:
         for turn in record.get("turns", []) or []:
             for span in turn.get("span_annotations", []) or []:
+                key = span_key(record, turn, span)
+                if key in all_keys:
+                    raise RuntimeError(f"duplicate prepared span key: {key}")
+                all_keys.add(key)
                 if span.get("semantic_adjudication") != ADJUDICATION_VERSION:
                     continue
-                key = span_key(record, turn, span)
-                if key in result:
+                if key in masked:
                     raise RuntimeError(f"duplicate prepared masked span key: {key}")
                 if span.get("semantic_token_supervision_ignore") is not True:
                     raise RuntimeError(f"{key}: semantic token ignore flag missing")
                 if span.get("supervision_tier") != "ignore":
                     raise RuntimeError(f"{key}: masked span still has positive supervision tier")
+                if span.get("causal_type") != "unvalidated":
+                    raise RuntimeError(f"{key}: masked span still has causal attribution type")
                 status = str(span.get("evidence_status", ""))
                 if status not in SUPPORTED_STATUSES:
                     raise RuntimeError(f"{key}: raw supported evidence status was rewritten")
-                result[key] = status
-    return result
+                masked[key] = status
+    return masked, all_keys
 
 
 def audit(raw_records, prepared_records, *, enforce_reviewed_counts=False) -> Dict:
     raw = raw_flagged_map(raw_records)
-    prepared = prepared_masked_map(prepared_records)
+    prepared, prepared_all_keys = prepared_span_maps(prepared_records)
+    expected_in_primary = {
+        key: status for key, status in raw.items() if key in prepared_all_keys
+    }
 
     for key, status in prepared.items():
         if key not in raw:
             raise RuntimeError(f"prepared semantic mask has no matching raw reviewed span: {key}")
         if raw[key] != status:
             raise RuntimeError(f"prepared mask changed raw evidence status for {key}")
+
+    if prepared != expected_in_primary:
+        missing = sorted(set(expected_in_primary) - set(prepared))
+        unexpected = sorted(set(prepared) - set(expected_in_primary))
+        raise RuntimeError(
+            "semantic masking is incomplete for reviewed spans retained in primary; "
+            f"missing={missing[:10]} unexpected={unexpected[:10]}"
+        )
 
     masked_records = {key[0] for key in prepared}
     if enforce_reviewed_counts:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from collections import Counter
 from typing import Dict, Iterable, List, Tuple
 
@@ -33,6 +34,7 @@ def index_primary_splits(
     train: List[Dict], dev: List[Dict], test: List[Dict]
 ) -> Tuple[Dict[str, str], set]:
     owners: Dict[str, str] = {}
+    hash_owners: Dict[str, str] = {}
     ids = set()
     for split_name, records in (("train", train), ("dev", dev), ("test", test)):
         for record in records:
@@ -48,7 +50,25 @@ def index_primary_splits(
                 raise RuntimeError(
                     f"primary split-group leakage: {group} appears in {previous} and {split_name}"
                 )
-    return owners, ids
+
+            trajectory_hash = str(
+                (record.get("metadata", {}) or {}).get(
+                    "normalized_user_trajectory_hash", ""
+                )
+            ).strip()
+            if not trajectory_hash:
+                raise RuntimeError(
+                    f"{cid}: primary record missing normalized_user_trajectory_hash"
+                )
+            previous_hash_owner = hash_owners.setdefault(
+                trajectory_hash, split_name
+            )
+            if previous_hash_owner != split_name:
+                raise RuntimeError(
+                    "primary exact user-trajectory leakage: hash appears in "
+                    f"{previous_hash_owner} and {split_name}"
+                )
+    return owners, hash_owners, ids
 
 
 def attach_training_auxiliary(
@@ -57,7 +77,7 @@ def attach_training_auxiliary(
     test: List[Dict],
     auxiliary: Iterable[Dict],
 ):
-    owners, primary_ids = index_primary_splits(train, dev, test)
+    owners, hash_owners, primary_ids = index_primary_splits(train, dev, test)
     output_train = list(train)
     seen_ids = set(primary_ids)
     disposition = Counter()
@@ -73,8 +93,17 @@ def attach_training_auxiliary(
 
         group = split_group(record)
         owner = owners.get(group)
+        trajectory_hash = str(
+            (record.get("metadata", {}) or {}).get(
+                "normalized_user_trajectory_hash", ""
+            )
+        ).strip()
+        hash_owner = hash_owners.get(trajectory_hash)
         if owner in {"dev", "test"}:
             disposition[f"withheld_primary_{owner}_family"] += 1
+            continue
+        if hash_owner in {"dev", "test"}:
+            disposition[f"withheld_primary_{hash_owner}_exact_user_trajectory"] += 1
             continue
 
         output_train.append(record)
@@ -102,10 +131,11 @@ def attach_training_auxiliary(
         "auxiliary_included_groups": len(included_groups),
         "auxiliary_disposition": dict(sorted(disposition.items())),
         "policy": (
-            "freeze primary split; add auxiliary only to train when group owner is train "
-            "or absent from primary; withhold auxiliary families owned by primary dev/test"
+            "freeze primary split; add auxiliary only to train when scenario-family and "
+            "exact-user-trajectory ownership do not belong to primary dev/test"
         ),
         "dev_test_primary_only": True,
+        "dev_test_copy_policy": "byte_for_byte_from_frozen_primary_inputs",
     }
 
 
@@ -127,8 +157,9 @@ def main() -> None:
         primary_train, primary_dev, primary_test, auxiliary
     )
     os.makedirs(args.output_dir, exist_ok=True)
-    for name in SPLITS:
-        write_jsonl(splits[name], os.path.join(args.output_dir, f"{name}.jsonl"))
+    write_jsonl(splits["train"], os.path.join(args.output_dir, "train.jsonl"))
+    shutil.copyfile(args.primary_dev, os.path.join(args.output_dir, "dev.jsonl"))
+    shutil.copyfile(args.primary_test, os.path.join(args.output_dir, "test.jsonl"))
     with open(
         os.path.join(args.output_dir, "auxiliary_attachment_metadata.json"),
         "w",

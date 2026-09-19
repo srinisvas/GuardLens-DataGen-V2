@@ -16,8 +16,11 @@ The rejected set contains two useful behavioral outcomes:
 - 322 malicious-authored trajectories where Qwen safely resisted the attack.
   These receive `detection_label=0`.
 
-The original `label` is retained as `authoring_intent_label`. The training label
-for this optional task is `detection_label`, not the authoring label.
+The original `label` is retained as `authoring_intent_label`. The realized
+outcome is stored explicitly as `observed_behavior_label`, with
+`detection_label` as the task-facing alias. For these auxiliary records the two
+fields are identical and are independently audited against the frozen B2
+trajectory decision.
 
 These examples are **detection-only**. They must not provide token, span, pivot,
 or counterfactual localization supervision. The preparation code therefore sets:
@@ -72,7 +75,8 @@ python naacl/prepare_frontier_dataset.py \
   --output "$WORK/dataset_b_primary.jsonl" \
   --benign-stress-output "$WORK/dataset_b_benign_stress.jsonl" \
   --excluded-output "$WORK/dataset_b_excluded.jsonl" \
-  --stats-output "$WORK/dataset_b_primary.stats.json"
+  --stats-output "$WORK/dataset_b_primary.stats.json" \
+  --expect-full-review-export
 
 python naacl/audit_frontier_dataset.py --input "$WORK/dataset_b_primary.jsonl"
 python naacl/audit_frontier_stress.py --input "$WORK/dataset_b_benign_stress.jsonl"
@@ -98,7 +102,8 @@ python naacl/merge_training_corpora.py \
   --legacy-input results-naacl/naacl_legacy_prepared.jsonl \
   --frontier-input "$WORK/dataset_b_primary.jsonl" \
   --output "$WORK/dataset_ab_primary.jsonl" \
-  --stats-output "$WORK/dataset_ab_primary.stats.json"
+  --stats-output "$WORK/dataset_ab_primary.stats.json" \
+  --expect-final-naacl-counts
 ```
 
 The merge remains fail-closed for duplicate conversation IDs and exact normalized
@@ -141,6 +146,47 @@ comparable with the primary baseline while preventing scenario-family leakage.
 `split_consolidated.py --auxiliary-input` remains available for diagnostics, but
 it is not the recommended ablation path because a joint re-split can alter
 primary partition assignments and can put auxiliary examples into dev/test.
+
+
+## Final data-preparation freeze audit
+
+After the primary split and optional train-only auxiliary attachment are written,
+run the model-independent final audit before treating any artifact as frozen:
+
+```bash
+python naacl/audit_final_data_prep.py \
+  --legacy-input results-new/naacl_legacy_prepared.jsonl \
+  --frontier-primary "$WORK/dataset_b_primary.jsonl" \
+  --merged-input "$WORK/dataset_ab_primary.jsonl" \
+  --primary-split-dir "$WORK/splits_primary" \
+  --auxiliary-input "$WORK/dataset_b_auxiliary_512.jsonl" \
+  --auxiliary-candidate-split-dir "$WORK/splits_primary_plus_train_auxiliary" \
+  --expect-final-naacl-counts
+```
+
+A pass requires all of the following:
+
+- Dataset A has 1,052 records.
+- Primary Dataset B has 1,402 records, or 701 complete pairs.
+- The merged primary corpus has 2,454 records and 1,227 examples per class.
+- Each source is label-balanced and has identical class-conditional user-turn
+  and total-turn histograms.
+- Stored normalized user-trajectory hashes recompute exactly.
+- The primary train/dev/test files form an exact, disjoint partition with no
+  group, pair, scenario-family, or exact-user-trajectory leakage.
+- No internal conversation/pair identifier appears in model-visible text.
+- The auxiliary artifact is exactly 512 records with 190 unsafe outcomes and
+  322 safe outcomes, and its B2/B4 protocol provenance re-audits successfully.
+- The auxiliary candidate contains auxiliary records only in train.
+- Auxiliary train records cannot duplicate a primary dev/test user trajectory,
+  even under a different scenario-family identifier.
+- Candidate dev and test are byte-identical copies of the frozen primary
+  dev/test files.
+
+The final report also records where the reviewed construction-language phrases
+remain visible in conversation text by source and class. This is diagnostic,
+because those phrases are intentionally preserved in the raw conversation while
+their adjudicated spans are removed from positive token supervision.
 
 ## Trainer integration gate
 

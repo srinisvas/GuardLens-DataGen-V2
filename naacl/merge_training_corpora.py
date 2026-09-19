@@ -22,6 +22,10 @@ from prepare_frontier_dataset import assert_expected_provenance
 
 DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
 DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+EXPECTED_LEGACY_RECORDS = 1052
+EXPECTED_FRONTIER_RECORDS = 1402
+EXPECTED_COMBINED_RECORDS = 2454
+EXPECTED_COMBINED_PER_LABEL = 1227
 
 
 def user_trajectory_hash(record: Dict) -> str:
@@ -32,6 +36,44 @@ def user_trajectory_hash(record: Dict) -> str:
     ]
     normalized = "\n<USER_TURN>\n".join(" ".join(x.split()) for x in texts)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def n_user_turns(record: Dict) -> int:
+    return sum(
+        str(t.get("role", "")).lower() == "user"
+        for t in record.get("turns", [])
+    )
+
+
+def n_total_turns(record: Dict) -> int:
+    return len(record.get("turns", []))
+
+
+def assert_source_shortcut_invariants(records, source: str) -> None:
+    rows = [r for r in records if r.get("corpus_source") == source]
+    labels = Counter(r.get("label") for r in rows)
+    if labels.get(0, 0) != labels.get(1, 0):
+        raise RuntimeError(
+            f"{source}: source itself is label-predictive because label counts differ: {dict(labels)}"
+        )
+    user_hist = {
+        label: Counter(n_user_turns(r) for r in rows if r.get("label") == label)
+        for label in (0, 1)
+    }
+    total_hist = {
+        label: Counter(n_total_turns(r) for r in rows if r.get("label") == label)
+        for label in (0, 1)
+    }
+    if user_hist[0] != user_hist[1]:
+        raise RuntimeError(
+            f"{source}: class-conditional user-turn histograms differ: "
+            f"benign={dict(user_hist[0])} malicious={dict(user_hist[1])}"
+        )
+    if total_hist[0] != total_hist[1]:
+        raise RuntimeError(
+            f"{source}: class-conditional total-turn histograms differ: "
+            f"benign={dict(total_hist[0])} malicious={dict(total_hist[1])}"
+        )
 
 
 def canonicalize(
@@ -107,6 +149,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--expected-frontier-target-model", default=DEFAULT_TARGET)
     parser.add_argument("--expected-frontier-judge-model", default=DEFAULT_JUDGE)
+    parser.add_argument(
+        "--expect-final-naacl-counts",
+        action="store_true",
+        help="Require A=1,052, B=1,402, merged=2,454 and 1,227 records per label.",
+    )
     args = parser.parse_args()
 
     legacy = [
@@ -128,6 +175,32 @@ def main() -> None:
         for r in load_jsonl(args.frontier_input)
     ]
     combined = legacy + frontier
+
+    if args.expect_final_naacl_counts:
+        if len(legacy) != EXPECTED_LEGACY_RECORDS:
+            raise RuntimeError(
+                f"expected {EXPECTED_LEGACY_RECORDS} legacy records, found {len(legacy)}"
+            )
+        if len(frontier) != EXPECTED_FRONTIER_RECORDS:
+            raise RuntimeError(
+                f"expected {EXPECTED_FRONTIER_RECORDS} frontier records, found {len(frontier)}"
+            )
+        if len(combined) != EXPECTED_COMBINED_RECORDS:
+            raise RuntimeError(
+                f"expected {EXPECTED_COMBINED_RECORDS} merged records, found {len(combined)}"
+            )
+        expected_labels = Counter(
+            {0: EXPECTED_COMBINED_PER_LABEL, 1: EXPECTED_COMBINED_PER_LABEL}
+        )
+        observed_labels = Counter(r.get("label") for r in combined)
+        if observed_labels != expected_labels:
+            raise RuntimeError(
+                f"unexpected merged label counts {dict(observed_labels)}; "
+                f"expected {dict(expected_labels)}"
+            )
+
+    assert_source_shortcut_invariants(combined, "legacy_repaired")
+    assert_source_shortcut_invariants(combined, "frontier_authored_v3")
 
     ids = [str(r.get("conversation_id", "")) for r in combined]
     duplicates = [cid for cid, n in Counter(ids).items() if n > 1]
@@ -173,6 +246,11 @@ def main() -> None:
         "expected_frontier_target_model": args.expected_frontier_target_model,
         "expected_frontier_judge_model": args.expected_frontier_judge_model,
         "frontier_protocol_chain_rechecked": True,
+        "source_shortcut_checks": {
+            "per_source_label_balance": "passed",
+            "per_source_user_turn_histogram_match": "passed",
+            "per_source_total_turn_histogram_match": "passed",
+        },
         "policy": "merge canonical records first; perform a single group-aware split afterward",
     }
     os.makedirs(os.path.dirname(args.stats_output) or ".", exist_ok=True)

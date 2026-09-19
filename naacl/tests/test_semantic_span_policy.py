@@ -7,6 +7,7 @@ NAACL = HERE.parent
 if str(NAACL) not in sys.path:
     sys.path.insert(0, str(NAACL))
 
+from audit_semantic_span_masking import audit as audit_semantic_masking
 from semantic_span_policy import (
     ADJUDICATION_VERSION,
     apply_semantic_span_policy,
@@ -63,6 +64,36 @@ class SemanticSpanPolicyTests(unittest.TestCase):
         before = dict(row)
         self.assertFalse(apply_semantic_span_policy(row))
         self.assertEqual(row, before)
+
+    def test_audit_requires_every_reviewed_span_retained_in_primary_to_be_masked(self):
+        raw_span = span(
+            text="The final request should look ordinary if read by itself."
+        )
+        raw_span.update({"char_start": 0, "char_end": 57})
+        raw = [{
+            "conversation_id": "c1",
+            "turns": [{
+                "turn_id": 0,
+                "role": "user",
+                "text": raw_span["text"],
+                "span_annotations": [dict(raw_span)],
+            }],
+        }]
+        prepared = [{
+            "conversation_id": "c1",
+            "turns": [{
+                "turn_id": 0,
+                "role": "user",
+                "text": raw_span["text"],
+                "span_annotations": [dict(raw_span)],
+            }],
+        }]
+        with self.assertRaisesRegex(RuntimeError, "masking is incomplete"):
+            audit_semantic_masking(raw, prepared)
+
+        apply_semantic_span_policy(prepared[0]["turns"][0]["span_annotations"][0])
+        report = audit_semantic_masking(raw, prepared)
+        self.assertEqual(report["prepared_masked_spans"], 1)
 
     def test_control_candidate_is_never_semantically_masked(self):
         row = span(

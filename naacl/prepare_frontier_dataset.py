@@ -47,6 +47,9 @@ EXPECTED_TARGET_MAX_TOKENS = DEFAULT_TARGET_MAX_TOKENS
 EXPECTED_ROLLOUT_TARGET_MAX_MODEL_LEN = DEFAULT_TARGET_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_MODEL_LEN = DEFAULT_JUDGE_MAX_MODEL_LEN
 EXPECTED_JUDGE_MAX_CONTEXT_CHARS = DEFAULT_JUDGE_MAX_CONTEXT_CHARS
+EXPECTED_FULL_REVIEW_RECORDS = 2999
+EXPECTED_PRIMARY_PAIRS = 701
+EXPECTED_PRIMARY_RECORDS = 1402
 
 
 def protocol_summary(records, field):
@@ -273,11 +276,23 @@ def main() -> None:
     parser.add_argument("--stats-output", required=True)
     parser.add_argument("--expected-target-model", default=DEFAULT_TARGET)
     parser.add_argument("--expected-judge-model", default=DEFAULT_JUDGE)
+    parser.add_argument(
+        "--expect-full-review-export",
+        action="store_true",
+        help=(
+            "Require the frozen 2,999-record review export and the audited "
+            "701 retained pairs / 1,402 primary records."
+        ),
+    )
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
     if not records:
         raise RuntimeError("input evidence dataset is empty")
+    if args.expect_full_review_export and len(records) != EXPECTED_FULL_REVIEW_RECORDS:
+        raise RuntimeError(
+            f"expected {EXPECTED_FULL_REVIEW_RECORDS} reviewed B4 records, found {len(records)}"
+        )
     evidence_target_contexts = {
         evidence_target_max_model_len(record) for record in records
     }
@@ -368,6 +383,20 @@ def main() -> None:
             excluded.append(excluded_copy(record, f"standalone benign stress validation failed: {exc}"))
 
     labels = Counter(r.get("label") for r in prepared)
+    if args.expect_full_review_export:
+        if retained_pairs != EXPECTED_PRIMARY_PAIRS:
+            raise RuntimeError(
+                f"expected {EXPECTED_PRIMARY_PAIRS} retained complete pairs, found {retained_pairs}"
+            )
+        if len(prepared) != EXPECTED_PRIMARY_RECORDS:
+            raise RuntimeError(
+                f"expected {EXPECTED_PRIMARY_RECORDS} primary records, found {len(prepared)}"
+            )
+        expected_labels = Counter({0: EXPECTED_PRIMARY_PAIRS, 1: EXPECTED_PRIMARY_PAIRS})
+        if labels != expected_labels:
+            raise RuntimeError(
+                f"unexpected primary label counts {dict(labels)}; expected {dict(expected_labels)}"
+            )
     if labels.get(0, 0) != labels.get(1, 0):
         raise RuntimeError(f"pair-complete primary corpus is not label-balanced: {dict(labels)}")
     mal_hist = Counter(user_turn_count(r) for r in prepared if r.get("label") == 1)

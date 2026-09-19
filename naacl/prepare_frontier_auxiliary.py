@@ -24,10 +24,19 @@ import random
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Tuple
 
-from frontier_common import load_jsonl, write_jsonl
+from audit_frontier_evidence import audit_record as audit_b4_record
+from frontier_common import (
+    DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    DEFAULT_JUDGE_MAX_MODEL_LEN,
+    DEFAULT_TARGET_MAX_TOKENS,
+    load_jsonl,
+    write_jsonl,
+)
 
 AUXILIARY_SOURCE = "frontier_authored_v3_auxiliary"
 AUXILIARY_WEIGHT = 0.25
+DEFAULT_TARGET = "Qwen/Qwen2.5-32B-Instruct"
+DEFAULT_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 EXPECTED_REJECTED = 512
 EXPECTED_UNSAFE_BENIGN_AUTHORED = 190
 EXPECTED_SAFE_MALICIOUS_AUTHORED = 322
@@ -53,13 +62,105 @@ def validation(record: Dict) -> Dict:
     return value
 
 
+def evidence_target_max_model_len(record: Dict) -> int:
+    cid = str(record.get("conversation_id", ""))
+    analysis = record.get("frontier_evidence_analysis", {}) or {}
+    try:
+        value = int(analysis["target_max_model_len"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{cid}: missing/invalid B4 target context envelope") from exc
+    if value not in {16384, 32768}:
+        raise RuntimeError(f"{cid}: unsupported B4 target context envelope {value}")
+    return value
+
+
+def assert_auxiliary_source_provenance(
+    record: Dict,
+    *,
+    expected_target: str = DEFAULT_TARGET,
+    expected_judge: str = DEFAULT_JUDGE,
+) -> None:
+    audit_b4_record(
+        record,
+        target_model=expected_target,
+        judge_model=expected_judge,
+        max_tokens=DEFAULT_TARGET_MAX_TOKENS,
+        target_max_model_len=evidence_target_max_model_len(record),
+        judge_max_model_len=DEFAULT_JUDGE_MAX_MODEL_LEN,
+        judge_max_context_chars=DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
+    )
+
+
+def recompute_validation_status(record: Dict) -> str:
+    cid = str(record.get("conversation_id", ""))
+    label = record.get("label")
+    if label not in (0, 1):
+        raise RuntimeError(f"{cid}: unsupported source label {label!r}")
+    info = validation(record)
+    try:
+        unsafe_threshold = float(info["unsafe_threshold"])
+        ambiguous_threshold = float(info["ambiguous_threshold"])
+        min_confidence = float(info["min_confidence_threshold"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{cid}: missing B2 decision thresholds") from exc
+
+    trajectory = info.get("trajectory", []) or []
+    if not trajectory:
+        raise RuntimeError(f"{cid}: missing B2 validation trajectory")
+    try:
+        scores = [float(item["unsafe_score"]) for item in trajectory]
+        confidences = [float(item["confidence"]) for item in trajectory]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{cid}: invalid B2 trajectory score/confidence") from exc
+
+    raw_unsafe = [i for i, score in enumerate(scores) if score >= unsafe_threshold]
+    confident_unsafe = [
+        i for i in raw_unsafe if confidences[i] >= min_confidence
+    ]
+    near_boundary = any(
+        ambiguous_threshold <= score < unsafe_threshold for score in scores
+    )
+    max_index = max(range(len(scores)), key=scores.__getitem__)
+    uncertain_risk = (
+        bool(raw_unsafe) and not bool(confident_unsafe)
+    ) or confidences[max_index] < min_confidence
+
+    if bool(info.get("near_boundary", False)) != near_boundary:
+        raise RuntimeError(f"{cid}: stored B2 near_boundary disagrees with trajectory")
+    if bool(info.get("uncertain_risk", False)) != uncertain_risk:
+        raise RuntimeError(f"{cid}: stored B2 uncertain_risk disagrees with trajectory")
+
+    if label == 1:
+        expected = (
+            "validated"
+            if confident_unsafe
+            else "ambiguous"
+            if uncertain_risk or near_boundary
+            else "rejected"
+        )
+    else:
+        expected = (
+            "rejected"
+            if confident_unsafe
+            else "ambiguous"
+            if uncertain_risk or near_boundary
+            else "validated"
+        )
+    if info.get("status") != expected or record.get("validation_status") != expected:
+        raise RuntimeError(
+            f"{cid}: B2 status does not recompute from trajectory: "
+            f"stored={record.get('validation_status')!r} expected={expected!r}"
+        )
+    return expected
+
+
 def detection_label_for_rejected(record: Dict) -> int:
     """Return the behavior label implied by a rejected source-intent example."""
     label = record.get("label")
     if label not in (0, 1):
         raise RuntimeError(f"{record.get('conversation_id')}: unsupported source label {label!r}")
     info = validation(record)
-    if info.get("status") != "rejected":
+    if recompute_validation_status(record) != "rejected":
         raise RuntimeError(f"{record.get('conversation_id')}: auxiliary input is not B2-rejected")
 
     max_unsafe = info.get("max_unsafe_score")
@@ -116,6 +217,7 @@ def build_auxiliary_record(record: Dict) -> Dict | None:
     metadata["normalized_user_trajectory_hash"] = user_trajectory_hash(out)
 
     out["authoring_intent_label"] = authoring_label
+    out["observed_behavior_label"] = detection_label
     out["detection_label"] = detection_label
     out["corpus_source"] = AUXILIARY_SOURCE
     out["source_stage"] = "canonical_auxiliary_detection_record"
@@ -255,6 +357,8 @@ def main() -> None:
     parser.add_argument("--dev-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--expected-target-model", default=DEFAULT_TARGET)
+    parser.add_argument("--expected-judge-model", default=DEFAULT_JUDGE)
     parser.add_argument(
         "--expect-full-review-export",
         action="store_true",
@@ -266,7 +370,15 @@ def main() -> None:
     if abs(sum(fractions.values()) - 1.0) > 1e-8 or min(fractions.values()) <= 0:
         raise ValueError("train/dev/test fractions must be positive and sum to 1")
 
-    records = prepare_auxiliary(load_jsonl(args.input))
+    source_records = load_jsonl(args.input)
+    for record in source_records:
+        if record.get("validation_status") == "rejected":
+            assert_auxiliary_source_provenance(
+                record,
+                expected_target=args.expected_target_model,
+                expected_judge=args.expected_judge_model,
+            )
+    records = prepare_auxiliary(source_records)
     if args.expect_full_review_export:
         assert_expected_full_export_counts(records)
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
