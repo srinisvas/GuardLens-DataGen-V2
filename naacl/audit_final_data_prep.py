@@ -84,6 +84,32 @@ def audit_internal_identifier_leakage(records: Iterable[Dict]) -> None:
         )
 
 
+def audit_frontier_stress_contract(records: Iterable[Dict]) -> None:
+    for record in records:
+        cid = str(record.get("conversation_id", ""))
+        if record.get("label") != 0:
+            raise RuntimeError(f"frontier stress: {cid} is not benign")
+        if record.get("pair_id") not in (None, ""):
+            raise RuntimeError(f"frontier stress: {cid} unexpectedly has pair_id")
+        if record.get("training_eligible") is not False:
+            raise RuntimeError(f"frontier stress: {cid} is training eligible")
+        if record.get("primary_pair_complete") is not False:
+            raise RuntimeError(f"frontier stress: {cid} claims primary pair membership")
+        if record.get("use_as") != "benign_stress_evaluation_only":
+            raise RuntimeError(f"frontier stress: {cid} has unexpected use_as")
+
+
+def audit_frontier_excluded_contract(records: Iterable[Dict]) -> None:
+    for record in records:
+        cid = str(record.get("conversation_id", ""))
+        if record.get("training_eligible") is not False:
+            raise RuntimeError(f"frontier excluded: {cid} is training eligible")
+        if record.get("use_as") != "excluded_from_primary_frontier_corpus":
+            raise RuntimeError(f"frontier excluded: {cid} has unexpected use_as")
+        if not str(record.get("exclusion_reason", "")).strip():
+            raise RuntimeError(f"frontier excluded: {cid} lacks exclusion_reason")
+
+
 def construction_language_report(records: Iterable[Dict]) -> Dict:
     counts = Counter()
     examples = defaultdict(list)
@@ -149,6 +175,8 @@ def main() -> None:
     parser.add_argument("--review-manifest", required=True)
     parser.add_argument("--legacy-input", required=True)
     parser.add_argument("--frontier-primary", required=True)
+    parser.add_argument("--frontier-stress", required=True)
+    parser.add_argument("--frontier-excluded", required=True)
     parser.add_argument("--merged-input", required=True)
     parser.add_argument("--primary-split-dir", required=True)
     parser.add_argument("--auxiliary-input")
@@ -158,13 +186,41 @@ def main() -> None:
     args = parser.parse_args()
 
     review_report = audit_review_export(args.review_input, args.review_manifest)
+    raw_review = load_jsonl(args.review_input)
     legacy = load_jsonl(args.legacy_input)
     frontier = load_jsonl(args.frontier_primary)
+    frontier_stress = load_jsonl(args.frontier_stress)
+    frontier_excluded = load_jsonl(args.frontier_excluded)
     merged = load_jsonl(args.merged_input)
 
+    raw_review_ids = unique_ids(raw_review, "raw frontier review")
     legacy_ids = unique_ids(legacy, "legacy")
     frontier_ids = unique_ids(frontier, "frontier primary")
+    frontier_stress_ids = unique_ids(frontier_stress, "frontier stress")
+    frontier_excluded_ids = unique_ids(frontier_excluded, "frontier excluded")
     merged_ids = unique_ids(merged, "merged primary")
+
+    for left_name, left_ids, right_name, right_ids in (
+        ("primary", frontier_ids, "stress", frontier_stress_ids),
+        ("primary", frontier_ids, "excluded", frontier_excluded_ids),
+        ("stress", frontier_stress_ids, "excluded", frontier_excluded_ids),
+    ):
+        overlap = left_ids & right_ids
+        if overlap:
+            raise RuntimeError(
+                f"frontier preparation overlap between {left_name} and {right_name}: "
+                f"{sorted(overlap)[:10]}"
+            )
+    prepared_union = frontier_ids | frontier_stress_ids | frontier_excluded_ids
+    if prepared_union != raw_review_ids:
+        missing = sorted(raw_review_ids - prepared_union)
+        extra = sorted(prepared_union - raw_review_ids)
+        raise RuntimeError(
+            "frontier primary/stress/excluded do not exactly partition the raw review; "
+            f"missing={missing[:10]} extra={extra[:10]}"
+        )
+    audit_frontier_stress_contract(frontier_stress)
+    audit_frontier_excluded_contract(frontier_excluded)
 
     if legacy_ids & frontier_ids:
         raise RuntimeError(
@@ -226,6 +282,8 @@ def main() -> None:
             "review_manifest": file_sha256(args.review_manifest),
             "legacy_input": file_sha256(args.legacy_input),
             "frontier_primary": file_sha256(args.frontier_primary),
+            "frontier_stress": file_sha256(args.frontier_stress),
+            "frontier_excluded": file_sha256(args.frontier_excluded),
             "merged_input": file_sha256(args.merged_input),
             "primary_train": file_sha256(os.path.join(args.primary_split_dir, "train.jsonl")),
             "primary_dev": file_sha256(os.path.join(args.primary_split_dir, "dev.jsonl")),
@@ -234,6 +292,11 @@ def main() -> None:
         "counts": {
             "legacy": len(legacy),
             "frontier_primary": len(frontier),
+            "frontier_stress": len(frontier_stress),
+            "frontier_excluded": len(frontier_excluded),
+            "frontier_review_partition_total": (
+                len(frontier) + len(frontier_stress) + len(frontier_excluded)
+            ),
             "merged_primary": len(merged),
             "primary_splits": {
                 name: len(rows) for name, rows in primary_splits.items()
@@ -247,6 +310,9 @@ def main() -> None:
             "internal_identifier_leakage": "passed",
         },
         "construction_language_visibility": construction_language_report(merged),
+        "frontier_review_partition": "passed",
+        "frontier_stress_contract": "passed",
+        "frontier_excluded_contract": "passed",
         "primary_split_leakage": "passed",
     }
 

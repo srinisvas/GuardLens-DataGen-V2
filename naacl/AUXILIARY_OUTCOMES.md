@@ -166,6 +166,8 @@ python naacl/audit_final_data_prep.py \
   --review-manifest "$REVIEW_MANIFEST" \
   --legacy-input results-new/naacl_legacy_prepared.jsonl \
   --frontier-primary "$WORK/dataset_b_primary.jsonl" \
+  --frontier-stress "$WORK/dataset_b_benign_stress.jsonl" \
+  --frontier-excluded "$WORK/dataset_b_excluded.jsonl" \
   --merged-input "$WORK/dataset_ab_primary.jsonl" \
   --primary-split-dir "$WORK/splits_primary" \
   --auxiliary-input "$WORK/dataset_b_auxiliary_512.jsonl" \
@@ -178,6 +180,10 @@ A pass requires all of the following:
 
 - Dataset A has 1,052 records.
 - Primary Dataset B has 1,402 records, or 701 complete pairs.
+- Primary B, standalone benign stress, and excluded B artifacts are mutually
+  disjoint and together account for all 2,999 frozen review records exactly.
+- Every stress record is benign, evaluation-only, standalone, and non-trainable.
+- Every excluded record is explicitly non-trainable and carries an exclusion reason.
 - The merged primary corpus has 2,454 records and 1,227 examples per class.
 - Each source is label-balanced and has identical class-conditional user-turn
   and total-turn histograms.

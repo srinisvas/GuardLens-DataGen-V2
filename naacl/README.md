@@ -16,7 +16,7 @@ Branch `naacl-validity-repair-optimized` starts at `7e43efc6bd2cd836a1bac71dc4f7
 | Dataset assembly, CPU | `prepare_frontier_dataset.py`, `audit_frontier_dataset.py`, `audit_frontier_stress.py` | Current v3/v5/v6 provenance, original retention/sanitization rules |
 | Merge and split, CPU | `merge_training_corpora.py`, `split_consolidated.py`, `attach_training_auxiliary.py` | Grouped primary split, exact-hash leakage prevention, frozen eval partitions |
 | Raw review freeze, CPU | `audit_review_export.py` | Exact B4 review SHA-256, manifest, counts, missing-record contract |
-| Final data freeze, CPU | `audit_final_data_prep.py` | Counts, artifact hashes, membership, source/length shortcut controls, split isolation, auxiliary contract |
+| Final data freeze, CPU | `audit_final_data_prep.py` | Raw→primary/stress/excluded partition, artifact hashes, A+B membership, shortcut controls, split isolation, auxiliary contract |
 | Execution | `run_stage.py`, `execution.py`, `launch_job.py`, `launch_stage.sh` | Bounded queues, request recovery, supervised replicas |
 | Measurements | `probe_runtime.py`, `compare_outputs.py`, `report_performance.py` | Exact equality and measured performance |
 | Regression tests | `tests/` | Archived reference tests plus active executor tests |
