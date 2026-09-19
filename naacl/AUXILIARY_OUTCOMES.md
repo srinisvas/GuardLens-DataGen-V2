@@ -116,24 +116,31 @@ python naacl/split_consolidated.py \
 The split keeps legacy pairs together and keeps all members of a Dataset B
 `scenario_family` together.
 
-## Candidate joint primary + auxiliary split
+## Candidate auxiliary training attachment
 
-Do not independently split the primary and auxiliary corpora and then combine the
-partitions. A scenario family can occur in both. Instead use the joint mode so the
-shared `frontier::<scenario_family>` group is assigned once.
+For a clean baseline-versus-auxiliary ablation, freeze the primary A+B split
+first. Do **not** let auxiliary records change the dev/test composition or the
+primary group assignment. Attach auxiliary outcomes to training only:
 
 ```bash
-python naacl/split_consolidated.py \
-  --input "$WORK/dataset_ab_primary.jsonl" \
+python naacl/attach_training_auxiliary.py \
+  --primary-train "$WORK/splits_primary/train.jsonl" \
+  --primary-dev "$WORK/splits_primary/dev.jsonl" \
+  --primary-test "$WORK/splits_primary/test.jsonl" \
   --auxiliary-input "$WORK/dataset_b_auxiliary_512.jsonl" \
-  --output-dir "$WORK/splits_primary_plus_auxiliary" \
-  --seed 42
+  --output-dir "$WORK/splits_primary_plus_train_auxiliary"
 ```
 
-The splitter balances auxiliary examples using `detection_label`, while primary
-records continue to use `label`. It also checks that conversation IDs, split
-groups, normalized user-trajectory hashes, pair IDs, and frontier scenario
-families do not cross partitions.
+The attachment uses the already-frozen `consolidated_split_group` ownership.
+Auxiliary records whose family is owned by primary dev/test are withheld from
+training. Auxiliary records whose family is owned by primary train, or whose
+family is absent from the primary corpus, may enter training. Dev and test are
+copied unchanged and remain primary-only. This keeps held-out metrics directly
+comparable with the primary baseline while preventing scenario-family leakage.
+
+`split_consolidated.py --auxiliary-input` remains available for diagnostics, but
+it is not the recommended ablation path because a joint re-split can alter
+primary partition assignments and can put auxiliary examples into dev/test.
 
 ## Trainer integration gate
 
