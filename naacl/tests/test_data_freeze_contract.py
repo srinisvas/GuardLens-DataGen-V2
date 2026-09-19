@@ -15,9 +15,12 @@ if str(NAACL) not in sys.path:
 
 import audit_review_export as review_export
 from audit_final_data_prep import (
+    audit_casefold_trajectory_duplicates,
     audit_frontier_excluded_contract,
     audit_frontier_stress_contract,
+    casefold_user_trajectory_hash,
     expected_frontier_membership,
+    split_source_label_report,
 )
 from prepare_frontier_dataset import add_common_provenance
 
@@ -228,6 +231,52 @@ class FinalMembershipContractTests(unittest.TestCase):
         bad_excluded = dict(excluded, exclusion_reason="")
         with self.assertRaisesRegex(RuntimeError, "lacks exclusion_reason"):
             audit_frontier_excluded_contract([bad_excluded])
+
+    def test_casefold_duplicate_check_catches_trivial_cross_group_variation(self):
+        one = {
+            "conversation_id": "one",
+            "label": 0,
+            "corpus_source": "legacy_repaired",
+            "metadata": {"consolidated_split_group": "g1"},
+            "turns": [{"role": "user", "text": "Approve THIS request"}],
+        }
+        two = {
+            "conversation_id": "two",
+            "label": 1,
+            "corpus_source": "frontier_authored_v3",
+            "metadata": {"consolidated_split_group": "g2"},
+            "turns": [{"role": "user", "text": "  approve this   request "}],
+        }
+        self.assertEqual(
+            casefold_user_trajectory_hash(one),
+            casefold_user_trajectory_hash(two),
+        )
+        with self.assertRaisesRegex(RuntimeError, "casefold-normalized"):
+            audit_casefold_trajectory_duplicates([one, two])
+
+    def test_split_source_report_requires_both_labels_per_source(self):
+        good = {
+            "train": [
+                {"corpus_source": "legacy_repaired", "label": 0},
+                {"corpus_source": "legacy_repaired", "label": 1},
+                {"corpus_source": "frontier_authored_v3", "label": 0},
+                {"corpus_source": "frontier_authored_v3", "label": 1},
+            ]
+        }
+        report = split_source_label_report(good)
+        self.assertEqual(
+            report["train"]["legacy_repaired"]["absolute_share_gap"],
+            0.0,
+        )
+        bad = {
+            "train": [
+                {"corpus_source": "legacy_repaired", "label": 0},
+                {"corpus_source": "frontier_authored_v3", "label": 0},
+                {"corpus_source": "frontier_authored_v3", "label": 1},
+            ]
+        }
+        with self.assertRaisesRegex(RuntimeError, "missing labels"):
+            split_source_label_report(bad)
 
     def test_pair_role_is_explicit_in_canonical_frontier_records(self):
         malicious = add_common_provenance(

@@ -189,7 +189,11 @@ A pass requires all of the following:
 - The merged primary corpus has 2,454 records and 1,227 examples per class.
 - Each source is label-balanced and has identical class-conditional user-turn
   and total-turn histograms.
-- Stored normalized user-trajectory hashes recompute exactly.
+- Stored normalized user-trajectory hashes recompute exactly, and a second
+  NFKC/casefold-normalized trajectory check finds no duplicate user trajectory
+  crossing independent split groups.
+- Every train/dev/test partition contains both labels from both primary sources;
+  the freeze report records source shares by label for shortcut diagnostics.
 - The primary train/dev/test files form an exact, disjoint partition with no
   group, pair, scenario-family, or exact-user-trajectory leakage.
 - No internal conversation/pair identifier appears in model-visible text.

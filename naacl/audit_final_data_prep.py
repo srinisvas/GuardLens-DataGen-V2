@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import unicodedata
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List
 
@@ -62,6 +63,77 @@ def audit_hashes(records: Iterable[Dict], where: str) -> None:
         recomputed = user_trajectory_hash(record)
         if stored != recomputed:
             raise RuntimeError(f"{where}: {cid} normalized user-trajectory hash mismatch")
+
+
+def casefold_user_trajectory_hash(record: Dict) -> str:
+    texts = []
+    for turn in record.get("turns", []):
+        if str(turn.get("role", "")).lower() != "user":
+            continue
+        text = unicodedata.normalize("NFKC", str(turn.get("text", ""))).casefold()
+        texts.append(" ".join(text.split()))
+    normalized = "\n<USER_TURN>\n".join(texts)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def audit_casefold_trajectory_duplicates(records: Iterable[Dict]) -> None:
+    owners = defaultdict(set)
+    examples = defaultdict(list)
+    for record in records:
+        metadata = record.get("metadata", {}) or {}
+        group = str(metadata.get("consolidated_split_group", "")).strip()
+        if not group:
+            raise RuntimeError(
+                f"{record.get('conversation_id')}: missing consolidated_split_group"
+            )
+        digest = casefold_user_trajectory_hash(record)
+        owners[digest].add(group)
+        if len(examples[digest]) < 5:
+            examples[digest].append(str(record.get("conversation_id", "")))
+    collisions = [digest for digest, groups in owners.items() if len(groups) > 1]
+    if collisions:
+        sample = [
+            {
+                "hash": digest,
+                "groups": sorted(owners[digest]),
+                "conversation_ids": examples[digest],
+            }
+            for digest in collisions[:10]
+        ]
+        raise RuntimeError(
+            "NFKC/casefold-normalized user trajectories occur across independent "
+            f"split groups: {sample}"
+        )
+
+
+def split_source_label_report(splits: Dict[str, List[Dict]]) -> Dict:
+    report = {}
+    for split_name, records in splits.items():
+        counts = Counter(
+            (str(r.get("corpus_source", "unknown")), int(r.get("label")))
+            for r in records
+        )
+        sources = sorted({source for source, _ in counts})
+        for source in sources:
+            missing = [label for label in (0, 1) if counts[(source, label)] == 0]
+            if missing:
+                raise RuntimeError(
+                    f"{split_name}: source {source} is missing labels {missing}"
+                )
+        label_totals = Counter(int(r.get("label")) for r in records)
+        source_share_gap = {}
+        for source in sources:
+            benign_share = counts[(source, 0)] / max(1, label_totals[0])
+            malicious_share = counts[(source, 1)] / max(1, label_totals[1])
+            source_share_gap[source] = {
+                "label_0_count": counts[(source, 0)],
+                "label_1_count": counts[(source, 1)],
+                "p_source_given_label_0": benign_share,
+                "p_source_given_label_1": malicious_share,
+                "absolute_share_gap": abs(benign_share - malicious_share),
+            }
+        report[split_name] = source_share_gap
+    return report
 
 
 def audit_internal_identifier_leakage(records: Iterable[Dict]) -> None:
@@ -340,6 +412,7 @@ def main() -> None:
         )
 
     audit_hashes(merged, "merged primary")
+    audit_casefold_trajectory_duplicates(merged)
     assert_source_shortcut_invariants(merged, "legacy_repaired")
     assert_source_shortcut_invariants(merged, "frontier_authored_v3")
     audit_internal_identifier_leakage(merged)
@@ -350,6 +423,7 @@ def main() -> None:
         primary_splits,
         where="primary A+B split",
     )
+    split_source_labels = split_source_label_report(primary_splits)
 
     report = {
         "status": "passed",
@@ -384,7 +458,9 @@ def main() -> None:
             "per_source_label_balance": "passed",
             "per_source_user_turn_histogram_match": "passed",
             "per_source_total_turn_histogram_match": "passed",
+            "nfkc_casefold_exact_trajectory_duplicates_across_groups": 0,
             "internal_identifier_leakage": "passed",
+            "split_source_label_composition": split_source_labels,
         },
         "construction_language_visibility": construction_language_report(merged),
         "frontier_review_partition": "passed",
