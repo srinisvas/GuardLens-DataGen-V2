@@ -4,9 +4,9 @@
 The primary A+B train/dev/test assignment is authoritative. Auxiliary records are
 never added to dev/test. An auxiliary record may enter training only when its
 scenario-family split group is already owned by primary train or is absent from
-the primary corpus entirely. Auxiliary records whose family is owned by primary
-dev/test are withheld, preventing family leakage while keeping primary
-evaluation partitions byte-for-byte unchanged.
+the primary corpus entirely. Auxiliary records are also withheld when their
+exact normalized user trajectory is owned by primary dev/test, even if the
+scenario-family identifier differs. Primary dev/test are copied byte-for-byte.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def split_group(record: Dict) -> str:
 
 def index_primary_splits(
     train: List[Dict], dev: List[Dict], test: List[Dict]
-) -> Tuple[Dict[str, str], set]:
+) -> Tuple[Dict[str, str], Dict[str, str], set]:
     owners: Dict[str, str] = {}
     hash_owners: Dict[str, str] = {}
     ids = set()

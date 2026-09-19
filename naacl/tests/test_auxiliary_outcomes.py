@@ -96,9 +96,9 @@ class AuxiliaryOutcomeTests(unittest.TestCase):
         self.assertIsNone(build_auxiliary_record(source("validated", label=1, rejected=False, unsafe=0.8)))
 
     def test_fail_closed_if_rejection_does_not_match_realized_behavior(self):
-        with self.assertRaisesRegex(RuntimeError, "benign-authored rejection is not unsafe"):
+        with self.assertRaisesRegex(RuntimeError, "does not recompute"):
             build_auxiliary_record(source("bad-benign", label=0, unsafe=0.0))
-        with self.assertRaisesRegex(RuntimeError, "malicious-authored rejected record still qualifies unsafe"):
+        with self.assertRaisesRegex(RuntimeError, "does not recompute"):
             build_auxiliary_record(source("bad-mal", label=1, unsafe=0.9))
 
     def test_prepare_and_audit_preserve_detection_only_contract(self):

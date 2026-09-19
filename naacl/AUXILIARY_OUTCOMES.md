@@ -94,12 +94,12 @@ relax pair admission.
 ## Candidate A+B merge
 
 Dataset A is the repaired 1,052-record legacy primary corpus already tracked under
-`results-naacl/naacl_legacy_prepared.jsonl`. Merge only the clean primary Dataset B
+`results-new/naacl_legacy_prepared.jsonl`. Merge only the clean primary Dataset B
 output above. Do not append Dataset A's separate benign stress pool.
 
 ```bash
 python naacl/merge_training_corpora.py \
-  --legacy-input results-naacl/naacl_legacy_prepared.jsonl \
+  --legacy-input results-new/naacl_legacy_prepared.jsonl \
   --frontier-input "$WORK/dataset_b_primary.jsonl" \
   --output "$WORK/dataset_ab_primary.jsonl" \
   --stats-output "$WORK/dataset_ab_primary.stats.json" \
