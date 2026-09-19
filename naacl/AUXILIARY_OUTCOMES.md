@@ -76,6 +76,11 @@ python naacl/prepare_frontier_dataset.py \
 
 python naacl/audit_frontier_dataset.py --input "$WORK/dataset_b_primary.jsonl"
 python naacl/audit_frontier_stress.py --input "$WORK/dataset_b_benign_stress.jsonl"
+
+python naacl/audit_semantic_span_masking.py \
+  --raw-input "$REVIEW" \
+  --prepared-input "$WORK/dataset_b_primary.jsonl" \
+  --enforce-reviewed-counts
 ```
 
 For the audited review export, the expected primary result is 701 retained pairs,
@@ -147,10 +152,13 @@ actual trainer and require all of the following:
 7. Family-preserving split assignments are consumed as supplied, not re-split at
    the record level.
 
-The previous training concerns around v8 adapter semantics, legacy `max_turns=16`
-behavior, character clipping, and the 21 construction-language attribution spans
-remain training-integration work. They are not reasons to mutate the raw B4
-artifact or run another generation job.
+The 21 reviewed construction-language spans are now masked upstream from positive
+token supervision by `semantic_span_policy.py` while their raw B4 evidence status
+and counterfactual deltas remain intact. The trainer must consume the prepared
+`supervision_tier=ignore` / `semantic_token_supervision_ignore` state. The
+remaining training concerns around v8 adapter semantics, legacy `max_turns=16`
+behavior, and character clipping still block a training smoke. None of these
+requires mutating the raw B4 artifact or running another generation job.
 
 ## Scope
 

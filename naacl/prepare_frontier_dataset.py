@@ -18,6 +18,8 @@ from collections import Counter, defaultdict
 from typing import Dict, List
 
 from audit_frontier_evidence import audit_record as audit_b4_record
+from semantic_span_policy import apply_semantic_span_policy
+
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
     DEFAULT_JUDGE_MAX_MODEL_LEN,
@@ -132,6 +134,8 @@ def sanitize_malicious(
     has_weak = False
     for span in iter_spans(r):
         status = str(span.get("evidence_status", "unassessed"))
+        if apply_semantic_span_policy(span):
+            continue
         if status == "supported_strong":
             has_strong = True
             span["causal_type"] = "causal"
