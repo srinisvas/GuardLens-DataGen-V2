@@ -39,12 +39,19 @@ let the auxiliary examples contribute localization loss.
 
 ## Preparation and audit
 
-Use the raw 2,999-record B4 review export. Do not rewrite it in place.
+Use the raw 2,999-record B4 review export. Do not rewrite it in place. Verify its
+frozen byte hash and companion manifest before deriving either primary or
+auxiliary data.
 
 ```bash
 export REVIEW=results-naacl/review_b4_committed_2999.jsonl
+export REVIEW_MANIFEST=results-naacl/review_b4_committed_2999.jsonl.review_manifest.json
 export WORK=$HOME/staging/dataset_naacl/training_candidate
 mkdir -p "$WORK"
+
+python naacl/audit_review_export.py \
+  --input "$REVIEW" \
+  --manifest "$REVIEW_MANIFEST"
 
 python naacl/prepare_frontier_auxiliary.py \
   --input "$REVIEW" \
@@ -155,13 +162,16 @@ run the model-independent final audit before treating any artifact as frozen:
 
 ```bash
 python naacl/audit_final_data_prep.py \
+  --review-input "$REVIEW" \
+  --review-manifest "$REVIEW_MANIFEST" \
   --legacy-input results-new/naacl_legacy_prepared.jsonl \
   --frontier-primary "$WORK/dataset_b_primary.jsonl" \
   --merged-input "$WORK/dataset_ab_primary.jsonl" \
   --primary-split-dir "$WORK/splits_primary" \
   --auxiliary-input "$WORK/dataset_b_auxiliary_512.jsonl" \
   --auxiliary-candidate-split-dir "$WORK/splits_primary_plus_train_auxiliary" \
-  --expect-final-naacl-counts
+  --expect-final-naacl-counts \
+  --report-output "$WORK/data_prep_freeze_report.json"
 ```
 
 A pass requires all of the following:

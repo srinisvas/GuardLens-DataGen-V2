@@ -256,6 +256,13 @@ def describe(records: List[Dict]) -> Dict:
 def add_common_provenance(record: Dict) -> Dict:
     record["authoring_intent_label"] = record.get("label")
     record["corpus_source"] = "frontier_authored_v3"
+    if record.get("pair_id") not in (None, ""):
+        label = record.get("label")
+        if label not in (0, 1) or isinstance(label, bool):
+            raise ValueError(
+                f"{record.get('conversation_id')}: paired record has invalid label {label!r}"
+            )
+        record["pair_role"] = "malicious" if label == 1 else "benign"
     return record
 
 
@@ -320,6 +327,18 @@ def main() -> None:
         labels = Counter(r.get("label") for r in group)
         if len(group) != 2 or labels != Counter({0: 1, 1: 1}):
             reason = f"pair {pair_id} is structurally invalid: n={len(group)} labels={dict(labels)}"
+            excluded.extend(excluded_copy(r, reason) for r in group)
+            continue
+
+        scenarios = {
+            str((r.get("metadata", {}) or {}).get("scenario_family", "")).strip()
+            for r in group
+        }
+        if "" in scenarios or len(scenarios) != 1:
+            reason = (
+                f"pair {pair_id} has inconsistent scenario_family values: "
+                f"{sorted(scenarios)}"
+            )
             excluded.extend(excluded_copy(r, reason) for r in group)
             continue
 

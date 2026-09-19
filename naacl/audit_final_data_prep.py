@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from typing import Dict, Iterable, List
 
 from audit_frontier_auxiliary import audit as audit_auxiliary
+from audit_review_export import audit_review_export
 from frontier_common import load_jsonl
 from merge_training_corpora import (
     EXPECTED_COMBINED_PER_LABEL,
@@ -144,6 +145,8 @@ def assert_partition_exactly(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--review-input", required=True)
+    parser.add_argument("--review-manifest", required=True)
     parser.add_argument("--legacy-input", required=True)
     parser.add_argument("--frontier-primary", required=True)
     parser.add_argument("--merged-input", required=True)
@@ -151,8 +154,10 @@ def main() -> None:
     parser.add_argument("--auxiliary-input")
     parser.add_argument("--auxiliary-candidate-split-dir")
     parser.add_argument("--expect-final-naacl-counts", action="store_true")
+    parser.add_argument("--report-output")
     args = parser.parse_args()
 
+    review_report = audit_review_export(args.review_input, args.review_manifest)
     legacy = load_jsonl(args.legacy_input)
     frontier = load_jsonl(args.frontier_primary)
     merged = load_jsonl(args.merged_input)
@@ -215,6 +220,17 @@ def main() -> None:
 
     report = {
         "status": "passed",
+        "review_export": review_report,
+        "artifact_sha256": {
+            "review_input": file_sha256(args.review_input),
+            "review_manifest": file_sha256(args.review_manifest),
+            "legacy_input": file_sha256(args.legacy_input),
+            "frontier_primary": file_sha256(args.frontier_primary),
+            "merged_input": file_sha256(args.merged_input),
+            "primary_train": file_sha256(os.path.join(args.primary_split_dir, "train.jsonl")),
+            "primary_dev": file_sha256(os.path.join(args.primary_split_dir, "dev.jsonl")),
+            "primary_test": file_sha256(os.path.join(args.primary_split_dir, "test.jsonl")),
+        },
         "counts": {
             "legacy": len(legacy),
             "frontier_primary": len(frontier),
@@ -242,6 +258,7 @@ def main() -> None:
             validate_provenance=True,
         )
         report["auxiliary"] = aux_report
+        report["artifact_sha256"]["auxiliary_input"] = file_sha256(args.auxiliary_input)
 
         if args.auxiliary_candidate_split_dir:
             candidate = load_split_dir(args.auxiliary_candidate_split_dir)
@@ -276,6 +293,13 @@ def main() -> None:
                 raise RuntimeError("auxiliary candidate test is not byte-identical")
 
             assert_no_leakage(candidate)
+            report["artifact_sha256"].update({
+                "auxiliary_candidate_train": file_sha256(
+                    os.path.join(args.auxiliary_candidate_split_dir, "train.jsonl")
+                ),
+                "auxiliary_candidate_dev": file_sha256(candidate_dev_path),
+                "auxiliary_candidate_test": file_sha256(candidate_test_path),
+            })
             report["auxiliary_candidate"] = {
                 "train_records": len(candidate["train"]),
                 "auxiliary_records_in_train": len(
@@ -292,7 +316,13 @@ def main() -> None:
             "--auxiliary-candidate-split-dir requires --auxiliary-input"
         )
 
-    print(json.dumps(report, indent=2, sort_keys=True))
+    rendered = json.dumps(report, indent=2, sort_keys=True)
+    if args.report_output:
+        os.makedirs(os.path.dirname(args.report_output) or ".", exist_ok=True)
+        with open(args.report_output, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+            handle.write("\n")
+    print(rendered)
 
 
 if __name__ == "__main__":

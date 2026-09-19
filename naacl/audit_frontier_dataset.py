@@ -87,6 +87,11 @@ def main() -> None:
             pair_groups[str(pair_id)].append(r)
         if r.get("primary_pair_complete") is not True:
             errors.append(f"{cid}: primary_pair_complete marker is not true")
+        expected_pair_role = "malicious" if label == 1 else "benign" if label == 0 else None
+        if expected_pair_role is not None and r.get("pair_role") != expected_pair_role:
+            errors.append(
+                f"{cid}: pair_role={r.get('pair_role')!r} expected={expected_pair_role!r}"
+            )
 
         metadata = r.get("metadata", {}) or {}
         scenario = metadata.get("scenario_family")
@@ -320,6 +325,18 @@ def main() -> None:
             continue
         malicious = next(r for r in group if r.get("label") == 1)
         benign = next(r for r in group if r.get("label") == 0)
+        mal_scenario = str(
+            (malicious.get("metadata", {}) or {}).get("scenario_family", "")
+        )
+        ben_scenario = str(
+            (benign.get("metadata", {}) or {}).get("scenario_family", "")
+        )
+        if not mal_scenario or mal_scenario != ben_scenario:
+            errors.append(
+                f"pair {pair_id}: scenario_family differs across twins: "
+                f"{mal_scenario!r} vs {ben_scenario!r}"
+            )
+
         mal_users = user_turns(malicious)
         ben_users = user_turns(benign)
         if len(mal_users) != len(ben_users):
