@@ -1,0 +1,160 @@
+# Dataset B auxiliary behavioral outcomes
+
+This path is optional and separate from the primary GuardLens training corpus.
+It uses the 512 Dataset B trajectories rejected by the frozen B2 behavioral
+validation as additional trajectory-level detection examples. It does **not**
+change Dataset A, the pair-complete Dataset B primary corpus, raw B4 evidence,
+or the frozen v4/v5/v8 generation and counterfactual protocols.
+
+## Why these 512 records are useful
+
+B2 compares the realized Qwen trajectory with the source trajectory role.
+The rejected set contains two useful behavioral outcomes:
+
+- 190 benign-authored trajectories where Qwen nevertheless became unsafe. These
+  receive `detection_label=1`.
+- 322 malicious-authored trajectories where Qwen safely resisted the attack.
+  These receive `detection_label=0`.
+
+The original `label` is retained as `authoring_intent_label`. The training label
+for this optional task is `detection_label`, not the authoring label.
+
+These examples are **detection-only**. They must not provide token, span, pivot,
+or counterfactual localization supervision. The preparation code therefore sets:
+
+- `loss_weight = detection_loss_weight = 0.25`
+- `pivot_loss_weight = 0.0`
+- `span_loss_weight = 0.0`
+- `pivot_supervision_ignore = true`
+- `localization_supervision_ignore = true`
+- `pivot_turn_id = null`
+- `evidence_turn_ids = []`
+
+The generic `loss_weight` is retained for compatibility with simple detection
+loaders. A multi-task trainer must use the task-specific weights and must never
+let the auxiliary examples contribute localization loss.
+
+## Preparation and audit
+
+Use the raw 2,999-record B4 review export. Do not rewrite it in place.
+
+```bash
+export REVIEW=results-naacl/review_b4_committed_2999.jsonl
+export WORK=$HOME/staging/dataset_naacl/training_candidate
+mkdir -p "$WORK"
+
+python naacl/prepare_frontier_auxiliary.py \
+  --input "$REVIEW" \
+  --output "$WORK/dataset_b_auxiliary_512.jsonl" \
+  --stats-output "$WORK/dataset_b_auxiliary_512.stats.json" \
+  --split-output-dir "$WORK/dataset_b_auxiliary_splits" \
+  --expect-full-review-export
+
+python naacl/audit_frontier_auxiliary.py \
+  --input "$WORK/dataset_b_auxiliary_512.jsonl" \
+  --expect-full-review-export
+```
+
+The full-export gate requires exactly 512 records with detection labels
+`1:190` and `0:322`. If the review export changes, do not bypass that mismatch by
+editing the expected counts. Re-audit the new artifact first.
+
+## Primary Dataset B preparation
+
+Primary Dataset B remains pair-complete and independent from the auxiliary set.
+The known failed malicious record and its benign twin are excluded naturally
+because `prepare_frontier_dataset.py` admits a pair only when both sides pass.
+Standalone benign examples remain evaluation-only stress data.
+
+```bash
+python naacl/prepare_frontier_dataset.py \
+  --input "$REVIEW" \
+  --output "$WORK/dataset_b_primary.jsonl" \
+  --benign-stress-output "$WORK/dataset_b_benign_stress.jsonl" \
+  --excluded-output "$WORK/dataset_b_excluded.jsonl" \
+  --stats-output "$WORK/dataset_b_primary.stats.json"
+
+python naacl/audit_frontier_dataset.py --input "$WORK/dataset_b_primary.jsonl"
+python naacl/audit_frontier_stress.py --input "$WORK/dataset_b_benign_stress.jsonl"
+```
+
+For the audited review export, the expected primary result is 701 retained pairs,
+or 1,402 records. Treat a different count as a review gate, not as permission to
+relax pair admission.
+
+## Candidate A+B merge
+
+Dataset A is the repaired 1,052-record legacy primary corpus already tracked under
+`results-naacl/naacl_legacy_prepared.jsonl`. Merge only the clean primary Dataset B
+output above. Do not append Dataset A's separate benign stress pool.
+
+```bash
+python naacl/merge_training_corpora.py \
+  --legacy-input results-naacl/naacl_legacy_prepared.jsonl \
+  --frontier-input "$WORK/dataset_b_primary.jsonl" \
+  --output "$WORK/dataset_ab_primary.jsonl" \
+  --stats-output "$WORK/dataset_ab_primary.stats.json"
+```
+
+The merge remains fail-closed for duplicate conversation IDs and exact normalized
+user trajectories across independent split groups.
+
+## Primary-only grouped split
+
+```bash
+python naacl/split_consolidated.py \
+  --input "$WORK/dataset_ab_primary.jsonl" \
+  --output-dir "$WORK/splits_primary" \
+  --seed 42
+```
+
+The split keeps legacy pairs together and keeps all members of a Dataset B
+`scenario_family` together.
+
+## Candidate joint primary + auxiliary split
+
+Do not independently split the primary and auxiliary corpora and then combine the
+partitions. A scenario family can occur in both. Instead use the joint mode so the
+shared `frontier::<scenario_family>` group is assigned once.
+
+```bash
+python naacl/split_consolidated.py \
+  --input "$WORK/dataset_ab_primary.jsonl" \
+  --auxiliary-input "$WORK/dataset_b_auxiliary_512.jsonl" \
+  --output-dir "$WORK/splits_primary_plus_auxiliary" \
+  --seed 42
+```
+
+The splitter balances auxiliary examples using `detection_label`, while primary
+records continue to use `label`. It also checks that conversation IDs, split
+groups, normalized user-trajectory hashes, pair IDs, and frontier scenario
+families do not cross partitions.
+
+## Trainer integration gate
+
+This repository checkout does not contain the final model-training package, so no
+trainer is modified here. Before using the optional joint split, inspect the
+actual trainer and require all of the following:
+
+1. Auxiliary records use `detection_label` for trajectory detection.
+2. `detection_loss_weight` is applied to detection loss.
+3. `pivot_loss_weight=0` and `span_loss_weight=0` are respected exactly.
+4. The trainer does not infer localization negatives from auxiliary records.
+5. Unknown primary pivots remain masked rather than converted to true no-pivot
+   negatives.
+6. Token/span targets are mapped after the trainer's real tokenizer and truncation
+   policy are known.
+7. Family-preserving split assignments are consumed as supplied, not re-split at
+   the record level.
+
+The previous training concerns around v8 adapter semantics, legacy `max_turns=16`
+behavior, character clipping, and the 21 construction-language attribution spans
+remain training-integration work. They are not reasons to mutate the raw B4
+artifact or run another generation job.
+
+## Scope
+
+No new GPU generation is required for this auxiliary path. It is a preparation,
+audit, split, and training-integration option over already generated outcomes.
+The primary A+B corpus should remain the baseline. Train with auxiliary outcomes
+only as an explicit candidate or ablation so any gain or regression is measurable.

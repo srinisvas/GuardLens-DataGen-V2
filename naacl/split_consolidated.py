@@ -3,9 +3,10 @@
 
 Primary grouping uses ``metadata.consolidated_split_group``. Frontier records are
 therefore grouped by complete scenario_family; legacy records retain pair linkage
-when available. Allocation softly balances class/source, class-conditional user-
-turn length, author corpus, and the v3 experimental axes without ever breaking a
-group.
+when available. An optional detection-only auxiliary corpus can be split jointly
+with the primary A+B corpus. Auxiliary records use ``detection_label`` for soft
+balancing, but share the exact same ``frontier::<scenario_family>`` grouping as
+primary Dataset B so related records can never cross partitions.
 """
 from __future__ import annotations
 
@@ -27,6 +28,17 @@ def n_user_turns(record: Dict) -> int:
         str(t.get("role", "")).lower() == "user"
         for t in record.get("turns", [])
     )
+
+
+def training_label(record: Dict):
+    """Return the task-appropriate detection label for split balancing."""
+    if "detection_label" in record:
+        return record.get("detection_label")
+    return record.get("label")
+
+
+def is_frontier(record: Dict) -> bool:
+    return str(record.get("corpus_source", "")).startswith("frontier_authored_v3")
 
 
 def frontier_author(record: Dict) -> str:
@@ -54,7 +66,7 @@ def group_signature(group: List[Dict]) -> Counter:
     c = Counter()
     for r in group:
         source = str(r.get("corpus_source", "unknown"))
-        label = str(r.get("label"))
+        label = str(training_label(r))
         difficulty = str(r.get("difficulty", "unknown"))
         user_len = str(n_user_turns(r))
         c[("label", label)] += 1
@@ -63,7 +75,7 @@ def group_signature(group: List[Dict]) -> Counter:
         c[("source_difficulty", source, difficulty)] += 1
         c[("source_label_user_turns", source, label, user_len)] += 1
 
-        if source == "frontier_authored_v3":
+        if is_frontier(r):
             metadata = r.get("metadata", {}) or {}
             intended = r.get("intended_structure", {}) or {}
             author = frontier_author(r)
@@ -164,8 +176,10 @@ def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
                 if previous != split_name:
                     raise RuntimeError(f"pair leakage: {key} appears in {previous} and {split_name}")
 
-            if r.get("corpus_source") == "frontier_authored_v3":
+            if is_frontier(r):
                 scenario = str(metadata.get("scenario_family", ""))
+                if not scenario:
+                    raise RuntimeError(f"{cid}: frontier record missing scenario_family")
                 previous = scenario_owner.setdefault(scenario, split_name)
                 if previous != split_name:
                     raise RuntimeError(
@@ -174,16 +188,17 @@ def assert_no_leakage(splits: Dict[str, List[Dict]]) -> None:
 
 
 def describe(records: List[Dict]) -> Dict:
-    frontier = [r for r in records if r.get("corpus_source") == "frontier_authored_v3"]
+    frontier = [r for r in records if is_frontier(r)]
     return {
         "n": len(records),
-        "labels": dict(Counter(str(r.get("label")) for r in records)),
+        "labels": dict(Counter(str(training_label(r)) for r in records)),
+        "authoring_labels": dict(Counter(str(r.get("label")) for r in records)),
         "sources": dict(Counter(str(r.get("corpus_source")) for r in records)),
         "source_label": dict(Counter(
-            f"{r.get('corpus_source')}|{r.get('label')}" for r in records
+            f"{r.get('corpus_source')}|{training_label(r)}" for r in records
         )),
         "source_label_user_turns": dict(Counter(
-            f"{r.get('corpus_source')}|{r.get('label')}|{n_user_turns(r)}"
+            f"{r.get('corpus_source')}|{training_label(r)}|{n_user_turns(r)}"
             for r in records
         )),
         "difficulty": dict(Counter(str(r.get("difficulty", "unknown")) for r in records)),
@@ -191,7 +206,7 @@ def describe(records: List[Dict]) -> Dict:
         "groups": len({(r.get("metadata", {}) or {}).get("consolidated_split_group") for r in records}),
         "frontier_author_corpora": dict(Counter(frontier_author(r) for r in frontier)),
         "frontier_author_label": dict(Counter(
-            f"{frontier_author(r)}|{r.get('label')}" for r in frontier
+            f"{frontier_author(r)}|{training_label(r)}" for r in frontier
         )),
         "frontier_scenario_families": len({
             (r.get("metadata", {}) or {}).get("scenario_family") for r in frontier
@@ -234,7 +249,11 @@ def assert_size_tolerance(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
+    parser.add_argument("--input", required=True, help="Canonical primary A+B corpus")
+    parser.add_argument(
+        "--auxiliary-input",
+        help="Optional detection-only Dataset B auxiliary corpus. When present, split jointly.",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--train-frac", type=float, default=0.70)
     parser.add_argument("--dev-frac", type=float, default=0.15)
@@ -249,7 +268,14 @@ def main() -> None:
         raise ValueError("all train/dev/test fractions must be positive")
     fractions = {"train": args.train_frac, "dev": args.dev_frac, "test": args.test_frac}
 
-    records = load_jsonl(args.input)
+    primary_records = load_jsonl(args.input)
+    auxiliary_records = load_jsonl(args.auxiliary_input) if args.auxiliary_input else []
+    records = primary_records + auxiliary_records
+    ids = [str(r.get("conversation_id", "")) for r in records]
+    duplicates = [cid for cid, n in Counter(ids).items() if cid and n > 1]
+    if duplicates:
+        raise RuntimeError(f"duplicate conversation_ids across primary/auxiliary inputs: {duplicates[:10]}")
+
     groups = group_records(records)
     splits = split_groups(groups, fractions, args.seed)
     assert_no_leakage(splits)
@@ -261,12 +287,19 @@ def main() -> None:
 
     metadata = {
         "input_records": len(records),
+        "primary_input_records": len(primary_records),
+        "auxiliary_input_records": len(auxiliary_records),
+        "joint_auxiliary_split": bool(args.auxiliary_input),
         "input_groups": len(groups),
         "seed": args.seed,
         "fractions": fractions,
-        "group_policy": "metadata.consolidated_split_group; frontier scenario_family and legacy pairs never cross partitions",
+        "group_policy": (
+            "metadata.consolidated_split_group; frontier scenario_family is shared across primary and "
+            "auxiliary records; legacy pairs never cross partitions"
+        ),
+        "label_policy": "detection_label when present, otherwise label",
         "balance_policy": (
-            "soft balance on label, source, source×label, source×difficulty, source×label×user_turn_count, "
+            "soft balance on task label, source, source×label, source×difficulty, source×label×user_turn_count, "
             "and for frontier: author corpus, author×label, target_domain, slice_role, pair_hardness, "
             "trajectory_family, mechanism_family, style"
         ),
