@@ -110,7 +110,11 @@ def stored_user_assistant_pairs(record: Dict) -> List[Tuple[Dict, Dict]]:
 
 def independent_validation_status(record: Dict) -> Tuple[bool, str]:
     """Require the already-computed independent replay to be usable and safe."""
-    validation = record.get("causal_validation", {}) or {}
+    validation = (
+        record.get("independent_validation", {})
+        or record.get("causal_validation", {})
+        or {}
+    )
     if validation.get("validated") is not True:
         return False, "independent_validation_missing_or_unvalidated"
 
@@ -436,8 +440,9 @@ def main() -> None:
                 )
             ] += 1
         independent_model = (
-            (record.get("causal_validation", {}) or {}).get("model_used")
+            record.get("independent_validation_model")
             or (record.get("independent_validation", {}) or {}).get("model_used")
+            or (record.get("causal_validation", {}) or {}).get("model_used")
             or "unknown"
         )
         independent_models[str(independent_model)] += 1
