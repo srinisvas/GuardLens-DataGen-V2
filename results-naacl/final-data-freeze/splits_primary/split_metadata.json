@@ -1,0 +1,344 @@
+{
+  "auxiliary_input_records": 0,
+  "balance_policy": "soft balance on task label, source, source\u00d7label, source\u00d7difficulty, source\u00d7label\u00d7user_turn_count, and for frontier: author corpus, author\u00d7label, target_domain, slice_role, pair_hardness, trajectory_family, mechanism_family, style",
+  "fractions": {
+    "dev": 0.15,
+    "test": 0.15,
+    "train": 0.7
+  },
+  "group_policy": "metadata.consolidated_split_group; frontier scenario_family is shared across primary and auxiliary records; legacy pairs never cross partitions",
+  "input_groups": 1373,
+  "input_records": 2454,
+  "joint_auxiliary_split": false,
+  "label_policy": "detection_label when present, otherwise label",
+  "leakage_check": "passed",
+  "primary_input_records": 2454,
+  "ratio_tolerance_check": "passed",
+  "seed": 42,
+  "splits": {
+    "dev": {
+      "authoring_labels": {
+        "0": 183,
+        "1": 184
+      },
+      "difficulty": {
+        "easy": 47,
+        "hard": 172,
+        "medium": 148
+      },
+      "frontier_author_corpora": {
+        "guardlens-source-astra-v3-2": 112,
+        "guardlens-source-full-v3": 98
+      },
+      "frontier_author_label": {
+        "guardlens-source-astra-v3-2|0": 56,
+        "guardlens-source-astra-v3-2|1": 56,
+        "guardlens-source-full-v3|0": 49,
+        "guardlens-source-full-v3|1": 49
+      },
+      "frontier_domains": {
+        "credential_theft": 22,
+        "data_exfiltration": 40,
+        "fraud_pretexting": 32,
+        "malware_generation": 22,
+        "model_manipulation": 30,
+        "policy_evasion": 16,
+        "prompt_injection": 16,
+        "social_engineering": 32
+      },
+      "frontier_mechanism_families": 50,
+      "frontier_pair_hardness": {
+        "context_required": 180,
+        "surface_control": 30
+      },
+      "frontier_scenario_families": 50,
+      "frontier_slice_roles": {
+        "paired_adversarial": 105,
+        "paired_benign": 105
+      },
+      "frontier_trajectory_family": {
+        "distributed_intended": 72,
+        "distributed_transition_intended": 54,
+        "single_transition_intended": 84
+      },
+      "groups": 207,
+      "labels": {
+        "0": 183,
+        "1": 184
+      },
+      "n": 367,
+      "source_label": {
+        "frontier_authored_v3|0": 105,
+        "frontier_authored_v3|1": 105,
+        "legacy_repaired|0": 78,
+        "legacy_repaired|1": 79
+      },
+      "source_label_user_turns": {
+        "frontier_authored_v3|0|6": 35,
+        "frontier_authored_v3|0|7": 44,
+        "frontier_authored_v3|0|8": 14,
+        "frontier_authored_v3|0|9": 12,
+        "frontier_authored_v3|1|6": 35,
+        "frontier_authored_v3|1|7": 44,
+        "frontier_authored_v3|1|8": 14,
+        "frontier_authored_v3|1|9": 12,
+        "legacy_repaired|0|10": 5,
+        "legacy_repaired|0|11": 9,
+        "legacy_repaired|0|12": 7,
+        "legacy_repaired|0|13": 8,
+        "legacy_repaired|0|14": 8,
+        "legacy_repaired|0|15": 7,
+        "legacy_repaired|0|16": 8,
+        "legacy_repaired|0|17": 6,
+        "legacy_repaired|0|18": 6,
+        "legacy_repaired|0|19": 4,
+        "legacy_repaired|0|20": 5,
+        "legacy_repaired|0|21": 1,
+        "legacy_repaired|0|8": 1,
+        "legacy_repaired|0|9": 3,
+        "legacy_repaired|1|10": 5,
+        "legacy_repaired|1|11": 9,
+        "legacy_repaired|1|12": 8,
+        "legacy_repaired|1|13": 8,
+        "legacy_repaired|1|14": 8,
+        "legacy_repaired|1|15": 6,
+        "legacy_repaired|1|16": 9,
+        "legacy_repaired|1|17": 6,
+        "legacy_repaired|1|18": 6,
+        "legacy_repaired|1|19": 4,
+        "legacy_repaired|1|20": 5,
+        "legacy_repaired|1|21": 1,
+        "legacy_repaired|1|8": 1,
+        "legacy_repaired|1|9": 3
+      },
+      "sources": {
+        "frontier_authored_v3": 210,
+        "legacy_repaired": 157
+      },
+      "supervision_tiers": {
+        "benign_validated": 183,
+        "cf_strong": 98,
+        "cf_weak": 1,
+        "llm_confirmed": 85
+      }
+    },
+    "test": {
+      "authoring_labels": {
+        "0": 183,
+        "1": 184
+      },
+      "difficulty": {
+        "easy": 44,
+        "hard": 174,
+        "medium": 149
+      },
+      "frontier_author_corpora": {
+        "guardlens-source-astra-v3-2": 112,
+        "guardlens-source-full-v3": 98
+      },
+      "frontier_author_label": {
+        "guardlens-source-astra-v3-2|0": 56,
+        "guardlens-source-astra-v3-2|1": 56,
+        "guardlens-source-full-v3|0": 49,
+        "guardlens-source-full-v3|1": 49
+      },
+      "frontier_domains": {
+        "credential_theft": 20,
+        "data_exfiltration": 42,
+        "fraud_pretexting": 30,
+        "malware_generation": 16,
+        "model_manipulation": 34,
+        "policy_evasion": 18,
+        "prompt_injection": 14,
+        "social_engineering": 36
+      },
+      "frontier_mechanism_families": 49,
+      "frontier_pair_hardness": {
+        "context_required": 182,
+        "surface_control": 28
+      },
+      "frontier_scenario_families": 49,
+      "frontier_slice_roles": {
+        "paired_adversarial": 105,
+        "paired_benign": 105
+      },
+      "frontier_trajectory_family": {
+        "distributed_intended": 72,
+        "distributed_transition_intended": 56,
+        "single_transition_intended": 82
+      },
+      "groups": 206,
+      "labels": {
+        "0": 183,
+        "1": 184
+      },
+      "n": 367,
+      "source_label": {
+        "frontier_authored_v3|0": 105,
+        "frontier_authored_v3|1": 105,
+        "legacy_repaired|0": 78,
+        "legacy_repaired|1": 79
+      },
+      "source_label_user_turns": {
+        "frontier_authored_v3|0|6": 36,
+        "frontier_authored_v3|0|7": 44,
+        "frontier_authored_v3|0|8": 13,
+        "frontier_authored_v3|0|9": 12,
+        "frontier_authored_v3|1|6": 36,
+        "frontier_authored_v3|1|7": 44,
+        "frontier_authored_v3|1|8": 13,
+        "frontier_authored_v3|1|9": 12,
+        "legacy_repaired|0|10": 6,
+        "legacy_repaired|0|11": 9,
+        "legacy_repaired|0|12": 7,
+        "legacy_repaired|0|13": 8,
+        "legacy_repaired|0|14": 7,
+        "legacy_repaired|0|15": 6,
+        "legacy_repaired|0|16": 9,
+        "legacy_repaired|0|17": 6,
+        "legacy_repaired|0|18": 6,
+        "legacy_repaired|0|19": 4,
+        "legacy_repaired|0|20": 5,
+        "legacy_repaired|0|21": 1,
+        "legacy_repaired|0|8": 1,
+        "legacy_repaired|0|9": 3,
+        "legacy_repaired|1|10": 5,
+        "legacy_repaired|1|11": 9,
+        "legacy_repaired|1|12": 7,
+        "legacy_repaired|1|13": 8,
+        "legacy_repaired|1|14": 8,
+        "legacy_repaired|1|15": 6,
+        "legacy_repaired|1|16": 9,
+        "legacy_repaired|1|17": 6,
+        "legacy_repaired|1|18": 6,
+        "legacy_repaired|1|19": 5,
+        "legacy_repaired|1|20": 5,
+        "legacy_repaired|1|21": 1,
+        "legacy_repaired|1|8": 1,
+        "legacy_repaired|1|9": 3
+      },
+      "sources": {
+        "frontier_authored_v3": 210,
+        "legacy_repaired": 157
+      },
+      "supervision_tiers": {
+        "benign_validated": 183,
+        "cf_strong": 89,
+        "cf_weak": 2,
+        "llm_confirmed": 93
+      }
+    },
+    "train": {
+      "authoring_labels": {
+        "0": 861,
+        "1": 859
+      },
+      "difficulty": {
+        "easy": 231,
+        "hard": 803,
+        "medium": 686
+      },
+      "frontier_author_corpora": {
+        "guardlens-source-astra-v3-2": 518,
+        "guardlens-source-full-v3": 464
+      },
+      "frontier_author_label": {
+        "guardlens-source-astra-v3-2|0": 259,
+        "guardlens-source-astra-v3-2|1": 259,
+        "guardlens-source-full-v3|0": 232,
+        "guardlens-source-full-v3|1": 232
+      },
+      "frontier_domains": {
+        "credential_theft": 108,
+        "data_exfiltration": 196,
+        "fraud_pretexting": 126,
+        "malware_generation": 90,
+        "model_manipulation": 142,
+        "policy_evasion": 76,
+        "prompt_injection": 96,
+        "social_engineering": 148
+      },
+      "frontier_mechanism_families": 76,
+      "frontier_pair_hardness": {
+        "context_required": 838,
+        "surface_control": 144
+      },
+      "frontier_scenario_families": 222,
+      "frontier_slice_roles": {
+        "paired_adversarial": 491,
+        "paired_benign": 491
+      },
+      "frontier_trajectory_family": {
+        "distributed_intended": 332,
+        "distributed_transition_intended": 272,
+        "single_transition_intended": 378
+      },
+      "groups": 960,
+      "labels": {
+        "0": 861,
+        "1": 859
+      },
+      "n": 1720,
+      "source_label": {
+        "frontier_authored_v3|0": 491,
+        "frontier_authored_v3|1": 491,
+        "legacy_repaired|0": 370,
+        "legacy_repaired|1": 368
+      },
+      "source_label_user_turns": {
+        "frontier_authored_v3|0|6": 169,
+        "frontier_authored_v3|0|7": 198,
+        "frontier_authored_v3|0|8": 65,
+        "frontier_authored_v3|0|9": 59,
+        "frontier_authored_v3|1|6": 169,
+        "frontier_authored_v3|1|7": 198,
+        "frontier_authored_v3|1|8": 65,
+        "frontier_authored_v3|1|9": 59,
+        "legacy_repaired|0|10": 26,
+        "legacy_repaired|0|11": 39,
+        "legacy_repaired|0|12": 34,
+        "legacy_repaired|0|13": 33,
+        "legacy_repaired|0|14": 36,
+        "legacy_repaired|0|15": 30,
+        "legacy_repaired|0|16": 39,
+        "legacy_repaired|0|17": 27,
+        "legacy_repaired|0|18": 30,
+        "legacy_repaired|0|19": 22,
+        "legacy_repaired|0|20": 22,
+        "legacy_repaired|0|21": 4,
+        "legacy_repaired|0|22": 3,
+        "legacy_repaired|0|23": 3,
+        "legacy_repaired|0|24": 2,
+        "legacy_repaired|0|8": 5,
+        "legacy_repaired|0|9": 15,
+        "legacy_repaired|1|10": 27,
+        "legacy_repaired|1|11": 39,
+        "legacy_repaired|1|12": 33,
+        "legacy_repaired|1|13": 33,
+        "legacy_repaired|1|14": 35,
+        "legacy_repaired|1|15": 31,
+        "legacy_repaired|1|16": 38,
+        "legacy_repaired|1|17": 27,
+        "legacy_repaired|1|18": 30,
+        "legacy_repaired|1|19": 21,
+        "legacy_repaired|1|20": 22,
+        "legacy_repaired|1|21": 4,
+        "legacy_repaired|1|22": 3,
+        "legacy_repaired|1|23": 3,
+        "legacy_repaired|1|24": 2,
+        "legacy_repaired|1|8": 5,
+        "legacy_repaired|1|9": 15
+      },
+      "sources": {
+        "frontier_authored_v3": 982,
+        "legacy_repaired": 738
+      },
+      "supervision_tiers": {
+        "benign_validated": 861,
+        "cf_strong": 445,
+        "cf_weak": 3,
+        "llm_confirmed": 411
+      }
+    }
+  }
+}
