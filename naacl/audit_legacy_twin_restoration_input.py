@@ -211,6 +211,8 @@ def main() -> None:
     bad_pair_structure = 0
     total_stored_assistant_turns = 0
     max_observable_transcript_chars = 0
+    benign_user_span_annotations = 0
+    benign_assistant_span_annotations = 0
 
     for twin in twins:
         cid = str(twin.get("conversation_id", ""))
@@ -261,6 +263,37 @@ def main() -> None:
                     f"{cid}: observable transcript chars={transcript_chars} "
                     "exceed frozen Dataset B judge budget=100000"
                 )
+
+            for turn in twin.get("turns", []):
+                role = str(turn.get("role", "")).lower()
+                text_value = str(turn.get("text", ""))
+                for span in turn.get("span_annotations", []) or []:
+                    if role == "assistant":
+                        benign_assistant_span_annotations += 1
+                        continue
+                    benign_user_span_annotations += 1
+                    start = span.get("char_start")
+                    end = span.get("char_end")
+                    if (
+                        isinstance(start, bool)
+                        or isinstance(end, bool)
+                        or not isinstance(start, int)
+                        or not isinstance(end, int)
+                        or start < 0
+                        or end <= start
+                        or end > len(text_value)
+                    ):
+                        errors.append(
+                            f"{cid}: invalid benign user span offsets "
+                            f"{start!r}:{end!r} for text length={len(text_value)}"
+                        )
+                        continue
+                    span_text = str(span.get("text", ""))
+                    if span_text and text_value[start:end] != span_text:
+                        errors.append(
+                            f"{cid}: benign user span text does not match offsets "
+                            f"at turn {turn.get('turn_id')}"
+                        )
         except Exception as exc:
             malformed += 1
             errors.append(str(exc))
@@ -382,6 +415,8 @@ def main() -> None:
         "total_stored_assistant_turns": total_stored_assistant_turns,
         "dual_rubric_judge_requests": 2 * total_stored_assistant_turns,
         "max_observable_transcript_chars": max_observable_transcript_chars,
+        "benign_user_span_annotations": benign_user_span_annotations,
+        "benign_assistant_span_annotations_ignored": benign_assistant_span_annotations,
         "independent_models": dict(independent_models),
         "independent_status": dict(independent_status),
         "target_models": dict(target_models),
