@@ -55,6 +55,18 @@ requires every non-repair record to be identical at the JSON-object level,
 requires split membership/order to remain unchanged, and requires the held-out
 test JSONL to remain byte-identical.
 
+Build and audit the candidate in one fail-closed CPU workflow:
+
+```bash
+bash naacl/rebuild_semantic_turn_repair_candidate.sh
+```
+
+The script writes a separate
+`results-naacl/final-data-freeze-semantic-turn-repair-candidate` directory,
+never overwrites the current freeze, reruns preparation/merge/split/auxiliary
+attachment, proves the exact delta, runs the full final-data audit, and records
+the preparation code commit.
+
 # Optimized Dataset B execution
 
 **Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v8, while the B2 v5 rubric stays unchanged. B1 remains at 16K; adaptive B4 uses Qwen's native 32K context envelope so a valid 4K/8K replay budget is not rejected merely because its counterfactual prefix is longer than the factual one.
