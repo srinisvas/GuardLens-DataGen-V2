@@ -73,27 +73,44 @@ def load_jsonl(path: str) -> List[Dict]:
 
 
 def load_checkpoint(path: str) -> List[Dict]:
-    """Load append-only checkpoint, tolerating only a torn final write."""
+    """Load append-only checkpoint, repairing only a torn final write."""
     with open(path, "r", encoding="utf-8") as handle:
         lines = handle.readlines()
 
     out: List[Dict] = []
+    valid_serialized: List[str] = []
     nonempty = [(i, line) for i, line in enumerate(lines, 1) if line.strip()]
+    repaired_tail = False
+
     for position, (line_no, line) in enumerate(nonempty):
         try:
-            out.append(json.loads(line))
+            record = json.loads(line)
+            out.append(record)
+            valid_serialized.append(
+                json.dumps(record, ensure_ascii=False) + "\n"
+            )
         except json.JSONDecodeError as exc:
             is_last_nonempty = position == len(nonempty) - 1
-            if is_last_nonempty:
-                print(
-                    f"WARNING: ignoring truncated final checkpoint line "
+            if not is_last_nonempty:
+                raise RuntimeError(
+                    f"Corrupt checkpoint JSON before final line at "
                     f"{path}:{line_no}: {exc}"
-                )
-                break
-            raise RuntimeError(
-                f"Corrupt checkpoint JSON before final line at "
+                ) from exc
+            print(
+                f"WARNING: repairing truncated final checkpoint line "
                 f"{path}:{line_no}: {exc}"
-            ) from exc
+            )
+            repaired_tail = True
+            break
+
+    if repaired_tail:
+        tmp = path + ".repair.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.writelines(valid_serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+
     return out
 
 
