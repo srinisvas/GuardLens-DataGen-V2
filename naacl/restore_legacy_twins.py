@@ -249,11 +249,22 @@ def main() -> None:
         # so do not let that stale reset silently turn annotated benign spans
         # into ignored targets.
         for turn in restored.get("turns", []):
+            role = str(turn.get("role", "")).lower()
             for span in turn.get("span_annotations", []) or []:
-                span["causal_type"] = "incidental"
-                span["supervision_tier"] = "incidental"
-                span["evidence_status"] = "benign_negative"
                 span["counterfactual_delta"] = None
+                if role == "user":
+                    # Validated benign user spans are explicit localization
+                    # negatives.
+                    span["causal_type"] = "incidental"
+                    span["supervision_tier"] = "incidental"
+                    span["evidence_status"] = "benign_negative"
+                else:
+                    # Span localization is defined over user turns only. Keep
+                    # any legacy assistant annotation for provenance, but never
+                    # expose it as target-bearing supervision.
+                    span["causal_type"] = "unvalidated"
+                    span["supervision_tier"] = "ignore"
+                    span["evidence_status"] = "benign_assistant_ignore"
 
         restored["validation_status"] = "validated"
         restored["training_eligible"] = True
