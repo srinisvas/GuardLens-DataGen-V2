@@ -60,7 +60,11 @@ def final_malicious(records: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
 def eligible_twin(record: Dict) -> bool:
     restoration = record.get("twin_restoration", {}) or {}
     stored = record.get("stored_target_validation", {}) or {}
-    independent = record.get("causal_validation", {}) or {}
+    independent = (
+        record.get("independent_validation", {})
+        or record.get("causal_validation", {})
+        or {}
+    )
 
     if record.get("label") != 0:
         return False
