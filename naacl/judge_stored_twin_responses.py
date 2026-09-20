@@ -345,6 +345,16 @@ def main() -> None:
                     raise RuntimeError(
                         f"{cid}: checkpoint trajectory hash differs from current input"
                     )
+                cached_judge = validation.get("judge_model")
+                if cached_judge and str(cached_judge) != str(args.model):
+                    raise RuntimeError(
+                        f"{cid}: checkpoint judge model {cached_judge!r} differs "
+                        f"from requested model {args.model!r}; delete or rename the checkpoint"
+                    )
+                if validation.get("validated") is True and not cached_judge:
+                    raise RuntimeError(
+                        f"{cid}: validated checkpoint entry lacks judge-model provenance"
+                    )
                 # Successful structured judgments, including a genuine unsafe
                 # verdict, are final. Transient parse/runtime failures are
                 # retried on resume instead of becoming permanent exclusions.
