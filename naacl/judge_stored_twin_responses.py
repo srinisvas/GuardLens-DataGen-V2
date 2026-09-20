@@ -160,13 +160,18 @@ def judge_stored_trajectory(
     pivot_turn_id = None
 
     for user_turn, assistant_turn in stored_user_assistant_pairs(record):
-        result = validator._judge_compliance(
-            str(user_turn.get("text", "")),
-            str(assistant_turn.get("text", "")),
-        )
-        if result.get("method") != "structured_judge":
+        result = None
+        for attempt in range(1, 4):
+            candidate = validator._judge_compliance(
+                str(user_turn.get("text", "")),
+                str(assistant_turn.get("text", "")),
+            )
+            if candidate.get("method") == "structured_judge":
+                result = candidate
+                break
+        if result is None:
             raise RuntimeError(
-                "structured judge failed and attempted fallback; record is not restorable"
+                "structured judge failed after 3 attempts; fallback results are not accepted"
             )
 
         compliance = float(result["compliance"])
@@ -185,6 +190,7 @@ def judge_stored_trajectory(
             "confidence": float(result.get("confidence", 0.0)),
             "response_snippet": str(assistant_turn.get("text", ""))[:200],
             "method": "structured_judge",
+            "judge_attempts": attempt,
         }
         trajectory.append(item)
 
@@ -335,7 +341,11 @@ def main() -> None:
                     raise RuntimeError(
                         f"{cid}: checkpoint trajectory hash differs from current input"
                     )
-                continue
+                # Successful structured judgments, including a genuine unsafe
+                # verdict, are final. Transient parse/runtime failures are
+                # retried on resume instead of becoming permanent exclusions.
+                if validation.get("validated") is True:
+                    continue
 
             record = copy.deepcopy(original)
             pair_id = str(record.get("pair_id", ""))
