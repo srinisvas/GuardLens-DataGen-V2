@@ -245,6 +245,11 @@ def main() -> None:
         )
         restored["validation_status"] = "validated"
         restored["training_eligible"] = True
+        restored["localization_supervision_ignore"] = False
+        restored["evidence_turn_ids"] = []
+        restored["pivot_turn_id"] = None
+        restored["pivot_kind"] = "none"
+        restored["pivot_supervision_ignore"] = False
         restored["benign_status"] = "validated_original_interactive_twin_restored"
         restored["restored_validation_provenance"] = {
             "bridge_adjudication": "dataset_b_context_judge_on_existing_llama_responses",
