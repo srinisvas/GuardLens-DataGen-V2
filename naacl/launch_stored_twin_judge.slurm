@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-JUDGE_MODEL="${JUDGE_MODEL:-mistralai/Mistral-7B-Instruct-v0.3}"
+JUDGE_MODEL="${JUDGE_MODEL:-}"
 PORT="${VLLM_PORT:-8000}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
@@ -46,7 +46,7 @@ echo "========================================================"
 echo " Dataset A original-twin stored-response judge"
 echo "========================================================"
 echo "Input:                 $INPUT_FILE"
-echo "Judge model:           $JUDGE_MODEL"
+echo "Judge model request:   ${JUDGE_MODEL:-AUTO_FROM_PROVENANCE}"
 echo "Target replay:         NO"
 echo "Independent replay:    NO"
 echo "Conversation rewrite:  NO"
@@ -59,18 +59,13 @@ if [[ ! -f "$INPUT_FILE" ]]; then
     exit 1
 fi
 
-MODEL_DIR="$MODEL_CACHE/hub/models--$(echo "$JUDGE_MODEL" | sed 's#/#--#g')"
-if [[ ! -d "$MODEL_DIR" ]]; then
-    echo "ERROR: judge model not found in offline cache: $MODEL_DIR"
-    exit 1
-fi
-
 echo "--- Existing independent-validation provenance ---"
 INDEPENDENT_MODELS=$(python - "$INPUT_FILE" <<'PY'
 import json, sys
 from collections import Counter
 path = sys.argv[1]
 c = Counter()
+unknown = 0
 with open(path) as f:
     for line in f:
         if not line.strip():
@@ -78,26 +73,43 @@ with open(path) as f:
         r = json.loads(line)
         if r.get("label") != 0 or r.get("family") != "interactive_benign_twin":
             continue
-        model = (r.get("causal_validation", {}) or {}).get("model_used") or "UNKNOWN"
-        c[str(model)] += 1
+        model = (
+            r.get("independent_validation_model")
+            or (r.get("independent_validation", {}) or {}).get("model_used")
+            or (r.get("causal_validation", {}) or {}).get("model_used")
+        )
+        if model:
+            c[str(model)] += 1
+        else:
+            unknown += 1
 for model, n in sorted(c.items()):
-    print(f"{model}\t{n}")
+    print(f"MODEL\t{model}\t{n}")
+print(f"UNKNOWN\t{unknown}")
 PY
 )
 echo "$INDEPENDENT_MODELS"
 
-UNIQUE_MODEL_COUNT=$(printf '%s\n' "$INDEPENDENT_MODELS" | awk 'NF{n++} END{print n+0}')
-if [[ "$UNIQUE_MODEL_COUNT" -ne 1 ]]; then
-    echo "ERROR: expected exactly one independent-validation model for benign twins"
+KNOWN_MODEL_COUNT=$(printf '%s\n' "$INDEPENDENT_MODELS" | awk '$1=="MODEL"{n++} END{print n+0}')
+if [[ "$KNOWN_MODEL_COUNT" -ne 1 ]]; then
+    echo "ERROR: expected exactly one known independent-validation model"
     exit 1
 fi
 
-RECORDED_MODEL=$(printf '%s\n' "$INDEPENDENT_MODELS" | awk 'NF{print $1}')
-if [[ "$RECORDED_MODEL" != "$JUDGE_MODEL" ]]; then
+RECORDED_MODEL=$(printf '%s\n' "$INDEPENDENT_MODELS" | awk '$1=="MODEL"{print $2}')
+if [[ -z "$JUDGE_MODEL" ]]; then
+    JUDGE_MODEL="$RECORDED_MODEL"
+    echo "Judge model auto-selected from recorded provenance: $JUDGE_MODEL"
+elif [[ "$RECORDED_MODEL" != "$JUDGE_MODEL" ]]; then
     echo "ERROR: requested judge model differs from recorded independent model"
     echo "  recorded: $RECORDED_MODEL"
     echo "  requested: $JUDGE_MODEL"
     echo "Use the recorded model so the restoration does not introduce a new judge regime."
+    exit 1
+fi
+
+MODEL_DIR="$MODEL_CACHE/hub/models--$(echo "$JUDGE_MODEL" | sed 's#/#--#g')"
+if [[ ! -d "$MODEL_DIR" ]]; then
+    echo "ERROR: judge model not found in offline cache: $MODEL_DIR"
     exit 1
 fi
 
