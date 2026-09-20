@@ -44,6 +44,7 @@ CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 export TMPDIR="$HOME/work/.tmp"
 export PIP_CACHE_DIR="$HOME/work/.pip_cache"
 export HF_HOME="$MODEL_CACHE"
@@ -133,15 +134,19 @@ if found != expected_packages:
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is unavailable inside the Slurm allocation")
 props = torch.cuda.get_device_properties(0)
-if "A100" not in props.name or props.total_memory < 75 * 1024**3:
+if "A100" not in props.name or props.total_memory != 85094825984:
     raise RuntimeError(
-        f"Dataset B runtime requires A100 80GB-class hardware; got "
+        f"Dataset B runtime requires the frozen A100 80GB profile; got "
         f"{props.name} with {props.total_memory} bytes"
     )
 if (props.major, props.minor) != (8, 0):
     raise RuntimeError(
         f"Dataset B runtime requires SM80; got capability "
         f"{props.major}.{props.minor}"
+    )
+if str(torch.version.cuda) != "13.0":
+    raise RuntimeError(
+        f"Dataset B frozen torch CUDA runtime is 13.0; got {torch.version.cuda}"
     )
 if "VLLM_BATCH_INVARIANT" not in vllm.envs.environment_variables:
     raise RuntimeError("installed vLLM does not expose VLLM_BATCH_INVARIANT")
@@ -241,6 +246,38 @@ if [[ ! -d "$SNAPSHOT_DIR" ]]; then
     exit 1
 fi
 echo "Bridge judge revision: $CACHED_REVISION"
+
+echo "--- Verifying frozen 24B model artifacts ---"
+python - "$SNAPSHOT_DIR" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+expected = {
+    "config.json": "ce3ec410cac74da358f786c574b73b6624c50c8bb876bcb628f06500fe07adcc",
+    "generation_config.json": "8e8cb26b98a0738d5ce154290725a4d7d65a577d3cfe586eb3cea4ebecf83105",
+    "params.json": "23febf6d98a78f896149ab08733356d5b99e71b2e7e4c3caddfa4f48cda87885",
+    "preprocessor_config.json": "0f1a312ed75c86bccdf65333b5b43507f597028d895dbb9cf9f16be9f87b52f1",
+    "processor_config.json": "4ceef0d0cbf062ffd522d85fcbf5248c2db8659c589afcc47b2f26810e7d9a58",
+    "tekken.json": "c604f35d1035f534519622c0ec83fed6184978d4fdee92a5bd2a50bc05438094",
+    "tokenizer_config.json": "85d2cc5ea2cddee01ddd36fe98a2eed62d85e78c8b049ea93ee0b2ae4c2c8e5e",
+}
+for name, digest in expected.items():
+    path = root / name
+    if not path.is_file():
+        raise RuntimeError(f"missing frozen model artifact: {path}")
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != digest:
+        raise RuntimeError(
+            f"model artifact hash mismatch for {name}: expected={digest} got={got}"
+        )
+print("Frozen 24B model artifact hashes passed")
+PY
+
+echo "--- Verifying frozen driver ---"
+DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | tr -d '[:space:]')
+if [[ "$DRIVER" != "580.105.08" ]]; then
+    echo "ERROR: Dataset B frozen driver was 580.105.08; got $DRIVER"
+    exit 1
+fi
 
 echo "--- Checking local judge port availability ---"
 python - "$PORT" <<'PY'
