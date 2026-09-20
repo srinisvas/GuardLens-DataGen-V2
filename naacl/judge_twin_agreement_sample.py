@@ -108,6 +108,7 @@ def main() -> None:
             min_confidence=args.min_confidence,
             judge_max_context_chars=args.judge_max_context_chars,
             judge_max_model_len=args.judge_max_model_len,
+            judge_model_revision=args.model_revision,
         )
         output.append({
             "conversation_id": record.get("conversation_id"),
