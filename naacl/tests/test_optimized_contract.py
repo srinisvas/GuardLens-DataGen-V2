@@ -19,7 +19,7 @@ def run_active(code):
 class OptimizedContractTests(unittest.TestCase):
     def test_frozen_rubrics_parser_aggregation_and_shared_helpers(self):
         for name in ['frontier_common.py','frontier_seed_policy.py','frontier_runtime_determinism.py',
-                     'materialize_frontier_candidates.py','split_consolidated.py']:
+                     'materialize_frontier_candidates.py']:
             self.assertEqual((HERE/name).read_bytes(),(HERE/'legacy'/name).read_bytes(),name)
         old=ast.parse((HERE/'legacy/frontier_judge_v5.py').read_text())
         new=ast.parse((HERE/'frontier_judge.py').read_text())
@@ -37,6 +37,79 @@ class OptimizedContractTests(unittest.TestCase):
             current=new['_judge_with_prompt_uncached' if name=='_judge_with_prompt' else name]
             if isinstance(current,ast.FunctionDef):current.name=name
             self.assertEqual(ast.dump(node),ast.dump(current),name)
+    def test_primary_split_behavior_remains_legacy_equivalent(self):
+        run_active('''
+            import importlib.util
+            from pathlib import Path
+            import split_consolidated as active
+
+            here = Path(active.__file__).resolve().parent
+            spec = importlib.util.spec_from_file_location(
+                "guardlens_legacy_split_consolidated",
+                here / "legacy" / "split_consolidated.py",
+            )
+            assert spec is not None and spec.loader is not None
+            legacy = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(legacy)
+
+            records = []
+            for group_idx in range(12):
+                frontier = group_idx >= 6
+                source = "frontier_authored_v3" if frontier else "legacy_repaired"
+                group = f"{source}::fixture::{group_idx}"
+                for label in (0, 1):
+                    cid = f"c-{group_idx}-{label}"
+                    metadata = {
+                        "consolidated_split_group": group,
+                        "normalized_user_trajectory_hash": f"hash-{cid}",
+                    }
+                    if frontier:
+                        metadata.update({
+                            "scenario_family": f"scenario-{group_idx}",
+                            "corpus_version": "fixture-v3",
+                            "slice_role": "paired_adversarial" if label else "paired_benign",
+                            "mechanism_family": "fixture-mechanism",
+                        })
+                    records.append({
+                        "conversation_id": cid,
+                        "pair_id": f"pair-{group_idx}",
+                        "label": label,
+                        "corpus_source": source,
+                        "difficulty": "hard" if group_idx % 2 else "medium",
+                        "family": "legacy-fixture",
+                        "target_domain": "fixture-domain",
+                        "style": "fixture-style",
+                        "metadata": metadata,
+                        "intended_structure": {
+                            "pair_hardness": "context_required",
+                            "trajectory_family": "fixture-trajectory",
+                        },
+                        "turns": [
+                            {"role": "user", "text": f"request {cid}"},
+                            {"role": "assistant", "text": "response"},
+                        ],
+                    })
+
+            fractions = {"train": 0.70, "dev": 0.15, "test": 0.15}
+            active_splits = active.split_groups(
+                active.group_records(records), fractions, 42
+            )
+            legacy_splits = legacy.split_groups(
+                legacy.group_records(records), fractions, 42
+            )
+
+            def ids(splits):
+                return {
+                    name: [r["conversation_id"] for r in splits[name]]
+                    for name in ("train", "dev", "test")
+                }
+
+            assert ids(active_splits) == ids(legacy_splits), (
+                ids(active_splits),
+                ids(legacy_splits),
+            )
+        ''')
+
     def test_no_active_legacy_imports_or_global_patching(self):
         for path in HERE.glob('*.py'):
             tree=ast.parse(path.read_text())

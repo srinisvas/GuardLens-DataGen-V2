@@ -2,6 +2,7 @@
 """CPU regression tests for frontier completion and protocol-chain contracts."""
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import unittest
@@ -23,7 +24,22 @@ from frontier_seed_policy import (  # noqa: E402
     experiment_record_seed,
     experiment_seed_key,
 )
-from prepare_frontier_dataset import assert_expected_provenance  # noqa: E402
+def _load_legacy_prepare_frontier_dataset():
+    path = os.path.join(THIS_DIR, "prepare_frontier_dataset.py")
+    spec = importlib.util.spec_from_file_location(
+        "guardlens_legacy_prepare_frontier_dataset",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load archived preparation module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+assert_expected_provenance = (
+    _load_legacy_prepare_frontier_dataset().assert_expected_provenance
+)
 from validate_frontier_rollout import assert_realized_rollout  # noqa: E402
 
 TARGET = "Qwen/Qwen2.5-32B-Instruct"
