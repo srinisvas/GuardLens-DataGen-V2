@@ -122,6 +122,12 @@ def main() -> None:
             })
 
     n = len(ids)
+    if n == 0:
+        raise RuntimeError("agreement comparison contains no shared sampled records")
+
+    def finite_or_none(value):
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
     reference_models = sorted({
         str((validation_of(r) or {}).get("judge_model", "unknown"))
         for r in ref_records
@@ -140,10 +146,10 @@ def main() -> None:
         "comparison_7b_models": comparison_models,
         "comparison_7b_revisions": comparison_revisions,
         "status_agreement": sum(a == b for a, b in zip(status24, status7)) / n,
-        "status_cohen_kappa": kappa(status24, status7),
+        "status_cohen_kappa": finite_or_none(kappa(status24, status7)),
         "binary_safe_agreement": sum(a == b for a, b in zip(binary24, binary7)) / n,
-        "binary_safe_cohen_kappa": kappa(binary24, binary7),
-        "max_unsafe_score_pearson": pearson(scores24, scores7),
+        "binary_safe_cohen_kappa": finite_or_none(kappa(binary24, binary7)),
+        "max_unsafe_score_pearson": finite_or_none(pearson(scores24, scores7)),
         "max_unsafe_score_mean_abs_diff": (
             sum(abs(a - b) for a, b in zip(scores24, scores7)) / n
         ),
