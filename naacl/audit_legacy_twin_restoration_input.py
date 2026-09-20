@@ -152,6 +152,10 @@ def main() -> None:
         errors.append(
             f"expected exactly one known independent-validation model, got {known_models}"
         )
+    if independent_models.get("UNKNOWN", 0):
+        errors.append(
+            f"{independent_models['UNKNOWN']} benign twins lack independent-model provenance"
+        )
 
     if not twins:
         errors.append("no original interactive benign twins found")
