@@ -14,6 +14,7 @@ set -euo pipefail
 CANONICAL_BRIDGE_JUDGE="mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 CANONICAL_BRIDGE_REVISION="68faf511d618ef198fef186659617cfd2eb8e33a"
 EXPECTED_HISTORICAL_INDEPENDENT="mistralai/Mistral-7B-Instruct-v0.3"
+EXPECTED_ORIGINAL_SOURCE_SHA256="af4166705fc4abc1a80acf38e572eb9e39bc4d84a247f33a5309e4d7cb64aaea"
 JUDGE_MODEL="${JUDGE_MODEL:-$CANONICAL_BRIDGE_JUDGE}"
 PORT="${VLLM_PORT:-8000}"
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
@@ -22,6 +23,7 @@ PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 INPUT_FILE="${INPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_clean.jsonl}"
 ORIGINAL_SOURCE_FILE="${ORIGINAL_SOURCE_FILE:-}"
+ORIGINAL_SOURCE_MANIFEST="${ORIGINAL_SOURCE_MANIFEST:-}"
 FROZEN_PREPARED_A="${FROZEN_PREPARED_A:-$PROJECT_DIR/results-new/naacl_legacy_prepared.jsonl}"
 OUTPUT_FILE="${OUTPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b.jsonl}"
 STATS_FILE="${STATS_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b_stats.json}"
@@ -90,6 +92,8 @@ echo " Dataset A original-twin bridge adjudication"
 echo "========================================================"
 echo "Input:                         $INPUT_FILE"
 echo "Original source lineage:       ${ORIGINAL_SOURCE_FILE:-<REQUIRED>}"
+echo "Original lineage manifest:     ${ORIGINAL_SOURCE_MANIFEST:-<AUTO>}"
+echo "Expected lineage SHA256:       $EXPECTED_ORIGINAL_SOURCE_SHA256"
 echo "Frozen prepared A reference:   $FROZEN_PREPARED_A"
 echo "Bridge judge:                  $JUDGE_MODEL"
 echo "Expected historical validator: $EXPECTED_HISTORICAL_INDEPENDENT"
@@ -124,6 +128,50 @@ if [[ ! -f "$ORIGINAL_SOURCE_FILE" ]]; then
     echo "ERROR: original pre-validation source not found: $ORIGINAL_SOURCE_FILE"
     exit 1
 fi
+
+ACTUAL_SOURCE_SHA256=$(sha256sum "$ORIGINAL_SOURCE_FILE" | awk '{print $1}')
+if [[ "$ACTUAL_SOURCE_SHA256" != "$EXPECTED_ORIGINAL_SOURCE_SHA256" ]]; then
+    echo "ERROR: original lineage SHA256 mismatch"
+    echo "  expected: $EXPECTED_ORIGINAL_SOURCE_SHA256"
+    echo "  actual:   $ACTUAL_SOURCE_SHA256"
+    exit 1
+fi
+
+if [[ -z "$ORIGINAL_SOURCE_MANIFEST" ]]; then
+    ORIGINAL_SOURCE_MANIFEST="${ORIGINAL_SOURCE_FILE%.jsonl}.manifest.json"
+fi
+if [[ ! -f "$ORIGINAL_SOURCE_MANIFEST" ]]; then
+    echo "ERROR: lineage manifest not found: $ORIGINAL_SOURCE_MANIFEST"
+    exit 1
+fi
+
+python - "$ORIGINAL_SOURCE_MANIFEST" "$ORIGINAL_SOURCE_FILE" "$EXPECTED_ORIGINAL_SOURCE_SHA256" <<'PY'
+import json, pathlib, sys
+manifest_path, source_path, expected_sha = sys.argv[1:]
+m = json.loads(pathlib.Path(manifest_path).read_text(encoding="utf-8"))
+if m.get("kind") != "dataset_a_restorable_twin_pre_independent_lineage_union_v1":
+    raise RuntimeError(f"unexpected lineage manifest kind: {m.get('kind')!r}")
+if int(m.get("record_count", -1)) != 526:
+    raise RuntimeError(f"lineage manifest record_count must be 526, got {m.get('record_count')}")
+out = m.get("materialized_output", {}) or {}
+if out.get("sha256") != expected_sha:
+    raise RuntimeError(
+        f"lineage manifest SHA mismatch: manifest={out.get('sha256')} expected={expected_sha}"
+    )
+if pathlib.Path(out.get("path", "")).resolve() != pathlib.Path(source_path).resolve():
+    raise RuntimeError(
+        f"lineage manifest path mismatch: manifest={out.get('path')} source={source_path}"
+    )
+contributors = m.get("contributing_files", []) or []
+if len(contributors) != 2:
+    raise RuntimeError(
+        f"expected exactly 2 contributing source files from reviewed lineage discovery, got {len(contributors)}"
+    )
+if sum(int(x.get("records_selected", 0)) for x in contributors) != 526:
+    raise RuntimeError("lineage contributor record counts do not sum to 526")
+print("Lineage artifact + manifest verification passed")
+PY
+
 if [[ ! -f "$FROZEN_PREPARED_A" ]]; then
     echo "ERROR: frozen prepared Dataset A reference not found: $FROZEN_PREPARED_A"
     exit 1
