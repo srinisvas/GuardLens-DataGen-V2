@@ -52,7 +52,7 @@ export PIP_CACHE_DIR="$HOME/work/.pip_cache"
 export HF_HOME="$MODEL_CACHE"
 export HF_HUB_CACHE="$HF_HOME/hub"
 export TRANSFORMERS_CACHE="$HF_HOME/hub"
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export HF_HUB_OFFLINE=1
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_BATCH_INVARIANT=1
 
@@ -127,7 +127,13 @@ python -m py_compile \
     naacl/prepare_dataset.py \
     naacl/frontier_common.py \
     naacl/frontier_seed_policy.py \
-    naacl/frontier_judge_v5.py
+    naacl/frontier_judge_v5.py \
+    naacl/check_frontier_environment.py
+
+echo "--- Frozen Dataset B cache preflight ---"
+python naacl/check_frontier_environment.py \
+    --model-cache "$MODEL_CACHE" \
+    --models "$JUDGE_MODEL"
 
 echo "--- Frozen Dataset B runtime/protocol preflight ---"
 python - <<'PY'
