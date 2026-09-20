@@ -42,6 +42,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "Tracked working-tree changes detected; commit or revert them before rebuilding" >&2
   exit 2
 fi
+CODE_SHA="$(git rev-parse HEAD)"
 
 rm -rf "$CANDIDATE"
 mkdir -p "$CANDIDATE"
@@ -130,7 +131,15 @@ python naacl/audit_final_data_prep.py \
   --report-output "$CANDIDATE/data_prep_freeze_report.json"
 
 echo "=== 9/9 Record preparation code commit ==="
-git rev-parse HEAD > "$CANDIDATE/data_prep_code_commit.txt"
+if [[ "$(git rev-parse HEAD)" != "$CODE_SHA" ]]; then
+  echo "Repository HEAD changed during rebuild; candidate is invalid" >&2
+  exit 2
+fi
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Tracked working tree changed during rebuild; candidate is invalid" >&2
+  exit 2
+fi
+printf '%s\n' "$CODE_SHA" > "$CANDIDATE/data_prep_code_commit.txt"
 
 echo
 echo "CANDIDATE READY FOR REVIEW: $CANDIDATE"
