@@ -166,6 +166,20 @@ def reconcile_semantically_masked_evidence_turns(record: Dict) -> List[int]:
     return prepared
 
 
+def apply_primary_semantic_turn_repair(record: Dict) -> None:
+    """Apply the approved turn repair only to an admitted primary record."""
+    evidence_turns = reconcile_semantically_masked_evidence_turns(record)
+    record["evidence_turn_ids"] = evidence_turns
+    record["pivot_turn_id"] = evidence_turns[0] if evidence_turns else None
+    record["pivot_supervision_ignore"] = not bool(evidence_turns)
+    if len(evidence_turns) > 1:
+        record["pivot_kind"] = "distributed"
+    elif len(evidence_turns) == 1:
+        record["pivot_kind"] = "contextual_pivot"
+    else:
+        record["pivot_kind"] = "none"
+
+
 def user_turn_count(record: Dict) -> int:
     return sum(
         str(t.get("role", "")).lower() == "user"
@@ -271,7 +285,11 @@ def sanitize_malicious(
     r["loss_weight"] = LOSS_WEIGHTS[tier]
     r["training_eligible"] = True
 
-    evidence_turns = reconcile_semantically_masked_evidence_turns(r)
+    # Keep raw B4 turn membership through sanitization. Semantic turn
+    # reconciliation is applied only after the pair has passed every primary
+    # admission gate, so excluded/stress artifacts cannot be changed by this
+    # repair.
+    evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
     r["evidence_turn_ids"] = evidence_turns
     r["pivot_turn_id"] = evidence_turns[0] if evidence_turns else None
     r["pivot_supervision_ignore"] = not bool(evidence_turns)
@@ -477,6 +495,11 @@ def main() -> None:
             excluded.append(excluded_copy(malicious, reason))
             excluded.append(excluded_copy(benign, reason))
             continue
+
+        # Pair admission is now complete. Reconcile semantic masking only on the
+        # retained malicious primary record. Any unexpected orphan case fails
+        # the preparation rather than silently changing corpus membership.
+        apply_primary_semantic_turn_repair(mal_out)
 
         for out in (mal_out, ben_out):
             out["source_stage"] = "canonical_training_record"
