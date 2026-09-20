@@ -151,6 +151,52 @@ Preparation performs three important compatibility repairs:
   `pivot_supervision_ignore=true`. Benign `pivot_turn_id=None` remains a true
   supervised no-pivot example.
 
+## 3A. Candidate restoration of original interactive benign twins
+
+The current repaired primary artifact replaced the original interactive benign
+twins with a separately generated benign pool in order to match user-turn
+counts. Before changing the frozen dataset, audit whether the original twins can
+be restored without replaying or rewriting any conversation.
+
+The interactive generator stored Llama responses for both sides of each pair,
+but only the malicious side received a generation-time llama_validation object.
+The NAACL fail-closed normalization therefore made every original benign twin
+ineligible because target-side validation provenance was missing, not because
+all twins were observed unsafe.
+
+The restoration audit repairs only that missing provenance:
+
+- do not regenerate Llama responses;
+- do not rerun the existing independent-model replay;
+- do not rerun malicious counterfactual evidence;
+- judge the already-stored benign Llama responses with the same structured judge
+  model recorded by the independent validation pass;
+- require both the stored-target trajectory and the existing independent replay
+  to remain safe;
+- preserve original pair_id, topic/setup, text, and natural trajectory length;
+- build a separate candidate artifact before any frozen-data replacement.
+
+Run:
+
+```bash
+sbatch naacl/launch_stored_twin_judge.slurm
+```
+
+The launcher fails closed if JUDGE_MODEL differs from the independent validation
+model recorded on the benign twins. Its default outputs are:
+
+```text
+results-new/naacl_evidence_twins_judged.jsonl
+results-new/naacl_evidence_twins_judged_stats.json
+results-new/naacl_legacy_twins_restored_candidate.jsonl
+results-new/naacl_legacy_twins_restored_candidate_stats.json
+results-new/naacl_legacy_twins_restored_excluded.jsonl
+```
+
+This stage does not modify the current frozen train/dev/test artifacts. Inspect
+the recovered-pair count and structural distributions before deciding whether
+the candidate should replace the current legacy primary corpus.
+
 ## 4. Recreate splits
 
 ```bash
