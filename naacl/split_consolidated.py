@@ -29,6 +29,18 @@ def n_user_turns(record: Dict) -> int:
     )
 
 
+def total_user_chars(record: Dict) -> int:
+    return sum(
+        len(str(t.get("text", "")))
+        for t in record.get("turns", [])
+        if str(t.get("role", "")).lower() == "user"
+    )
+
+
+def user_char_bin(record: Dict, width: int = 500) -> str:
+    return str(total_user_chars(record) // width)
+
+
 def frontier_author(record: Dict) -> str:
     metadata = record.get("metadata", {}) or {}
     return str(
@@ -62,6 +74,14 @@ def group_signature(group: List[Dict]) -> Counter:
         c[("source_label", source, label)] += 1
         c[("source_difficulty", source, difficulty)] += 1
         c[("source_label_user_turns", source, label, user_len)] += 1
+        c[
+            (
+                "source_label_user_char_bin",
+                source,
+                label,
+                user_char_bin(r),
+            )
+        ] += 1
 
         if source == "frontier_authored_v3":
             metadata = r.get("metadata", {}) or {}
@@ -186,6 +206,10 @@ def describe(records: List[Dict]) -> Dict:
             f"{r.get('corpus_source')}|{r.get('label')}|{n_user_turns(r)}"
             for r in records
         )),
+        "source_label_user_char_bin": dict(Counter(
+            f"{r.get('corpus_source')}|{r.get('label')}|{user_char_bin(r)}"
+            for r in records
+        )),
         "difficulty": dict(Counter(str(r.get("difficulty", "unknown")) for r in records)),
         "supervision_tiers": dict(Counter(str(r.get("supervision_tier")) for r in records)),
         "groups": len({(r.get("metadata", {}) or {}).get("consolidated_split_group") for r in records}),
@@ -266,7 +290,8 @@ def main() -> None:
         "fractions": fractions,
         "group_policy": "metadata.consolidated_split_group; frontier scenario_family and legacy pairs never cross partitions",
         "balance_policy": (
-            "soft balance on label, source, source×label, source×difficulty, source×label×user_turn_count, "
+            "soft balance on label, source, source×label, source×difficulty, "
+            "source×label×user_turn_count, source×label×500-char user-text bin, "
             "and for frontier: author corpus, author×label, target_domain, slice_role, pair_hardness, "
             "trajectory_family, mechanism_family, style"
         ),
