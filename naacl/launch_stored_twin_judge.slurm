@@ -59,6 +59,13 @@ if [[ ! -f "$INPUT_FILE" ]]; then
     exit 1
 fi
 
+echo "--- Python syntax/import preflight ---"
+python -m py_compile \
+    naacl/audit_legacy_twin_restoration_input.py \
+    naacl/judge_stored_twin_responses.py \
+    naacl/restore_legacy_twins.py \
+    naacl/prepare_dataset.py
+
 echo "--- CPU twin-restoration input audit ---"
 python naacl/audit_legacy_twin_restoration_input.py --input "$INPUT_FILE"
 
