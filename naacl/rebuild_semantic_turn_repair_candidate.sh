@@ -26,13 +26,17 @@ if [[ "$CANDIDATE" == "$OLD_FREEZE" ]]; then
   exit 2
 fi
 
-case "$CANDIDATE" in
-  "$REPO_ROOT"/results-naacl/*) ;;
+RESULTS_ROOT="$(readlink -m "$REPO_ROOT/results-naacl")"
+CANDIDATE_REAL="$(readlink -m "$CANDIDATE")"
+case "$CANDIDATE_REAL" in
+  "$RESULTS_ROOT"/final-data-freeze-semantic-turn-repair-candidate*) ;;
   *)
-    echo "Refusing unsafe candidate path outside $REPO_ROOT/results-naacl: $CANDIDATE" >&2
+    echo "Refusing unsafe candidate path: $CANDIDATE_REAL" >&2
+    echo "Candidate basename must start with final-data-freeze-semantic-turn-repair-candidate" >&2
     exit 2
     ;;
 esac
+CANDIDATE="$CANDIDATE_REAL"
 
 if [[ "$(git rev-parse --abbrev-ref HEAD)" != "naacl-validity-repair-optimized" ]]; then
   echo "Run this rebuild only from branch naacl-validity-repair-optimized" >&2
