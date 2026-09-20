@@ -209,6 +209,8 @@ def main() -> None:
     target_models = Counter()
     malformed = 0
     bad_pair_structure = 0
+    total_stored_assistant_turns = 0
+    max_observable_transcript_chars = 0
 
     for twin in twins:
         cid = str(twin.get("conversation_id", ""))
@@ -241,6 +243,24 @@ def main() -> None:
 
         try:
             validate_stored_trajectory(twin)
+            assistant_turns = sum(
+                str(turn.get("role", "")).lower() == "assistant"
+                for turn in twin.get("turns", [])
+            )
+            total_stored_assistant_turns += assistant_turns
+            chunks = [
+                f"[{str(turn.get('role', '')).upper()}]\n{str(turn.get('text', '')).strip()}"
+                for turn in twin.get("turns", [])
+            ]
+            transcript_chars = len("\n\n".join(chunks))
+            max_observable_transcript_chars = max(
+                max_observable_transcript_chars, transcript_chars
+            )
+            if transcript_chars > 100000:
+                errors.append(
+                    f"{cid}: observable transcript chars={transcript_chars} "
+                    "exceed frozen Dataset B judge budget=100000"
+                )
         except Exception as exc:
             malformed += 1
             errors.append(str(exc))
@@ -359,6 +379,9 @@ def main() -> None:
         "pair_groups": len(pairs),
         "bad_pair_structure": bad_pair_structure,
         "malformed_stored_benign_trajectories": malformed,
+        "total_stored_assistant_turns": total_stored_assistant_turns,
+        "dual_rubric_judge_requests": 2 * total_stored_assistant_turns,
+        "max_observable_transcript_chars": max_observable_transcript_chars,
         "independent_models": dict(independent_models),
         "independent_status": dict(independent_status),
         "target_models": dict(target_models),
