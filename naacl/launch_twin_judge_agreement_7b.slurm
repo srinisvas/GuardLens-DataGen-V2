@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=logs/a_twin_agree7b_%j.out
 #SBATCH --error=logs/a_twin_agree7b_%j.err
 
@@ -42,7 +42,7 @@ export PIP_CACHE_DIR="$HOME/work/.pip_cache"
 export HF_HOME="$MODEL_CACHE"
 export HF_HUB_CACHE="$HF_HOME/hub"
 export TRANSFORMERS_CACHE="$HF_HOME/hub"
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export HF_HUB_OFFLINE=1
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_BATCH_INVARIANT=1
 
@@ -71,6 +71,12 @@ sys.path.insert(0, "naacl")
 from frontier_judge_v5 import pass_a_prompt_fingerprint, pass_b_prompt_fingerprint
 if importlib.metadata.version("vllm") != "0.28.0":
     raise RuntimeError("agreement audit requires frozen vLLM 0.28.0")
+import torch
+if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+    raise RuntimeError(
+        f"agreement audit requires exactly one Slurm-visible GPU; "
+        f"found {torch.cuda.device_count() if torch.cuda.is_available() else 0}"
+    )
 if os.environ.get("VLLM_BATCH_INVARIANT") != "1":
     raise RuntimeError("VLLM_BATCH_INVARIANT must equal 1")
 if pass_a_prompt_fingerprint() != "eaff8c323e79e7cdc0c40741c25a8d5c75d795b96406fdf6b94b411016282f04":
@@ -106,10 +112,11 @@ echo "Judge protocol:      Dataset B B2 v5 dual-boundary conservative union"
 echo "Stored responses:    SAME on both sides"
 echo "========================================================"
 
-CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
+python -m vllm.entrypoints.openai.api_server \
   --model "$JUDGE_MODEL" \
   --revision "$CACHED_REVISION" \
   --tokenizer-revision "$CACHED_REVISION" \
+  --host 127.0.0.1 \
   --port "$PORT" \
   --dtype bfloat16 \
   --tensor-parallel-size 1 \
@@ -134,7 +141,7 @@ cleanup() {
 trap cleanup EXIT
 
 for attempt in $(seq 1 180); do
-  if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
+  if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "vLLM ready"
     break
   fi
@@ -150,7 +157,7 @@ python naacl/judge_twin_agreement_sample.py \
   --output "$SAMPLE_OUTPUT" \
   --model "$JUDGE_MODEL" \
   --model-revision "$CACHED_REVISION" \
-  --base-url "http://localhost:$PORT" \
+  --base-url "http://127.0.0.1:$PORT" \
   --sample-size "$SAMPLE_SIZE" \
   --sample-seed "$SAMPLE_SEED" \
   --judge-seed "$BASE_SEED" \
