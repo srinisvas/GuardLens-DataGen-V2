@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter, defaultdict
@@ -50,6 +51,36 @@ def validate_stored_trajectory(record: Dict) -> None:
         raise RuntimeError(f"{cid}: no stored user/assistant pairs")
 
 
+def observable_turn_hash(record: Dict) -> str:
+    payload = [
+        {
+            "turn_id": turn.get("turn_id"),
+            "role": turn.get("role"),
+            "text": turn.get("text"),
+        }
+        for turn in record.get("turns", [])
+    ]
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def load_source_hashes(path: str) -> Dict[str, str]:
+    hashes = {}
+    for record in load_jsonl(path):
+        cid = str(record.get("conversation_id", ""))
+        if not cid:
+            raise RuntimeError(f"{path}: source record missing conversation_id")
+        if cid in hashes:
+            raise RuntimeError(f"{path}: duplicate source conversation_id {cid}")
+        hashes[cid] = observable_turn_hash(record)
+    return hashes
+
+
 def independent_snapshot(record: Dict) -> Dict:
     return (
         record.get("independent_validation", {})
@@ -61,6 +92,18 @@ def independent_snapshot(record: Dict) -> Dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
+    parser.add_argument(
+        "--original-source",
+        default=None,
+        help=(
+            "Optional pre-independent-validation artifact. When supplied, every "
+            "original benign twin must have byte-equivalent observable turn "
+            "IDs/roles/text in the restoration input."
+        ),
+    )
+    parser.add_argument("--expected-benign-twins", type=int, default=545)
+    parser.add_argument("--expected-validated-malicious", type=int, default=545)
+    parser.add_argument("--expected-final-malicious-candidates", type=int, default=526)
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
@@ -135,15 +178,54 @@ def main() -> None:
         and r.get("validation_status") == "validated"
     ]
 
+    final_malicious_candidates = [
+        r for r in records
+        if r.get("label") == 1
+        and r.get("validation_status") == "validated"
+        and str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
+            not in {"error", "missing"}
+        and (
+            str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
+                == "complete"
+            or bool(
+                (r.get("validation_provenance", {}) or {}).get(
+                    "independent_success", False
+                )
+            )
+        )
+    ]
+
+    source_lineage_checked = False
+    source_lineage_missing = 0
+    source_lineage_mismatch = 0
+    if args.original_source:
+        source_hashes = load_source_hashes(args.original_source)
+        source_lineage_checked = True
+        for twin in twins:
+            cid = str(twin.get("conversation_id", ""))
+            expected_hash = source_hashes.get(cid)
+            if expected_hash is None:
+                source_lineage_missing += 1
+                errors.append(f"{cid}: absent from original source artifact")
+            elif observable_turn_hash(twin) != expected_hash:
+                source_lineage_mismatch += 1
+                errors.append(
+                    f"{cid}: observable stored trajectory differs from original source"
+                )
+
     summary = {
         "records": len(records),
         "original_benign_twins": len(twins),
         "validated_interactive_malicious": len(malicious_validated),
+        "final_malicious_candidates": len(final_malicious_candidates),
         "pair_groups": len(pairs),
         "bad_pair_structure": bad_pair_structure,
         "malformed_stored_benign_trajectories": malformed,
         "independent_models": dict(independent_models),
         "independent_status": dict(independent_status),
+        "source_lineage_checked": source_lineage_checked,
+        "source_lineage_missing": source_lineage_missing,
+        "source_lineage_mismatch": source_lineage_mismatch,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
 
@@ -155,6 +237,27 @@ def main() -> None:
     if independent_models.get("UNKNOWN", 0):
         errors.append(
             f"{independent_models['UNKNOWN']} benign twins lack independent-model provenance"
+        )
+
+    if args.expected_benign_twins is not None and len(twins) != args.expected_benign_twins:
+        errors.append(
+            f"expected {args.expected_benign_twins} original benign twins, found {len(twins)}"
+        )
+    if (
+        args.expected_validated_malicious is not None
+        and len(malicious_validated) != args.expected_validated_malicious
+    ):
+        errors.append(
+            f"expected {args.expected_validated_malicious} validated interactive "
+            f"malicious records, found {len(malicious_validated)}"
+        )
+    if (
+        args.expected_final_malicious_candidates is not None
+        and len(final_malicious_candidates) != args.expected_final_malicious_candidates
+    ):
+        errors.append(
+            f"expected {args.expected_final_malicious_candidates} final malicious "
+            f"candidates, found {len(final_malicious_candidates)}"
         )
 
     if not twins:
