@@ -159,12 +159,48 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--stats-output", required=True)
     parser.add_argument("--excluded-output", default=None)
+    parser.add_argument(
+        "--reference-prepared",
+        default=None,
+        help=(
+            "Current frozen prepared Dataset A. When supplied, every malicious "
+            "record in the restored candidate must be exactly identical to the "
+            "existing prepared malicious record."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
     malicious, evidence_excluded = final_malicious(records)
     groups = pair_index(records)
+
+    if args.reference_prepared:
+        reference_records = load_jsonl(args.reference_prepared)
+        reference_malicious = {
+            str(r.get("conversation_id", "")): r
+            for r in reference_records
+            if r.get("label") == 1
+        }
+        current_malicious = {
+            str(r.get("conversation_id", "")): r for r in malicious
+        }
+        if set(reference_malicious) != set(current_malicious):
+            missing = sorted(set(reference_malicious) - set(current_malicious))
+            extra = sorted(set(current_malicious) - set(reference_malicious))
+            raise RuntimeError(
+                "restored candidate malicious membership differs from frozen "
+                f"prepared Dataset A: missing={missing[:10]} extra={extra[:10]}"
+            )
+        changed = [
+            cid for cid in sorted(current_malicious)
+            if current_malicious[cid] != reference_malicious[cid]
+        ]
+        if changed:
+            raise RuntimeError(
+                "restored candidate would alter existing prepared malicious "
+                f"records: {changed[:10]}"
+            )
 
     restored_malicious = []
     restored_benign = []
@@ -256,6 +292,7 @@ def main() -> None:
 
     stats = {
         "input_records": len(records),
+        "frozen_malicious_reference_checked": bool(args.reference_prepared),
         "repaired_malicious_before_pair_gate": len(malicious),
         "malicious_excluded_by_repaired_evidence_gate": len(evidence_excluded),
         "restored_pairs": len(restored_malicious),
