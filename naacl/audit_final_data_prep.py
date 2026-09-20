@@ -17,6 +17,11 @@ from typing import Dict, Iterable, List
 
 from audit_frontier_auxiliary import audit as audit_auxiliary
 from audit_review_export import audit_review_export
+from audit_semantic_turn_consistency import (
+    CASE_A,
+    CASE_B,
+    inspect_splits as inspect_semantic_turns,
+)
 from frontier_common import json_fingerprint, load_jsonl
 from merge_training_corpora import (
     EXPECTED_COMBINED_PER_LABEL,
@@ -385,6 +390,29 @@ def main() -> None:
     audit_frontier_stress_contract(frontier_stress)
     audit_frontier_excluded_contract(frontier_excluded)
 
+    semantic_turn_report = inspect_semantic_turns(
+        {"frontier_primary": frontier},
+        enforce_reviewed_counts=args.expect_final_naacl_counts,
+    )
+    if semantic_turn_report["silent_fallback_case_B_turns"] != 0:
+        raise RuntimeError(
+            "frontier primary retains orphan semantic-masked evidence-turn targets"
+        )
+    if semantic_turn_report["unrepaired_case_A_turns"] != 0:
+        raise RuntimeError(
+            "frontier primary retains unrepaired semantic-masked turn contradictions"
+        )
+    if args.expect_final_naacl_counts:
+        if semantic_turn_report["repaired_case_A_turns"] != 4:
+            raise RuntimeError(
+                "semantic turn repair count changed: "
+                f"{semantic_turn_report['repaired_case_A_turns']} != 4"
+            )
+        if semantic_turn_report["case_counts_by_turn"].get(CASE_A, 0) != 4:
+            raise RuntimeError("expected exactly four semantically repaired case-A turns")
+        if semantic_turn_report["case_counts_by_turn"].get(CASE_B, 0) != 0:
+            raise RuntimeError("unexpected semantic case-B turns")
+
     if legacy_ids & frontier_ids:
         raise RuntimeError(
             "legacy and frontier primary corpora share conversation IDs"
@@ -486,6 +514,7 @@ def main() -> None:
         },
         "frontier_stress_contract": "passed",
         "frontier_excluded_contract": "passed",
+        "semantic_turn_supervision": semantic_turn_report,
         "primary_split_leakage": "passed",
     }
 
