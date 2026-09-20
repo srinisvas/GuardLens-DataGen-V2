@@ -24,6 +24,7 @@ from judge_stored_twin_responses import (
     DEFAULT_AMBIGUOUS_THRESHOLD,
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_UNSAFE_THRESHOLD,
+    final_malicious_candidate,
     is_original_benign_twin,
     judge_stored_trajectory,
     load_jsonl,
@@ -78,7 +79,21 @@ def main() -> None:
 
     records = load_jsonl(args.input)
     targets = infer_target_models(records)
-    twins = [r for r in records if is_original_benign_twin(r)]
+    final_pair_ids = {
+        str(r.get("pair_id", ""))
+        for r in records
+        if final_malicious_candidate(r)
+    }
+    twins = [
+        r for r in records
+        if is_original_benign_twin(r)
+        and str(r.get("pair_id", "")) in final_pair_ids
+    ]
+    if len(twins) != len(final_pair_ids):
+        raise RuntimeError(
+            f"agreement audit pair universe mismatch: "
+            f"final_pairs={len(final_pair_ids)} twins={len(twins)}"
+        )
     twins.sort(key=lambda r: sample_key(args.sample_seed, r))
     selected = twins[: min(args.sample_size, len(twins))]
     if not selected:
