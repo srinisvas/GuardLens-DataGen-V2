@@ -12,6 +12,7 @@ if str(NAACL) not in sys.path:
 
 from audit_semantic_turn_repair_delta import (
     audit_artifact_pair,
+    audit_byte_identical,
     expected_repaired_record,
 )
 from semantic_span_policy import ADJUDICATION_VERSION
@@ -92,6 +93,27 @@ class SemanticTurnRepairDeltaTests(unittest.TestCase):
             after["semantic_turn_supervision_repair"]["removed_evidence_turn_ids"],
             [0],
         )
+
+    def test_byte_identical_gate_rejects_unrelated_artifact_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            before_path = os.path.join(tmp, "before.jsonl")
+            after_path = os.path.join(tmp, "after.jsonl")
+            Path(before_path).write_text('{"x":1}\n', encoding="utf-8")
+            Path(after_path).write_text('{"x":1}\n', encoding="utf-8")
+            report = audit_byte_identical(
+                before_path,
+                after_path,
+                where="unchanged",
+            )
+            self.assertEqual(report["status"], "byte_identical")
+
+            Path(after_path).write_text('{"x":2}\n', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not byte-identical"):
+                audit_byte_identical(
+                    before_path,
+                    after_path,
+                    where="unchanged",
+                )
 
     def test_artifact_pair_rejects_any_extra_change(self):
         before = case_a_record()
