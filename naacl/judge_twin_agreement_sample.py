@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--model-revision", default=None)
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--api-key", default=os.environ.get("VLLM_API_KEY", "EMPTY"))
     parser.add_argument("--sample-size", type=int, default=120)
@@ -115,6 +116,7 @@ def main() -> None:
             "sample_seed": args.sample_seed,
             "sample_size_requested": args.sample_size,
             "judge_model": args.model,
+            "judge_model_revision": args.model_revision,
             "bridge_protocol": BRIDGE_PROTOCOL,
             "validation": validation,
         })
@@ -125,6 +127,7 @@ def main() -> None:
     print(json.dumps({
         "records": len(output),
         "judge_model": args.model,
+        "judge_model_revision": args.model_revision,
         "sample_seed": args.sample_seed,
         "sample_size_requested": args.sample_size,
         "bridge_protocol": BRIDGE_PROTOCOL,
