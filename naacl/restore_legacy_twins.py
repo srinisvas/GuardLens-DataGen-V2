@@ -119,13 +119,13 @@ def eligible_twin(record: Dict) -> bool:
         return False
     if stored.get("judge_vllm_enforce_eager") is not True:
         return False
-    if independent.get("validated") is not True or independent.get("jailbreak_detected"):
+    if independent.get("validated") is not True:
         return False
     if not restoration.get("historical_independent_replay_reused", False):
         return False
     if restoration.get("bridge_judge_safe") is not True:
         return False
-    if restoration.get("historical_independent_safe") is not True:
+    if restoration.get("historical_independent_usable") is not True:
         return False
     if restoration.get("conversation_text_modified") is not False:
         return False
@@ -225,7 +225,7 @@ def main() -> None:
             reason = (
                 restoration.get("bridge_judge_reason", "unknown")
                 + "|"
-                + restoration.get("historical_independent_reason", "unknown")
+                + restoration.get("historical_independent_outcome", "unknown")
             )
             rejection_reasons[reason] += 1
             continue
@@ -254,18 +254,38 @@ def main() -> None:
         # into ignored targets.
         for turn in restored.get("turns", []):
             role = str(turn.get("role", "")).lower()
+            text_value = str(turn.get("text", ""))
             for span in turn.get("span_annotations", []) or []:
                 span["counterfactual_delta"] = None
                 if role == "user":
-                    # Validated benign user spans are explicit localization
-                    # negatives.
-                    span["causal_type"] = "incidental"
-                    span["supervision_tier"] = "incidental"
-                    span["evidence_status"] = "benign_negative"
+                    start = span.get("char_start")
+                    end = span.get("char_end")
+                    span_text = str(span.get("text", ""))
+                    offsets_valid = (
+                        isinstance(start, int)
+                        and not isinstance(start, bool)
+                        and isinstance(end, int)
+                        and not isinstance(end, bool)
+                        and 0 <= start < end <= len(text_value)
+                    )
+                    text_matches = (
+                        offsets_valid
+                        and (not span_text or text_value[start:end] == span_text)
+                    )
+                    if offsets_valid and text_matches:
+                        # Validated benign user spans are explicit localization
+                        # negatives.
+                        span["causal_type"] = "incidental"
+                        span["supervision_tier"] = "incidental"
+                        span["evidence_status"] = "benign_negative"
+                    else:
+                        # Legacy offset drift is not repaired heuristically.
+                        # Preserve the annotation but exclude it from targets.
+                        span["causal_type"] = "unvalidated"
+                        span["supervision_tier"] = "ignore"
+                        span["evidence_status"] = "benign_legacy_span_mismatch_ignore"
                 else:
-                    # Span localization is defined over user turns only. Keep
-                    # any legacy assistant annotation for provenance, but never
-                    # expose it as target-bearing supervision.
+                    # Span localization is defined over user turns only.
                     span["causal_type"] = "unvalidated"
                     span["supervision_tier"] = "ignore"
                     span["evidence_status"] = "benign_assistant_ignore"
@@ -300,7 +320,9 @@ def main() -> None:
                 "historical_independent_model"
             ),
             "historical_independent_usable": True,
-            "historical_independent_safe": True,
+            "historical_independent_outcome": restoration.get(
+                "historical_independent_outcome"
+            ),
             "combined_usable": True,
             "conversation_text_modified": False,
             "target_replayed": False,
@@ -376,8 +398,10 @@ def main() -> None:
             "behavioral_policy": (
                 "malicious repaired evidence gate retained; benign twin requires "
                 "Dataset B's Mistral-Small-3.1-24B v5 dual-rubric conservative-union "
-                "bridge judge to validate the stored Llama trajectory plus the existing "
-                "historical Mistral-7B independent replay to remain safe"
+                "bridge judge to validate the stored Llama trajectory; the existing "
+                "historical Mistral-7B replay must be structurally usable but its "
+                "safe/unsafe behavioral outcome is retained as a diagnostic, not an "
+                "admission veto"
             ),
         },
     }
