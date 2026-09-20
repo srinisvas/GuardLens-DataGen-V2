@@ -243,6 +243,18 @@ def main() -> None:
         metadata["pre_twin_restoration_training_eligible"] = benign.get(
             "training_eligible"
         )
+        # evidence_analysis_v3 reset legacy span evidence to "unassessed"
+        # on every record before returning benign examples as not-applicable.
+        # A validated benign twin supplies explicit negative span supervision,
+        # so do not let that stale reset silently turn annotated benign spans
+        # into ignored targets.
+        for turn in restored.get("turns", []):
+            for span in turn.get("span_annotations", []) or []:
+                span["causal_type"] = "incidental"
+                span["supervision_tier"] = "incidental"
+                span["evidence_status"] = "benign_negative"
+                span["counterfactual_delta"] = None
+
         restored["validation_status"] = "validated"
         restored["training_eligible"] = True
         restored["localization_supervision_ignore"] = False
