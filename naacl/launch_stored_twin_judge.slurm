@@ -249,6 +249,7 @@ python naacl/judge_stored_twin_responses.py \
     --stats-output "$STATS_FILE" \
     --checkpoint "$CHECKPOINT_FILE" \
     --model "$JUDGE_MODEL" \
+    --model-revision "$CACHED_REVISION" \
     --base-url "http://localhost:$PORT" \
     --seed "$BASE_SEED" \
     --unsafe-threshold "$UNSAFE_THRESHOLD" \
