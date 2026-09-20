@@ -58,39 +58,7 @@ def write_jsonl(records: Iterable[Dict], path: str) -> None:
 
 
 def n_user_turns(record: Dict) -> int:
-    return sum(
-        1
-        for t in record.get("turns", [])
-        if str(t.get("role", "")).lower() == "user"
-    )
-
-
-def total_user_chars(record: Dict) -> int:
-    return sum(
-        len(str(t.get("text", "")))
-        for t in record.get("turns", [])
-        if str(t.get("role", "")).lower() == "user"
-    )
-
-
-def prefix_user_chars(record: Dict, target_user_turns: int) -> int:
-    if target_user_turns <= 0:
-        return 0
-    seen = 0
-    total = 0
-    for turn in record.get("turns", []):
-        if str(turn.get("role", "")).lower() != "user":
-            continue
-        seen += 1
-        total += len(str(turn.get("text", "")))
-        if seen >= target_user_turns:
-            break
-    if seen < target_user_turns:
-        raise RuntimeError(
-            f"{record.get('conversation_id', '<missing>')}: only {seen} user "
-            f"turns available for target={target_user_turns}"
-        )
-    return total
+    return sum(1 for t in record.get("turns", []) if str(t.get("role", "")).lower() == "user")
 
 
 def _all_spans(record: Dict):
@@ -177,150 +145,61 @@ def sanitize_attribution_targets(record: Dict) -> Dict:
         r["pivot_kind"] = "distributed"
     return r
 
-def match_benign_to_malicious_profiles(
+def match_benign_to_malicious_lengths(
     rng: random.Random,
     benign_records: List[Dict],
-    malicious_records: List[Dict],
+    malicious_lengths: List[int],
 ) -> List[Dict]:
     """
-    Select one distinct benign record for every malicious record.
+    Select one distinct benign record for every malicious target length.
 
-    The exact malicious user-turn histogram is preserved. Among benign records
-    that can support the target turn count, choose the prefix whose total user
-    character volume is closest to the malicious target.
+    Matching is performed longest-target-first. For each target, choose the
+    shortest remaining benign conversation capable of supporting that length.
+    Ties are deterministically randomized by seed.
 
-    Targets are processed longest-turn-count first so scarce long benign
-    trajectories cannot be consumed by shorter targets. Within a turn-count
-    bucket, more verbose malicious targets are matched first. Candidate
-    eligibility sets are nested by turn count, so this ordering preserves the
-    feasibility property of the previous longest-first matcher.
+    The resulting benign user-turn histogram exactly matches the malicious
+    histogram.
     """
     available = [
-        {
-            "user_turns": n_user_turns(record),
-            "tie": rng.random(),
-            "record": record,
-        }
+        (n_user_turns(record), rng.random(), record)
         for record in benign_records
     ]
-
-    targets = []
-    for record in malicious_records:
-        turns = n_user_turns(record)
-        chars = total_user_chars(record)
-        if turns <= 0:
-            raise RuntimeError(
-                f"{record.get('conversation_id', '<missing>')}: malicious "
-                "record has no user turns"
-            )
-        targets.append(
-            {
-                "record": record,
-                "user_turns": turns,
-                "user_chars": chars,
-                "tie": rng.random(),
-            }
-        )
-
-    targets.sort(
-        key=lambda x: (
-            -x["user_turns"],
-            -x["user_chars"],
-            x["tie"],
-        )
-    )
+    available.sort(key=lambda x: (x[0], x[1]))
 
     matched = []
-    for target in targets:
-        target_turns = int(target["user_turns"])
-        target_chars = int(target["user_chars"])
-        candidates = []
 
-        for idx, item in enumerate(available):
-            if int(item["user_turns"]) < target_turns:
-                continue
+    for target in sorted(malicious_lengths, reverse=True):
+        selected_idx = None
 
-            candidate_chars = prefix_user_chars(
-                item["record"], target_turns
-            )
-            # Relative distance prevents the high-volume tail from dominating
-            # the objective purely because it is measured in more characters.
-            relative_gap = abs(candidate_chars - target_chars) / max(
-                1.0, float(target_chars)
-            )
-            candidates.append(
-                (
-                    relative_gap,
-                    abs(candidate_chars - target_chars),
-                    int(item["user_turns"]) - target_turns,
-                    item["tie"],
-                    idx,
-                    candidate_chars,
-                )
-            )
+        for idx, (benign_len, _, _) in enumerate(available):
+            if benign_len >= target:
+                selected_idx = idx
+                break
 
-        if not candidates:
+        if selected_idx is None:
             raise RuntimeError(
-                f"Cannot profile-match malicious target with "
-                f"{target_turns} user turns"
+                f"Cannot length-match malicious target of {target} user turns "
+                f"with remaining benign pool"
             )
 
-        (
-            relative_gap,
-            absolute_gap,
-            _extra_turns,
-            _tie,
-            selected_idx,
-            selected_chars,
-        ) = min(candidates)
+        original_len, _, record = available.pop(selected_idx)
+        trimmed = truncate_to_user_turns(record, target)
 
-        item = available.pop(selected_idx)
-        record = item["record"]
-        trimmed = truncate_to_user_turns(record, target_turns)
-
-        final_turns = n_user_turns(trimmed)
-        final_chars = total_user_chars(trimmed)
-        if final_turns != target_turns:
+        final_len = n_user_turns(trimmed)
+        if final_len != target:
             raise RuntimeError(
-                f"Profile matching failed: target_turns={target_turns}, "
-                f"final_turns={final_turns}, "
+                f"Length matching failed: target={target}, final={final_len}, "
+                f"original={original_len}, "
                 f"conversation_id={record.get('conversation_id')}"
             )
-        if final_chars != selected_chars:
-            raise RuntimeError(
-                f"Profile matching prefix mismatch for "
-                f"{record.get('conversation_id')}: expected_chars="
-                f"{selected_chars}, final_chars={final_chars}"
-            )
 
-        trimmed["benign_status"] = (
-            "clean_benign_turn_and_user_char_profile_matched"
-        )
+        trimmed["benign_status"] = "clean_benign_exact_length_matched"
         trimmed["source_dataset"] = record.get(
             "source_dataset", "separate_benign_pool"
-        )
-        match_meta = trimmed.setdefault("metadata", {}).setdefault(
-            "naacl_length_match", {}
-        )
-        match_meta.update(
-            {
-                "method": (
-                    "benign_prefix_match_on_user_turn_count_and_"
-                    "total_user_chars"
-                ),
-                "target_total_user_chars": target_chars,
-                "matched_total_user_chars": final_chars,
-                "absolute_user_char_gap": int(absolute_gap),
-                "relative_user_char_gap": float(relative_gap),
-                "malicious_reference_conversation_id": target[
-                    "record"
-                ].get("conversation_id"),
-            }
         )
         matched.append(trimmed)
 
     return matched
-
 
 def sanitize_benign_targets(record: Dict) -> Dict:
     r = copy.deepcopy(record)
@@ -382,27 +261,9 @@ def choose_target_length(rng: random.Random, malicious_lengths: List[int], benig
     return rng.choice(feasible) if feasible else benign_len
 
 
-def percentile(values: List[float], q: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(x) for x in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    pos = (len(ordered) - 1) * q
-    lo = int(pos)
-    hi = min(lo + 1, len(ordered) - 1)
-    frac = pos - lo
-    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
-
-
 def describe(name: str, records: List[Dict]) -> Dict:
     user_lengths = [n_user_turns(r) for r in records]
     total_lengths = [len(r.get("turns", [])) for r in records]
-    user_chars = [total_user_chars(r) for r in records]
-    mean_user_chars = [
-        total_user_chars(r) / max(1, n_user_turns(r))
-        for r in records
-    ]
     return {
         "name": name,
         "n": len(records),
@@ -419,22 +280,6 @@ def describe(name: str, records: List[Dict]) -> Dict:
             "median": statistics.median(total_lengths) if total_lengths else 0.0,
             "min": min(total_lengths) if total_lengths else 0,
             "max": max(total_lengths) if total_lengths else 0,
-        },
-        "total_user_chars": {
-            "mean": statistics.mean(user_chars) if user_chars else 0.0,
-            "median": statistics.median(user_chars) if user_chars else 0.0,
-            "p90": percentile(user_chars, 0.90),
-            "p95": percentile(user_chars, 0.95),
-            "p99": percentile(user_chars, 0.99),
-            "min": min(user_chars) if user_chars else 0,
-            "max": max(user_chars) if user_chars else 0,
-        },
-        "mean_user_chars": {
-            "mean": statistics.mean(mean_user_chars) if mean_user_chars else 0.0,
-            "median": statistics.median(mean_user_chars) if mean_user_chars else 0.0,
-            "p90": percentile(mean_user_chars, 0.90),
-            "p95": percentile(mean_user_chars, 0.95),
-            "p99": percentile(mean_user_chars, 0.99),
         },
     }
 
@@ -484,12 +329,14 @@ def main() -> None:
     if not benign_original:
         raise RuntimeError("No validated benign records were found")
 
+    malicious_lengths = [n_user_turns(r) for r in malicious]
+
     rng = random.Random(args.seed)
 
-    benign_matched = match_benign_to_malicious_profiles(
+    benign_matched = match_benign_to_malicious_lengths(
         rng,
         benign_original,
-        malicious,
+        malicious_lengths,
     )
 
     combined = malicious + benign_matched
@@ -529,11 +376,7 @@ def main() -> None:
                 "legacy Qwen-only target judgment is insufficient"
             ),
             "pivot_policy": "unknown malicious pivots ignored; benign None is true no-pivot",
-            "length_policy": (
-                "benign prefixes exactly match the malicious user-turn "
-                "histogram and are selected for nearest total user-character "
-                "volume within the feasible validated benign pool"
-            ),
+            "length_policy": "benign prefixes sampled from empirical malicious user-turn distribution",
         },
     }
     os.makedirs(os.path.dirname(args.stats_output) or ".", exist_ok=True)
