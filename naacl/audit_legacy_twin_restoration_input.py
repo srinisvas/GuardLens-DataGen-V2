@@ -32,9 +32,14 @@ def validate_stored_trajectory(record: Dict) -> None:
 
     expected = "user"
     pairs = 0
+    turn_ids = []
     for turn in turns:
         role = str(turn.get("role", "")).lower()
         text = str(turn.get("text", "")).strip().lower()
+        tid = turn.get("turn_id")
+        if isinstance(tid, bool) or not isinstance(tid, int):
+            raise RuntimeError(f"{cid}: invalid turn_id {tid!r}")
+        turn_ids.append(tid)
         if text.startswith(("[target_error:", "[generation_error:")):
             raise RuntimeError(f"{cid}: stored backend error text")
         if role != expected:
@@ -49,6 +54,10 @@ def validate_stored_trajectory(record: Dict) -> None:
         raise RuntimeError(f"{cid}: stored trajectory ends with unmatched user turn")
     if pairs == 0:
         raise RuntimeError(f"{cid}: no stored user/assistant pairs")
+    if len(turn_ids) != len(set(turn_ids)):
+        raise RuntimeError(f"{cid}: duplicate stored turn IDs")
+    if turn_ids != sorted(turn_ids):
+        raise RuntimeError(f"{cid}: stored turn IDs are not strictly increasing")
 
 
 def observable_turn_hash(record: Dict) -> str:
@@ -128,6 +137,7 @@ def main() -> None:
 
     independent_models = Counter()
     independent_status = Counter()
+    target_models = Counter()
     malformed = 0
     bad_pair_structure = 0
 
@@ -143,6 +153,17 @@ def main() -> None:
             errors.append(
                 f"{cid}: pair {pair_id} has malicious={len(malicious)} benign={len(benign)}"
             )
+        else:
+            target_validation = malicious[0].get("llama_validation", {}) or {}
+            target_model = (
+                target_validation.get("model_used")
+                or target_validation.get("target_model")
+            )
+            target_models[str(target_model or "UNKNOWN")] += 1
+            if not target_model:
+                errors.append(
+                    f"{cid}: malicious sibling lacks original target-model provenance"
+                )
 
         try:
             validate_stored_trajectory(twin)
@@ -223,6 +244,7 @@ def main() -> None:
         "malformed_stored_benign_trajectories": malformed,
         "independent_models": dict(independent_models),
         "independent_status": dict(independent_status),
+        "target_models": dict(target_models),
         "source_lineage_checked": source_lineage_checked,
         "source_lineage_missing": source_lineage_missing,
         "source_lineage_mismatch": source_lineage_mismatch,
@@ -237,6 +259,15 @@ def main() -> None:
     if independent_models.get("UNKNOWN", 0):
         errors.append(
             f"{independent_models['UNKNOWN']} benign twins lack independent-model provenance"
+        )
+    known_target_models = [m for m in target_models if m != "UNKNOWN"]
+    if len(known_target_models) != 1:
+        errors.append(
+            f"expected exactly one original Dataset A target model, got {known_target_models}"
+        )
+    if target_models.get("UNKNOWN", 0):
+        errors.append(
+            f"{target_models['UNKNOWN']} twin pairs lack target-model provenance"
         )
 
     if args.expected_benign_twins is not None and len(twins) != args.expected_benign_twins:
