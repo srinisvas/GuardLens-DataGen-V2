@@ -162,6 +162,11 @@ if found != expected_packages:
     )
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is unavailable inside the Slurm allocation")
+if torch.cuda.device_count() != 1:
+    raise RuntimeError(
+        f"twin bridge requires exactly one Slurm-visible GPU; "
+        f"found {torch.cuda.device_count()}"
+    )
 props = torch.cuda.get_device_properties(0)
 if "A100" not in props.name or props.total_memory != 85094825984:
     raise RuntimeError(
@@ -318,7 +323,7 @@ print(f"Port {port} is available")
 PY
 
 echo "--- Starting Dataset B 24B judge server ---"
-CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
+python -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" \
     --revision "$CACHED_REVISION" \
     --tokenizer-revision "$CACHED_REVISION" \
