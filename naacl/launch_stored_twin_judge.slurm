@@ -30,6 +30,8 @@ CHECKPOINT_FILE="${CHECKPOINT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twin
 CANDIDATE_FILE="${CANDIDATE_FILE:-$PROJECT_DIR/results-new/naacl_legacy_twins_restored_candidate.jsonl}"
 CANDIDATE_STATS="${CANDIDATE_STATS:-$PROJECT_DIR/results-new/naacl_legacy_twins_restored_candidate_stats.json}"
 EXCLUDED_FILE="${EXCLUDED_FILE:-$PROJECT_DIR/results-new/naacl_legacy_twins_restored_excluded.jsonl}"
+COMPLETION_MANIFEST="${COMPLETION_MANIFEST:-$PROJECT_DIR/results-new/naacl_twin_bridge24b_completion.json}"
+LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/results-new/.naacl_twin_bridge24b.lock}"
 
 BASE_SEED=42
 UNSAFE_THRESHOLD=0.50
@@ -55,6 +57,27 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_BATCH_INVARIANT=1
 
 cd "$PROJECT_DIR"
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$CURRENT_BRANCH" != "naacl-validity-repair" ]]; then
+    echo "ERROR: expected branch naacl-validity-repair, got $CURRENT_BRANCH"
+    exit 1
+fi
+if ! git diff --quiet -- || ! git diff --cached --quiet --; then
+    echo "ERROR: tracked working-tree/index changes are present; commit or revert them before the scientific run"
+    exit 1
+fi
+REVIEWED_HEAD=$(git rev-parse HEAD)
+echo "Git branch: $CURRENT_BRANCH"
+echo "Git HEAD:   $REVIEWED_HEAD"
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "ERROR: another twin-bridge run owns $LOCK_FILE"
+    exit 1
+fi
+rm -f "$COMPLETION_MANIFEST"
 
 echo "========================================================"
 echo " Dataset A original-twin bridge adjudication"
@@ -366,3 +389,62 @@ echo " 24B bridge adjudication:       YES"
 echo " Historical 7B replay retained: YES"
 echo "========================================================"
 cat "$CANDIDATE_STATS"
+
+echo "--- Writing completion receipt ---"
+python - \
+    "$COMPLETION_MANIFEST" "$REVIEWED_HEAD" "$INPUT_FILE" "$ORIGINAL_SOURCE_FILE" \
+    "$FROZEN_PREPARED_A" "$OUTPUT_FILE" "$STATS_FILE" "$CANDIDATE_FILE" \
+    "$CANDIDATE_STATS" "$EXCLUDED_FILE" "$CACHED_REVISION" "${SLURM_JOB_ID:-unknown}" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+(
+    manifest_path, git_head, input_file, source_file, frozen_prepared,
+    bridge_output, bridge_stats, candidate, candidate_stats, excluded,
+    judge_revision, job_id,
+) = sys.argv[1:]
+
+def digest(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        raise RuntimeError(f"completion receipt input missing: {p}")
+    h = hashlib.sha256()
+    with p.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(block)
+    return {
+        "path": str(p.resolve()),
+        "sha256": h.hexdigest(),
+        "bytes": p.stat().st_size,
+    }
+
+receipt = {
+    "status": "complete",
+    "git_head": git_head,
+    "slurm_job_id": job_id,
+    "protocol": "legacy_stored_target_dataset_b_v5_bridge_v1",
+    "dataset_b_judge_protocol": "frontier_context_judge_v5",
+    "judge_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+    "judge_revision": judge_revision,
+    "historical_independent_model": "mistralai/Mistral-7B-Instruct-v0.3",
+    "inputs": {
+        "restoration_input": digest(input_file),
+        "original_source": digest(source_file),
+        "frozen_prepared_a": digest(frozen_prepared),
+    },
+    "outputs": {
+        "bridge_output": digest(bridge_output),
+        "bridge_stats": digest(bridge_stats),
+        "candidate": digest(candidate),
+        "candidate_stats": digest(candidate_stats),
+        "excluded": digest(excluded),
+    },
+}
+path = pathlib.Path(manifest_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+tmp = pathlib.Path(str(path) + ".tmp")
+tmp.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp, path)
+print(json.dumps(receipt, indent=2, sort_keys=True))
+PY
+
+echo "COMPLETION RECEIPT: $COMPLETION_MANIFEST"
