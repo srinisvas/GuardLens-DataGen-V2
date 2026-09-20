@@ -56,8 +56,18 @@ def validate_stored_trajectory(record: Dict) -> None:
         raise RuntimeError(f"{cid}: no stored user/assistant pairs")
     if len(turn_ids) != len(set(turn_ids)):
         raise RuntimeError(f"{cid}: duplicate stored turn IDs")
-    if turn_ids != sorted(turn_ids):
-        raise RuntimeError(f"{cid}: stored turn IDs are not strictly increasing")
+    expected_ids = list(range(len(turns)))
+    if turn_ids != expected_ids:
+        raise RuntimeError(
+            f"{cid}: stored turn IDs differ from original contiguous 0..N-1 "
+            f"contract; got {turn_ids[:20]}"
+        )
+    declared_length = record.get("conversation_length")
+    if declared_length is not None and int(declared_length) != len(turns):
+        raise RuntimeError(
+            f"{cid}: conversation_length={declared_length} differs from "
+            f"physical turns={len(turns)}"
+        )
 
 
 def assert_original_twin_semantics(malicious: Dict, benign: Dict) -> None:
