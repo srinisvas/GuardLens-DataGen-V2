@@ -217,38 +217,73 @@ python naacl/audit_legacy_twin_restoration_input.py \
     --input "$INPUT_FILE" \
     --original-source "$ORIGINAL_SOURCE_FILE" \
     --frozen-prepared "$FROZEN_PREPARED_A" \
-    --expected-benign-twins 545 \
+    --expected-all-benign-twins 750 \
     --expected-validated-malicious 545 \
     --expected-final-malicious-candidates 526 \
+    --expected-bridge-twins 526 \
     --expected-target-model "meta-llama/Meta-Llama-3-8B-Instruct" \
     --expected-independent-model "mistralai/Mistral-7B-Instruct-v0.3"
 
 echo "--- Historical independent-validation provenance ---"
 INDEPENDENT_MODELS=$(python - "$INPUT_FILE" <<'PY'
 import json, sys
-from collections import Counter
+from collections import Counter, defaultdict
 path = sys.argv[1]
-c = Counter()
+records = []
 with open(path) as f:
     for line in f:
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        if r.get("label") != 0 or r.get("family") != "interactive_benign_twin":
-            continue
-        validation = (
-            r.get("independent_validation", {})
-            or r.get("causal_validation", {})
-            or {}
+        if line.strip():
+            records.append(json.loads(line))
+
+def final_malicious(r):
+    if (
+        r.get("label") != 1
+        or r.get("family") != "interactive_adversarial"
+        or r.get("validation_status") != "validated"
+        or not r.get("pair_id")
+    ):
+        return False
+    status = str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
+    if status in {"error", "missing"}:
+        return False
+    return status == "complete" or bool(
+        (r.get("validation_provenance", {}) or {}).get(
+            "independent_success", False
         )
-        model = (
-            r.get("independent_validation_model")
-            or validation.get("model_used")
-            or validation.get("judge_model")
-            or validation.get("validator_model")
-            or "UNKNOWN"
-        )
-        c[str(model)] += 1
+    )
+
+pair_ids = {str(r.get("pair_id")) for r in records if final_malicious(r)}
+c = Counter()
+seen_pairs = Counter()
+for r in records:
+    if (
+        r.get("label") != 0
+        or r.get("family") != "interactive_benign_twin"
+        or str(r.get("pair_id", "")) not in pair_ids
+    ):
+        continue
+    seen_pairs[str(r.get("pair_id"))] += 1
+    validation = (
+        r.get("independent_validation", {})
+        or r.get("causal_validation", {})
+        or {}
+    )
+    model = (
+        r.get("independent_validation_model")
+        or validation.get("model_used")
+        or validation.get("judge_model")
+        or validation.get("validator_model")
+        or "UNKNOWN"
+    )
+    c[str(model)] += 1
+
+if len(pair_ids) != 526:
+    raise SystemExit(f"expected 526 final pair IDs, got {len(pair_ids)}")
+bad = [p for p in pair_ids if seen_pairs.get(p, 0) != 1]
+if bad:
+    raise SystemExit(
+        f"final pair universe lacks one-to-one benign twins: {bad[:10]}"
+    )
 for model, n in sorted(c.items()):
     print(f"{model}\t{n}")
 PY
