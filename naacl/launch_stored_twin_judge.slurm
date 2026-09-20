@@ -205,6 +205,7 @@ echo "--- CPU twin-restoration input audit ---"
 python naacl/audit_legacy_twin_restoration_input.py \
     --input "$INPUT_FILE" \
     --original-source "$ORIGINAL_SOURCE_FILE" \
+    --frozen-prepared "$FROZEN_PREPARED_A" \
     --expected-benign-twins 545 \
     --expected-validated-malicious 545 \
     --expected-final-malicious-candidates 526 \
