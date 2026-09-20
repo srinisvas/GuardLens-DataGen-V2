@@ -382,9 +382,27 @@ def choose_target_length(rng: random.Random, malicious_lengths: List[int], benig
     return rng.choice(feasible) if feasible else benign_len
 
 
+def percentile(values: List[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(x) for x in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
 def describe(name: str, records: List[Dict]) -> Dict:
     user_lengths = [n_user_turns(r) for r in records]
     total_lengths = [len(r.get("turns", [])) for r in records]
+    user_chars = [total_user_chars(r) for r in records]
+    mean_user_chars = [
+        total_user_chars(r) / max(1, n_user_turns(r))
+        for r in records
+    ]
     return {
         "name": name,
         "n": len(records),
@@ -401,6 +419,22 @@ def describe(name: str, records: List[Dict]) -> Dict:
             "median": statistics.median(total_lengths) if total_lengths else 0.0,
             "min": min(total_lengths) if total_lengths else 0,
             "max": max(total_lengths) if total_lengths else 0,
+        },
+        "total_user_chars": {
+            "mean": statistics.mean(user_chars) if user_chars else 0.0,
+            "median": statistics.median(user_chars) if user_chars else 0.0,
+            "p90": percentile(user_chars, 0.90),
+            "p95": percentile(user_chars, 0.95),
+            "p99": percentile(user_chars, 0.99),
+            "min": min(user_chars) if user_chars else 0,
+            "max": max(user_chars) if user_chars else 0,
+        },
+        "mean_user_chars": {
+            "mean": statistics.mean(mean_user_chars) if mean_user_chars else 0.0,
+            "median": statistics.median(mean_user_chars) if mean_user_chars else 0.0,
+            "p90": percentile(mean_user_chars, 0.90),
+            "p95": percentile(mean_user_chars, 0.95),
+            "p99": percentile(mean_user_chars, 0.99),
         },
     }
 
