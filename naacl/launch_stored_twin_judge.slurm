@@ -89,13 +89,19 @@ python -m py_compile \
     naacl/restore_legacy_twins.py \
     naacl/prepare_dataset.py \
     naacl/frontier_common.py \
+    naacl/frontier_seed_policy.py \
     naacl/frontier_judge_v5.py
 
-echo "--- Frozen Dataset B runtime preflight ---"
+echo "--- Frozen Dataset B runtime/protocol preflight ---"
 python - <<'PY'
 import importlib.metadata
 import os
+import sys
 import vllm.envs
+sys.path.insert(0, "naacl")
+from frontier_judge_v5 import pass_a_prompt_fingerprint, pass_b_prompt_fingerprint
+expected_a = "eaff8c323e79e7cdc0c40741c25a8d5c75d795b96406fdf6b94b411016282f04"
+expected_b = "cbd557a4d670ce1e2bee1ce28c8b5440849f2ba482c905cf6d726fd97443f888"
 if importlib.metadata.version("vllm") != "0.28.0":
     raise RuntimeError(
         "Dataset B bridge requires frozen vLLM 0.28.0; found "
@@ -105,7 +111,19 @@ if "VLLM_BATCH_INVARIANT" not in vllm.envs.environment_variables:
     raise RuntimeError("installed vLLM does not expose VLLM_BATCH_INVARIANT")
 if os.environ.get("VLLM_BATCH_INVARIANT") != "1":
     raise RuntimeError("VLLM_BATCH_INVARIANT must equal 1")
-print("Frozen runtime preflight passed")
+if pass_a_prompt_fingerprint() != expected_a:
+    raise RuntimeError(
+        "Dataset B v5 pass-A prompt fingerprint mismatch: "
+        + pass_a_prompt_fingerprint()
+    )
+if pass_b_prompt_fingerprint() != expected_b:
+    raise RuntimeError(
+        "Dataset B v5 pass-B prompt fingerprint mismatch: "
+        + pass_b_prompt_fingerprint()
+    )
+print("Frozen runtime/protocol preflight passed")
+print("pass-A:", expected_a)
+print("pass-B:", expected_b)
 PY
 
 echo "--- CPU twin-restoration input audit ---"
