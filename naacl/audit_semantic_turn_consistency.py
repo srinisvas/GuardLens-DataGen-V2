@@ -19,6 +19,8 @@ from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from frontier_common import load_jsonl
 from semantic_span_policy import ADJUDICATION_VERSION, SUPPORTED_STATUSES
 
+SEMANTIC_TURN_REPAIR_VERSION = "construction_language_turn_reconcile_v1"
+
 EXPECTED_PRIMARY_MASKED_SPANS = 14
 EXPECTED_PRIMARY_MASKED_RECORDS = 13
 
@@ -159,11 +161,34 @@ def classify_masked_turn(record: Dict, turn: Dict) -> Dict:
                 f"contains non-integer value {raw!r}"
             )
         analysis_ids.add(raw)
+
+    repair = record.get("semantic_turn_supervision_repair")
     if evidence_ids != analysis_ids:
+        if not isinstance(repair, dict):
+            raise RuntimeError(
+                f"{cid}: record evidence_turn_ids={sorted(evidence_ids)} differs "
+                f"from frontier_evidence_analysis.evidence_turn_ids="
+                f"{sorted(analysis_ids)} without semantic repair provenance"
+            )
+        if repair.get("version") != SEMANTIC_TURN_REPAIR_VERSION:
+            raise RuntimeError(f"{cid}: unknown semantic turn repair version")
+        removed = set(repair.get("removed_evidence_turn_ids") or [])
+        if removed != analysis_ids - evidence_ids:
+            raise RuntimeError(
+                f"{cid}: semantic repair removed ids={sorted(removed)} but raw/prepared "
+                f"difference is {sorted(analysis_ids - evidence_ids)}"
+            )
+        if evidence_ids - analysis_ids:
+            raise RuntimeError(
+                f"{cid}: semantic repair added evidence-turn membership"
+            )
+        if set(repair.get("raw_b4_evidence_turn_ids") or []) != analysis_ids:
+            raise RuntimeError(f"{cid}: semantic repair raw evidence ids mismatch")
+        if set(repair.get("prepared_evidence_turn_ids") or []) != evidence_ids:
+            raise RuntimeError(f"{cid}: semantic repair prepared evidence ids mismatch")
+    elif repair:
         raise RuntimeError(
-            f"{cid}: record evidence_turn_ids={sorted(evidence_ids)} differs "
-            f"from frontier_evidence_analysis.evidence_turn_ids="
-            f"{sorted(analysis_ids)}"
+            f"{cid}: semantic repair provenance present but evidence-turn ids did not change"
         )
 
     turn_status = _turn_intervention_status(record, tid)
@@ -176,26 +201,47 @@ def classify_masked_turn(record: Dict, turn: Dict) -> Dict:
         if is_eligible_nonmasked_positive_span(span)
     ]
     has_independent_span = bool(independent_spans)
-    in_evidence_ids = tid in evidence_ids
+    raw_in_evidence_ids = tid in analysis_ids
+    prepared_in_evidence_ids = tid in evidence_ids
 
-    if not in_evidence_ids:
+    if not raw_in_evidence_ids:
         case = CASE_D
         if whole_turn_supported or has_independent_span:
             raise RuntimeError(
                 f"{cid}: turn {tid} has independent supported evidence but is "
-                "missing from evidence_turn_ids"
+                "missing from raw B4 evidence_turn_ids"
             )
     elif whole_turn_supported or has_independent_span:
         case = CASE_C
+        if not prepared_in_evidence_ids:
+            raise RuntimeError(
+                f"{cid}: independently supported masked turn {tid} was removed "
+                "from prepared evidence_turn_ids"
+            )
     elif whole_turn_negative:
         case = CASE_A
+        if not prepared_in_evidence_ids:
+            removed = set((repair or {}).get("removed_evidence_turn_ids") or [])
+            if tid not in removed:
+                raise RuntimeError(
+                    f"{cid}: repaired case-A turn {tid} lacks removal provenance"
+                )
     else:
         case = CASE_B
+        if not prepared_in_evidence_ids:
+            raise RuntimeError(
+                f"{cid}: case-B turn {tid} was modified without an approved policy"
+            )
 
     return {
         "conversation_id": cid,
         "turn_id": tid,
-        "in_evidence_turn_ids": in_evidence_ids,
+        "raw_in_evidence_turn_ids": raw_in_evidence_ids,
+        "prepared_in_evidence_turn_ids": prepared_in_evidence_ids,
+        "repair_applied": bool(
+            isinstance(repair, dict)
+            and tid in set(repair.get("removed_evidence_turn_ids") or [])
+        ),
         "whole_turn_status": turn_status,
         "whole_turn_supported": whole_turn_supported,
         "whole_turn_negative": whole_turn_negative,
@@ -292,6 +338,14 @@ def inspect_splits(
     repair_candidates = [
         item for item in details if item["case"] in {CASE_A, CASE_B}
     ]
+    repaired_case_a = [
+        item for item in details
+        if item["case"] == CASE_A and item["repair_applied"]
+    ]
+    unrepaired_case_a = [
+        item for item in details
+        if item["case"] == CASE_A and not item["repair_applied"]
+    ]
 
     return {
         "status": "inspection_complete",
@@ -308,6 +362,8 @@ def inspect_splits(
             key: case_spans.get(key, 0) for key in CASE_DESCRIPTIONS
         },
         "repair_candidate_turns": len(repair_candidates),
+        "repaired_case_A_turns": len(repaired_case_a),
+        "unrepaired_case_A_turns": len(unrepaired_case_a),
         "silent_fallback_case_B_turns": case_turns.get(CASE_B, 0),
         "details": sorted(
             details,
