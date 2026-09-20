@@ -88,7 +88,25 @@ python -m py_compile \
     naacl/judge_stored_twin_responses.py \
     naacl/restore_legacy_twins.py \
     naacl/prepare_dataset.py \
-    naacl/frontier_common.py
+    naacl/frontier_common.py \
+    naacl/frontier_judge_v5.py
+
+echo "--- Frozen Dataset B runtime preflight ---"
+python - <<'PY'
+import importlib.metadata
+import os
+import vllm.envs
+if importlib.metadata.version("vllm") != "0.28.0":
+    raise RuntimeError(
+        "Dataset B bridge requires frozen vLLM 0.28.0; found "
+        + importlib.metadata.version("vllm")
+    )
+if "VLLM_BATCH_INVARIANT" not in vllm.envs.environment_variables:
+    raise RuntimeError("installed vLLM does not expose VLLM_BATCH_INVARIANT")
+if os.environ.get("VLLM_BATCH_INVARIANT") != "1":
+    raise RuntimeError("VLLM_BATCH_INVARIANT must equal 1")
+print("Frozen runtime preflight passed")
+PY
 
 echo "--- CPU twin-restoration input audit ---"
 python naacl/audit_legacy_twin_restoration_input.py --input "$INPUT_FILE"
@@ -180,6 +198,7 @@ CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
     --enforce-eager \
     --download-dir "$HF_HOME/hub" \
     --no-enable-log-requests \
+    --disable-log-stats \
     2>"logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}.log" &
 SERVER_PID=$!
 
