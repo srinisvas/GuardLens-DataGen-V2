@@ -507,9 +507,45 @@ def main() -> None:
                 completed[cid] = record
         print(f"Resume checkpoint: {len(completed)} benign twins already judged")
 
-    twins = [r for r in records if is_original_benign_twin(r)]
+    all_twins = [r for r in records if is_original_benign_twin(r)]
+    final_malicious = [r for r in records if final_malicious_candidate(r)]
+    final_pair_ids = [str(r.get("pair_id", "")) for r in final_malicious]
+    if any(not pair_id for pair_id in final_pair_ids):
+        raise RuntimeError("final malicious candidate missing pair_id")
+    if len(final_pair_ids) != len(set(final_pair_ids)):
+        raise RuntimeError("final malicious candidates contain duplicate pair_id values")
+    final_pair_id_set = set(final_pair_ids)
+
+    twins = [
+        r for r in all_twins
+        if str(r.get("pair_id", "")) in final_pair_id_set
+    ]
+    twin_pair_counts = Counter(str(r.get("pair_id", "")) for r in twins)
+    missing_pairs = sorted(
+        pair_id for pair_id in final_pair_id_set
+        if twin_pair_counts.get(pair_id, 0) == 0
+    )
+    duplicate_pairs = sorted(
+        pair_id for pair_id, count in twin_pair_counts.items()
+        if count > 1
+    )
+    if missing_pairs or duplicate_pairs:
+        raise RuntimeError(
+            "final malicious-to-benign twin linkage is not one-to-one: "
+            f"missing={missing_pairs[:10]} duplicate={duplicate_pairs[:10]}"
+        )
+    if len(twins) != len(final_malicious):
+        raise RuntimeError(
+            f"bridge population mismatch: malicious={len(final_malicious)} "
+            f"benign_twins={len(twins)}"
+        )
+
+    bridge_cids = {str(r.get("conversation_id", "")) for r in twins}
+
     print(f"Input records: {len(records)}")
-    print(f"Original benign twins to judge: {len(twins)}")
+    print(f"All original benign twins present: {len(all_twins)}")
+    print(f"Final malicious candidates: {len(final_malicious)}")
+    print(f"Benign twins to bridge-judge: {len(twins)}")
     print(f"Bridge judge model: {args.model}")
     print(f"Bridge protocol: {BRIDGE_PROTOCOL}")
     print("Target response regeneration: NO")
@@ -641,7 +677,7 @@ def main() -> None:
     output_records = []
     for original in records:
         cid = str(original.get("conversation_id", ""))
-        if is_original_benign_twin(original):
+        if cid in bridge_cids:
             judged = completed.get(cid)
             if judged is None:
                 raise RuntimeError(f"{cid}: missing judged benign twin after processing")
@@ -658,7 +694,7 @@ def main() -> None:
     independent_models = Counter()
     bridge_statuses = Counter()
     for record in output_records:
-        if not is_original_benign_twin(record):
+        if str(record.get("conversation_id", "")) not in bridge_cids:
             continue
         restoration = record.get("twin_restoration", {}) or {}
         validation = record.get("stored_target_validation", {}) or {}
@@ -674,7 +710,6 @@ def main() -> None:
             ] += 1
         independent_models[historical_independent_model(record)] += 1
 
-    final_malicious = [r for r in output_records if final_malicious_candidate(r)]
     restored_pairs: List[Tuple[Dict, Dict]] = []
     no_restorable_twin = []
     for malicious in final_malicious:
@@ -687,7 +722,11 @@ def main() -> None:
 
     stats = {
         "input_records": len(records),
-        "original_benign_twins": len(twins),
+        "all_original_benign_twins": len(all_twins),
+        "bridge_benign_twins": len(twins),
+        "excluded_original_twins_not_in_final_pair_universe": (
+            len(all_twins) - len(twins)
+        ),
         "bridge_protocol": BRIDGE_PROTOCOL,
         "dataset_b_judge_protocol": DATASET_B_JUDGE_PROTOCOL,
         "bridge_judge_model": args.model,
