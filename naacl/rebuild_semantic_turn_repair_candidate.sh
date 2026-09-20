@@ -26,6 +26,23 @@ if [[ "$CANDIDATE" == "$OLD_FREEZE" ]]; then
   exit 2
 fi
 
+case "$CANDIDATE" in
+  "$REPO_ROOT"/results-naacl/*) ;;
+  *)
+    echo "Refusing unsafe candidate path outside $REPO_ROOT/results-naacl: $CANDIDATE" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$(git rev-parse --abbrev-ref HEAD)" != "naacl-validity-repair-optimized" ]]; then
+  echo "Run this rebuild only from branch naacl-validity-repair-optimized" >&2
+  exit 2
+fi
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Tracked working-tree changes detected; commit or revert them before rebuilding" >&2
+  exit 2
+fi
+
 rm -rf "$CANDIDATE"
 mkdir -p "$CANDIDATE"
 
@@ -83,6 +100,12 @@ echo "=== 7/9 Prove exact old-vs-candidate delta ==="
 python naacl/audit_semantic_turn_repair_delta.py \
   --before-frontier "$OLD_FREEZE/dataset_b_primary.jsonl" \
   --after-frontier "$CANDIDATE/dataset_b_primary.jsonl" \
+  --before-stress "$OLD_FREEZE/dataset_b_benign_stress.jsonl" \
+  --after-stress "$CANDIDATE/dataset_b_benign_stress.jsonl" \
+  --before-excluded "$OLD_FREEZE/dataset_b_excluded.jsonl" \
+  --after-excluded "$CANDIDATE/dataset_b_excluded.jsonl" \
+  --before-auxiliary "$OLD_FREEZE/dataset_b_auxiliary_512.jsonl" \
+  --after-auxiliary "$CANDIDATE/dataset_b_auxiliary_512.jsonl" \
   --before-merged "$OLD_FREEZE/dataset_ab_primary.jsonl" \
   --after-merged "$CANDIDATE/dataset_ab_primary.jsonl" \
   --before-primary-split-dir "$OLD_FREEZE/splits_primary" \
