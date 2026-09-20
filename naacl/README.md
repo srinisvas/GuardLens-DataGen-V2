@@ -1,3 +1,33 @@
+
+## Semantic-mask turn-consistency inspection
+
+Before changing any frozen evidence-turn membership, run the read-only
+train/dev inspection:
+
+```bash
+FREEZE="$HOME/projects/GuardLens-DataGen-V2/results-naacl/final-data-freeze"
+
+python naacl/audit_semantic_turn_consistency.py \
+  --train "$FREEZE/splits_primary/train.jsonl" \
+  --dev "$FREEZE/splits_primary/dev.jsonl" \
+  --enforce-reviewed-counts \
+  --output /tmp/semantic_turn_consistency.json
+```
+
+The inspection never reads the held-out test split and never mutates data. It
+classifies every semantically masked construction-language span/turn into:
+
+- A: evidence-turn membership conflicts with an explicit whole-turn
+  `not_supported` result and no eligible non-masked positive span remains.
+- B: evidence-turn membership has no independent local support after masking
+  and would rely on a downstream fallback.
+- C: evidence-turn membership remains independently supported.
+- D: the masked span has no evidence-turn membership dependency.
+
+For the frozen primary corpus, `--enforce-reviewed-counts` requires the
+previously audited 14 masked spans across 13 records. Any A/B finding is
+reported for review; it does not mutate or silently repair the artifact.
+
 # Optimized Dataset B execution
 
 **Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v8, while the B2 v5 rubric stays unchanged. B1 remains at 16K; adaptive B4 uses Qwen's native 32K context envelope so a valid 4K/8K replay budget is not rejected merely because its counterfactual prefix is longer than the factual one.
