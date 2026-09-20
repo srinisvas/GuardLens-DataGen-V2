@@ -21,7 +21,7 @@ CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 INPUT_FILE="${INPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_clean.jsonl}"
-ORIGINAL_SOURCE_FILE="${ORIGINAL_SOURCE_FILE:-$HOME/staging/dataset_gen_output/combined_dedup.jsonl}"
+ORIGINAL_SOURCE_FILE="${ORIGINAL_SOURCE_FILE:-}"
 FROZEN_PREPARED_A="${FROZEN_PREPARED_A:-$PROJECT_DIR/results-new/naacl_legacy_prepared.jsonl}"
 OUTPUT_FILE="${OUTPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b.jsonl}"
 STATS_FILE="${STATS_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b_stats.json}"
@@ -89,7 +89,7 @@ echo "========================================================"
 echo " Dataset A original-twin bridge adjudication"
 echo "========================================================"
 echo "Input:                         $INPUT_FILE"
-echo "Original source lineage:       $ORIGINAL_SOURCE_FILE"
+echo "Original source lineage:       ${ORIGINAL_SOURCE_FILE:-<REQUIRED>}"
 echo "Frozen prepared A reference:   $FROZEN_PREPARED_A"
 echo "Bridge judge:                  $JUDGE_MODEL"
 echo "Expected historical validator: $EXPECTED_HISTORICAL_INDEPENDENT"
@@ -115,9 +115,13 @@ if [[ ! -f "$INPUT_FILE" ]]; then
     echo "ERROR: input not found: $INPUT_FILE"
     exit 1
 fi
+if [[ -z "$ORIGINAL_SOURCE_FILE" ]]; then
+    echo "ERROR: ORIGINAL_SOURCE_FILE is required."
+    echo "Run naacl/discover_legacy_twin_source.py first and set it to the verified exact pre-independent lineage artifact."
+    exit 1
+fi
 if [[ ! -f "$ORIGINAL_SOURCE_FILE" ]]; then
     echo "ERROR: original pre-validation source not found: $ORIGINAL_SOURCE_FILE"
-    echo "Set ORIGINAL_SOURCE_FILE explicitly to the immutable source used before independent validation."
     exit 1
 fi
 if [[ ! -f "$FROZEN_PREPARED_A" ]]; then
@@ -134,7 +138,8 @@ python -m py_compile \
     naacl/frontier_common.py \
     naacl/frontier_seed_policy.py \
     naacl/frontier_judge_v5.py \
-    naacl/check_frontier_environment.py
+    naacl/check_frontier_environment.py \
+    naacl/discover_legacy_twin_source.py
 
 echo "--- Frozen Dataset B cache preflight ---"
 python naacl/check_frontier_environment.py \
