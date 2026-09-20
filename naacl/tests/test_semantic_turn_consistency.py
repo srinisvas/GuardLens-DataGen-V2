@@ -16,6 +16,10 @@ from audit_semantic_turn_consistency import (
     inspect_splits,
 )
 from semantic_span_policy import ADJUDICATION_VERSION
+from prepare_frontier_dataset import (
+    SEMANTIC_TURN_REPAIR_VERSION,
+    reconcile_semantically_masked_evidence_turns,
+)
 
 
 def masked_span(text="shared context rather than restating the process"):
@@ -110,8 +114,49 @@ class SemanticTurnConsistencyTests(unittest.TestCase):
 
     def test_independent_support_missing_from_evidence_ids_fails_closed(self):
         r = record(evidence_ids=[], turn_status="supported_strong")
-        with self.assertRaisesRegex(RuntimeError, "missing from evidence_turn_ids"):
+        with self.assertRaisesRegex(RuntimeError, "missing from raw B4 evidence_turn_ids"):
             classify_masked_turn(r, r["turns"][0])
+
+    def test_case_a_repair_is_recognized_and_raw_b4_ids_stay_intact(self):
+        r = record(evidence_ids=[0], turn_status="not_supported")
+        prepared = reconcile_semantically_masked_evidence_turns(r)
+        self.assertEqual(prepared, [])
+        r["evidence_turn_ids"] = prepared
+
+        self.assertEqual(
+            r["frontier_evidence_analysis"]["evidence_turn_ids"],
+            [0],
+        )
+        repair = r["semantic_turn_supervision_repair"]
+        self.assertEqual(repair["version"], SEMANTIC_TURN_REPAIR_VERSION)
+        self.assertEqual(repair["removed_evidence_turn_ids"], [0])
+
+        item = classify_masked_turn(r, r["turns"][0])
+        self.assertEqual(item["case"], CASE_A)
+        self.assertTrue(item["repair_applied"])
+        self.assertFalse(item["prepared_in_evidence_turn_ids"])
+        self.assertTrue(item["raw_in_evidence_turn_ids"])
+
+    def test_reconcile_keeps_independently_supported_masked_turn(self):
+        r = record(evidence_ids=[0], turn_status="supported_strong")
+        prepared = reconcile_semantically_masked_evidence_turns(r)
+        self.assertEqual(prepared, [0])
+        self.assertNotIn("semantic_turn_supervision_repair", r)
+
+    def test_reconcile_keeps_nonmasked_span_supported_turn(self):
+        r = record(
+            evidence_ids=[0],
+            turn_status="not_supported",
+            extra_spans=[positive_span()],
+        )
+        prepared = reconcile_semantically_masked_evidence_turns(r)
+        self.assertEqual(prepared, [0])
+        self.assertNotIn("semantic_turn_supervision_repair", r)
+
+    def test_reconcile_fails_closed_on_orphan_case_b(self):
+        r = record(evidence_ids=[0], turn_status=None)
+        with self.assertRaisesRegex(ValueError, "without independent supported"):
+            reconcile_semantically_masked_evidence_turns(r)
 
     def test_record_and_analysis_evidence_ids_must_match(self):
         r = record(evidence_ids=[0], turn_status="supported_strong")
@@ -135,6 +180,8 @@ class SemanticTurnConsistencyTests(unittest.TestCase):
         self.assertEqual(report["case_counts_by_span"][CASE_A], 2)
         self.assertEqual(report["case_counts_by_turn"][CASE_D], 1)
         self.assertFalse(report["held_out_test_accessed"])
+        self.assertEqual(report["repaired_case_A_turns"], 0)
+        self.assertEqual(report["unrepaired_case_A_turns"], 1)
 
     def test_test_split_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "held-out test"):
