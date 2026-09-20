@@ -187,6 +187,20 @@ verify_sha256 "a71def97f7d2cf73388e0f31643ba48a444b14213f9d20c8763c9ff74ac0b0aa"
 verify_sha256 "74fe911313e23fa75cf48ed195957ce71346d4ab517d99081ec3864d069af37d" "$REVIEW"
 verify_sha256 "19bdd9884de0c231b3e76a1325f49e2dd85edf02345bedeb4062478e8849df58" "$REVIEW_MANIFEST"
 
+# Recheck every old-freeze baseline too, closing the window for concurrent
+# local modification while the candidate is being built/audited.
+verify_sha256 "eddae12529f5c520772973089c70c014fc1508e00dcc835faef78fb2b8d8281f" "$OLD_FREEZE/dataset_b_primary.jsonl"
+verify_sha256 "ce21c83e349a3a3e0a41a523dc1bfc92669ed909f91494ee681a0133bd5b59a5" "$OLD_FREEZE/dataset_b_benign_stress.jsonl"
+verify_sha256 "6599ac563096a67e499f8939e0767dda2b3da853ebe8f3aff475c9f51c41d968" "$OLD_FREEZE/dataset_b_excluded.jsonl"
+verify_sha256 "76769282c545ce575677b26048dca69576c2398474168ae2bc21f467370abc5b" "$OLD_FREEZE/dataset_ab_primary.jsonl"
+verify_sha256 "164a6327f54adedd8268d30c71d10ba56484f4984321505af33cbf3bb205ad1e" "$OLD_FREEZE/splits_primary/train.jsonl"
+verify_sha256 "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0" "$OLD_FREEZE/splits_primary/dev.jsonl"
+verify_sha256 "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45" "$OLD_FREEZE/splits_primary/test.jsonl"
+verify_sha256 "f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594" "$OLD_FREEZE/dataset_b_auxiliary_512.jsonl"
+verify_sha256 "3533198efdb55fe33087170c50d62d301969b841422e283c5ebdc71f10c7490f" "$OLD_FREEZE/splits_primary_plus_train_auxiliary/train.jsonl"
+verify_sha256 "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0" "$OLD_FREEZE/splits_primary_plus_train_auxiliary/dev.jsonl"
+verify_sha256 "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45" "$OLD_FREEZE/splits_primary_plus_train_auxiliary/test.jsonl"
+
 printf '%s\n' "$CODE_SHA" > "$CANDIDATE/data_prep_code_commit.txt"
 
 echo
