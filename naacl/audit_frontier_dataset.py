@@ -15,7 +15,10 @@ import sys
 from collections import Counter, defaultdict
 
 from frontier_common import load_jsonl
-from prepare_frontier_dataset import assert_expected_provenance
+from prepare_frontier_dataset import (
+    SEMANTIC_TURN_REPAIR_VERSION,
+    assert_expected_provenance,
+)
 from semantic_span_policy import ADJUDICATION_VERSION, is_construction_language_supported_span
 
 SUPPORTED = {"supported_strong", "supported_weak"}
@@ -173,15 +176,24 @@ def main() -> None:
                 weak_thr = strong_thr = control_tol = math.nan
                 errors.append(f"{cid}: evidence thresholds are missing/non-numeric")
 
-            reconstructed_turns = set()
+            raw_reconstructed_turns = set()
+            prepared_reconstructed_turns = set()
+            turn_status_by_id = {}
             for intervention in analysis.get("turn_interventions", []) or []:
                 status = str(intervention.get("status", ""))
                 tid = int(intervention.get("turn_id", -1))
                 delta = intervention.get("delta")
+                previous_status = turn_status_by_id.get(tid)
+                if previous_status is not None and previous_status != status:
+                    errors.append(
+                        f"{cid}: conflicting whole-turn intervention statuses for turn {tid}"
+                    )
+                turn_status_by_id[tid] = status
                 if tid not in physical_user_ids:
                     errors.append(f"{cid}: turn intervention references missing user turn {tid}")
                 if status in SUPPORTED:
-                    reconstructed_turns.add(tid)
+                    raw_reconstructed_turns.add(tid)
+                    prepared_reconstructed_turns.add(tid)
                     if not is_number(delta):
                         errors.append(f"{cid}: supported turn intervention has nonnumeric delta")
                     elif status == "supported_strong" and float(delta) < strong_thr:
@@ -204,7 +216,7 @@ def main() -> None:
                         errors.append(f"{cid}: stale/misaligned span offsets")
 
                 if status in SUPPORTED:
-                    reconstructed_turns.add(tid)
+                    raw_reconstructed_turns.add(tid)
                     semantic_masked = span.get("semantic_token_supervision_ignore") is True
                     should_be_semantically_masked = is_construction_language_supported_span(span)
                     if semantic_masked != should_be_semantically_masked:
@@ -220,6 +232,7 @@ def main() -> None:
                         if span.get("supervision_tier") != "ignore":
                             errors.append(f"{cid}: semantically masked span remains supervised")
                     else:
+                        prepared_reconstructed_turns.add(tid)
                         strong_span = strong_span or status == "supported_strong"
                         weak_span = weak_span or status == "supported_weak"
                         if span.get("causal_type") != "causal":
@@ -250,14 +263,52 @@ def main() -> None:
                         if abs(float(delta)) < control_tol:
                             errors.append(f"{cid}: violated negative control is actually within tolerance")
 
-            reconstructed = sorted(reconstructed_turns)
-            if reconstructed != evidence_turns:
-                errors.append(
-                    f"{cid}: evidence_turn_ids {evidence_turns} != reconstructed supported turns {reconstructed}"
-                )
+            raw_reconstructed = sorted(raw_reconstructed_turns)
+            prepared_reconstructed = sorted(prepared_reconstructed_turns)
             analysis_turns = sorted({int(x) for x in analysis.get("evidence_turn_ids", [])})
-            if analysis_turns != evidence_turns:
-                errors.append(f"{cid}: record and analysis evidence_turn_ids disagree")
+
+            if analysis_turns != raw_reconstructed:
+                errors.append(
+                    f"{cid}: raw B4 evidence_turn_ids {analysis_turns} != "
+                    f"reconstructed raw supported turns {raw_reconstructed}"
+                )
+            if evidence_turns != prepared_reconstructed:
+                errors.append(
+                    f"{cid}: prepared evidence_turn_ids {evidence_turns} != "
+                    f"reconstructed learnable supported turns {prepared_reconstructed}"
+                )
+
+            repair = r.get("semantic_turn_supervision_repair")
+            removed_ids = sorted(set(analysis_turns) - set(evidence_turns))
+            added_ids = sorted(set(evidence_turns) - set(analysis_turns))
+            if added_ids:
+                errors.append(
+                    f"{cid}: prepared semantic repair added evidence turns {added_ids}"
+                )
+            if removed_ids:
+                if not isinstance(repair, dict):
+                    errors.append(
+                        f"{cid}: prepared/raw evidence-turn difference lacks repair provenance"
+                    )
+                else:
+                    if repair.get("version") != SEMANTIC_TURN_REPAIR_VERSION:
+                        errors.append(f"{cid}: semantic turn repair version mismatch")
+                    if sorted(repair.get("removed_evidence_turn_ids") or []) != removed_ids:
+                        errors.append(f"{cid}: semantic repair removed-turn provenance mismatch")
+                    if sorted(repair.get("raw_b4_evidence_turn_ids") or []) != analysis_turns:
+                        errors.append(f"{cid}: semantic repair raw-turn provenance mismatch")
+                    if sorted(repair.get("prepared_evidence_turn_ids") or []) != evidence_turns:
+                        errors.append(f"{cid}: semantic repair prepared-turn provenance mismatch")
+                for tid in removed_ids:
+                    if turn_status_by_id.get(tid) != "not_supported":
+                        errors.append(
+                            f"{cid}: removed semantic evidence turn {tid} is not "
+                            "explicitly not_supported at whole-turn level"
+                        )
+            elif repair:
+                errors.append(
+                    f"{cid}: semantic turn repair provenance exists without a turn-id change"
+                )
             if anchor_int is not None and any(tid > anchor_int for tid in evidence_turns):
                 errors.append(f"{cid}: evidence turn occurs after fresh unsafe anchor")
 
