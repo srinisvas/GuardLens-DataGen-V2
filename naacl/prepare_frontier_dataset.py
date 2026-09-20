@@ -18,7 +18,11 @@ from collections import Counter, defaultdict
 from typing import Dict, List
 
 from audit_frontier_evidence import audit_record as audit_b4_record
-from semantic_span_policy import apply_semantic_span_policy
+from semantic_span_policy import (
+    ADJUDICATION_VERSION,
+    SUPPORTED_STATUSES,
+    apply_semantic_span_policy,
+)
 
 from frontier_common import (
     DEFAULT_JUDGE_MAX_CONTEXT_CHARS,
@@ -58,6 +62,108 @@ def iter_spans(record: Dict):
     for turn in record.get("turns", []):
         for span in turn.get("span_annotations", []):
             yield span
+
+
+SEMANTIC_TURN_REPAIR_VERSION = "construction_language_turn_reconcile_v1"
+
+
+def _prepared_positive_span(span: Dict) -> bool:
+    if span.get("semantic_token_supervision_ignore") is True:
+        return False
+    status = str(span.get("evidence_status", ""))
+    tier = str(span.get("supervision_tier", ""))
+    causal_type = str(span.get("causal_type", ""))
+    return (
+        causal_type == "causal"
+        and (
+            (status == "supported_strong" and tier == "cf_strong")
+            or (status == "supported_weak" and tier == "cf_weak")
+        )
+    )
+
+
+def _turn_intervention_statuses(record: Dict) -> Dict[int, str]:
+    cid = str(record.get("conversation_id", ""))
+    result: Dict[int, str] = {}
+    analysis = record.get("frontier_evidence_analysis", {}) or {}
+    for item in analysis.get("turn_interventions", []) or []:
+        tid = item.get("turn_id")
+        if isinstance(tid, bool) or not isinstance(tid, int):
+            raise ValueError(f"{cid}: invalid turn intervention id {tid!r}")
+        status = str(item.get("status", ""))
+        previous = result.get(tid)
+        if previous is not None and previous != status:
+            raise ValueError(
+                f"{cid}: turn {tid} has conflicting intervention statuses "
+                f"{previous!r} and {status!r}"
+            )
+        result[tid] = status
+    return result
+
+
+def reconcile_semantically_masked_evidence_turns(record: Dict) -> List[int]:
+    """Return prepared evidence-turn IDs after semantic token masking.
+
+    Raw B4 evidence inside frontier_evidence_analysis is intentionally
+    preserved. Only prepared record-level turn supervision is reconciled.
+
+    A masked turn already present in evidence_turn_ids is retained when it has
+    independent supported whole-turn evidence or another eligible non-masked
+    positive span. If the whole-turn intervention is explicitly not_supported
+    and the masked span was the only positive support, the prepared positive
+    membership is removed. Any other orphaned masked evidence ID fails closed
+    rather than receiving an implicit fallback target.
+    """
+    cid = str(record.get("conversation_id", ""))
+    evidence_turns = sorted({int(x) for x in record.get("evidence_turn_ids", [])})
+    evidence_set = set(evidence_turns)
+    statuses = _turn_intervention_statuses(record)
+
+    masked_turns: Dict[int, Dict] = {}
+    for turn in record.get("turns", []) or []:
+        tid = int(turn.get("turn_id", -1))
+        if any(
+            span.get("semantic_adjudication") == ADJUDICATION_VERSION
+            and span.get("semantic_token_supervision_ignore") is True
+            for span in turn.get("span_annotations", []) or []
+        ):
+            masked_turns[tid] = turn
+
+    removed: List[int] = []
+    for tid, turn in sorted(masked_turns.items()):
+        if tid not in evidence_set:
+            continue
+        turn_status = statuses.get(tid)
+        whole_turn_supported = turn_status in SUPPORTED_STATUSES
+        has_nonmasked_positive = any(
+            _prepared_positive_span(span)
+            for span in turn.get("span_annotations", []) or []
+        )
+        if whole_turn_supported or has_nonmasked_positive:
+            continue
+        if turn_status == "not_supported":
+            evidence_set.remove(tid)
+            removed.append(tid)
+            continue
+        raise ValueError(
+            f"{cid}: semantic masking leaves evidence turn {tid} without "
+            "independent supported turn/span evidence and without an explicit "
+            "not_supported whole-turn result"
+        )
+
+    prepared = sorted(evidence_set)
+    if removed:
+        record["semantic_turn_supervision_repair"] = {
+            "version": SEMANTIC_TURN_REPAIR_VERSION,
+            "removed_evidence_turn_ids": removed,
+            "raw_b4_evidence_turn_ids": evidence_turns,
+            "prepared_evidence_turn_ids": prepared,
+            "reason": (
+                "semantic token mask removed the only eligible positive span "
+                "while the whole-turn intervention was not_supported"
+            ),
+        }
+    return prepared
 
 
 def user_turn_count(record: Dict) -> int:
@@ -165,7 +271,7 @@ def sanitize_malicious(
     r["loss_weight"] = LOSS_WEIGHTS[tier]
     r["training_eligible"] = True
 
-    evidence_turns = sorted({int(x) for x in r.get("evidence_turn_ids", [])})
+    evidence_turns = reconcile_semantically_masked_evidence_turns(r)
     r["evidence_turn_ids"] = evidence_turns
     r["pivot_turn_id"] = evidence_turns[0] if evidence_turns else None
     r["pivot_supervision_ignore"] = not bool(evidence_turns)
@@ -446,7 +552,11 @@ def main() -> None:
             "benign_gate": "independent full-prefix context-aware Mistral judge validates safe Qwen trajectory",
             "primary_pair_policy": "retain complete validated malicious/benign twins only",
             "standalone_hard_benign_policy": "validated standalones are evaluation-only stress records",
-            "pivot_policy": "only counterfactually supported evidence turns populate pivot_turn_id",
+            "pivot_policy": (
+                "only counterfactually supported evidence turns populate pivot_turn_id; "
+                "semantically masked construction-language spans cannot alone preserve "
+                "positive turn membership"
+            ),
             "span_policy": "only counterfactually supported spans receive positive attribution supervision",
             "expected_target_model": args.expected_target_model,
             "expected_judge_model": args.expected_judge_model,
