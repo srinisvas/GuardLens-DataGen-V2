@@ -59,7 +59,26 @@ python -m py_compile \
   naacl/compare_twin_judge_agreement.py \
   naacl/judge_stored_twin_responses.py \
   naacl/frontier_common.py \
+  naacl/frontier_seed_policy.py \
   naacl/frontier_judge_v5.py
+
+python - <<'PY'
+import importlib.metadata
+import os
+import sys
+import vllm.envs
+sys.path.insert(0, "naacl")
+from frontier_judge_v5 import pass_a_prompt_fingerprint, pass_b_prompt_fingerprint
+if importlib.metadata.version("vllm") != "0.28.0":
+    raise RuntimeError("agreement audit requires frozen vLLM 0.28.0")
+if os.environ.get("VLLM_BATCH_INVARIANT") != "1":
+    raise RuntimeError("VLLM_BATCH_INVARIANT must equal 1")
+if pass_a_prompt_fingerprint() != "eaff8c323e79e7cdc0c40741c25a8d5c75d795b96406fdf6b94b411016282f04":
+    raise RuntimeError("v5 pass-A fingerprint mismatch")
+if pass_b_prompt_fingerprint() != "cbd557a4d670ce1e2bee1ce28c8b5440849f2ba482c905cf6d726fd97443f888":
+    raise RuntimeError("v5 pass-B fingerprint mismatch")
+print("Agreement protocol preflight passed")
+PY
 
 MODEL_DIR="$MODEL_CACHE/hub/models--$(echo "$JUDGE_MODEL" | sed 's#/#--#g')"
 [[ -f "$MODEL_DIR/refs/main" ]] || {
