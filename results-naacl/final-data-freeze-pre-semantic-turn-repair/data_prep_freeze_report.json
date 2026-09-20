@@ -1,0 +1,170 @@
+{
+  "artifact_sha256": {
+    "auxiliary_candidate_dev": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+    "auxiliary_candidate_test": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
+    "auxiliary_candidate_train": "3533198efdb55fe33087170c50d62d301969b841422e283c5ebdc71f10c7490f",
+    "auxiliary_input": "f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594",
+    "frontier_excluded": "6599ac563096a67e499f8939e0767dda2b3da853ebe8f3aff475c9f51c41d968",
+    "frontier_primary": "eddae12529f5c520772973089c70c014fc1508e00dcc835faef78fb2b8d8281f",
+    "frontier_stress": "ce21c83e349a3a3e0a41a523dc1bfc92669ed909f91494ee681a0133bd5b59a5",
+    "legacy_input": "a71def97f7d2cf73388e0f31643ba48a444b14213f9d20c8763c9ff74ac0b0aa",
+    "merged_input": "76769282c545ce575677b26048dca69576c2398474168ae2bc21f467370abc5b",
+    "primary_dev": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+    "primary_test": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
+    "primary_train": "164a6327f54adedd8268d30c71d10ba56484f4984321505af33cbf3bb205ad1e",
+    "review_input": "74fe911313e23fa75cf48ed195957ce71346d4ab517d99081ec3864d069af37d",
+    "review_manifest": "19bdd9884de0c231b3e76a1325f49e2dd85edf02345bedeb4062478e8849df58"
+  },
+  "auxiliary": {
+    "authoring_labels": {
+      "0": 190,
+      "1": 322
+    },
+    "detection_labels": {
+      "0": 322,
+      "1": 190
+    },
+    "detection_only_masking": "passed",
+    "raw_rejected_membership_exact": true,
+    "records": 512,
+    "scenario_families": 275,
+    "split_grouping": "passed",
+    "status": "passed"
+  },
+  "auxiliary_candidate": {
+    "auxiliary_records_in_train": 424,
+    "dev_byte_identical_to_primary": true,
+    "dev_records": 367,
+    "leakage_check": "passed",
+    "test_byte_identical_to_primary": true,
+    "test_records": 367,
+    "train_records": 2144
+  },
+  "construction_language_visibility": {
+    "example_conversation_ids": {
+      "frontier_authored_v3|label=0": [
+        "27000ffe-43e0-56ef-a228-146d1e667bea",
+        "6f4353e1-bc1f-505f-91e1-8b2c14e83722",
+        "74d56f6c-b40e-5d0c-878d-de252ee1f5ec",
+        "7b3b4a61-0a74-596d-99a4-6feb2ef6f71c",
+        "98a24984-33b5-5fbe-bce3-6d849831bb82"
+      ],
+      "frontier_authored_v3|label=1": [
+        "a9421969-5863-59d2-9cee-8de8259ab2af",
+        "c3027042-c7ff-5f52-a5ed-ceeb68443506",
+        "2a5db895-4a38-54ba-b394-0f1cf9cfd3de",
+        "8584838c-c099-58a5-99da-aef1c9201954",
+        "653ea049-46ea-5b22-bddc-0deadbd35d6c"
+      ]
+    },
+    "records_with_reviewed_construction_language": {
+      "frontier_authored_v3|label=0": 174,
+      "frontier_authored_v3|label=1": 174
+    }
+  },
+  "counts": {
+    "frontier_excluded": 1010,
+    "frontier_primary": 1402,
+    "frontier_review_partition_total": 2999,
+    "frontier_stress": 587,
+    "legacy": 1052,
+    "merged_primary": 2454,
+    "primary_splits": {
+      "dev": 367,
+      "test": 367,
+      "train": 1720
+    }
+  },
+  "frontier_excluded_contract": "passed",
+  "frontier_membership_reconstructed_from_raw": {
+    "auxiliary_rejected_candidates": 512,
+    "excluded": 1010,
+    "primary": 1402,
+    "stress": 587
+  },
+  "frontier_review_partition": "passed",
+  "frontier_stress_contract": "passed",
+  "primary_split_leakage": "passed",
+  "review_export": {
+    "b2_statuses": {
+      "rejected": 512,
+      "validated": 2487
+    },
+    "b4_statuses": {
+      "complete": 877,
+      "not_applicable": 2122
+    },
+    "contract_fingerprint": "6499a9a94908bd75ae876b94402b0c145c3049d04506eee1d6fa9b830960ddef",
+    "jsonl_sha256": "74fe911313e23fa75cf48ed195957ce71346d4ab517d99081ec3864d069af37d",
+    "labels": {
+      "0": 1800,
+      "1": 1199
+    },
+    "missing_record": "c1fd7a44-d06e-5f54-8234-54fa5dbf074f",
+    "records": 2999,
+    "snapshot_digest": "7f219e4b78e09595bd3849306b09606111d3f6c20fe02ce98eb3a577e51c02f1",
+    "status": "passed"
+  },
+  "source_counts": {
+    "frontier_authored_v3": 1402,
+    "legacy_repaired": 1052
+  },
+  "source_shortcut_controls": {
+    "internal_identifier_leakage": "passed",
+    "nfkc_casefold_exact_trajectory_duplicates_across_groups": 0,
+    "per_source_label_balance": "passed",
+    "per_source_total_turn_histogram_match": "passed",
+    "per_source_user_turn_histogram_match": "passed",
+    "split_source_label_composition": {
+      "dev": {
+        "frontier_authored_v3": {
+          "absolute_share_gap": 0.0031183178902352005,
+          "label_0_count": 105,
+          "label_1_count": 105,
+          "p_source_given_label_0": 0.5737704918032787,
+          "p_source_given_label_1": 0.5706521739130435
+        },
+        "legacy_repaired": {
+          "absolute_share_gap": 0.003118317890235256,
+          "label_0_count": 78,
+          "label_1_count": 79,
+          "p_source_given_label_0": 0.4262295081967213,
+          "p_source_given_label_1": 0.42934782608695654
+        }
+      },
+      "test": {
+        "frontier_authored_v3": {
+          "absolute_share_gap": 0.0031183178902352005,
+          "label_0_count": 105,
+          "label_1_count": 105,
+          "p_source_given_label_0": 0.5737704918032787,
+          "p_source_given_label_1": 0.5706521739130435
+        },
+        "legacy_repaired": {
+          "absolute_share_gap": 0.003118317890235256,
+          "label_0_count": 78,
+          "label_1_count": 79,
+          "p_source_given_label_0": 0.4262295081967213,
+          "p_source_given_label_1": 0.42934782608695654
+        }
+      },
+      "train": {
+        "frontier_authored_v3": {
+          "absolute_share_gap": 0.0013277465221018803,
+          "label_0_count": 491,
+          "label_1_count": 491,
+          "p_source_given_label_0": 0.570267131242741,
+          "p_source_given_label_1": 0.5715948777648429
+        },
+        "legacy_repaired": {
+          "absolute_share_gap": 0.0013277465221018803,
+          "label_0_count": 370,
+          "label_1_count": 368,
+          "p_source_given_label_0": 0.429732868757259,
+          "p_source_given_label_1": 0.42840512223515714
+        }
+      }
+    }
+  },
+  "status": "passed"
+}

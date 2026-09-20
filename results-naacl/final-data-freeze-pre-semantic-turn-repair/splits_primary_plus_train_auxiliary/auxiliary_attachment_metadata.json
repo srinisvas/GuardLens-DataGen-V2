@@ -1,0 +1,27 @@
+{
+  "auxiliary_disposition": {
+    "included_aux_only_family": 250,
+    "included_primary_train_family": 174,
+    "withheld_primary_dev_family": 45,
+    "withheld_primary_test_family": 43
+  },
+  "auxiliary_included": 424,
+  "auxiliary_included_detection_labels": {
+    "0": 271,
+    "1": 153
+  },
+  "auxiliary_included_groups": 215,
+  "candidate_records": {
+    "dev": 367,
+    "test": 367,
+    "train": 2144
+  },
+  "dev_test_copy_policy": "byte_for_byte_from_frozen_primary_inputs",
+  "dev_test_primary_only": true,
+  "policy": "freeze primary split; add auxiliary only to train when scenario-family and exact-user-trajectory ownership do not belong to primary dev/test",
+  "primary_records": {
+    "dev": 367,
+    "test": 367,
+    "train": 1720
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "auxiliary_input": {
+    "sha256": "f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594",
+    "status": "byte_identical"
+  },
+  "auxiliary_splits": {
+    "dev": {
+      "after_sha256": "e024e52ffa2ab1820fbf190a1389ebeec3e364256c45d701fb87082e622257f6",
+      "before_sha256": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+      "changed_conversation_ids": [
+        "f365b799-1e62-58b3-9bdf-4fbf78feba3d"
+      ],
+      "changed_records": 1,
+      "records": 367,
+      "repaired_turns": [
+        {
+          "conversation_id": "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+          "turn_id": 2
+        }
+      ]
+    },
+    "held_out_test_byte_identical": true,
+    "held_out_test_semantically_inspected": false,
+    "test": {
+      "sha256": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
+      "status": "byte_identical"
+    },
+    "total_repaired_turns": 4,
+    "train": {
+      "after_sha256": "b74e3615d0851c4d016e9aa8ddcce1ab0d3ea70171f89f67902cd0e203e5d403",
+      "before_sha256": "3533198efdb55fe33087170c50d62d301969b841422e283c5ebdc71f10c7490f",
+      "changed_conversation_ids": [
+        "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+        "f379f826-56a5-57a2-930c-281f08d19604",
+        "52337017-6572-5010-906e-90119aa182fa"
+      ],
+      "changed_records": 3,
+      "records": 2144,
+      "repaired_turns": [
+        {
+          "conversation_id": "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+          "turn_id": 2
+        },
+        {
+          "conversation_id": "f379f826-56a5-57a2-930c-281f08d19604",
+          "turn_id": 2
+        },
+        {
+          "conversation_id": "52337017-6572-5010-906e-90119aa182fa",
+          "turn_id": 0
+        }
+      ]
+    }
+  },
+  "expected_repaired_turns": 4,
+  "frontier_excluded": {
+    "sha256": "6599ac563096a67e499f8939e0767dda2b3da853ebe8f3aff475c9f51c41d968",
+    "status": "byte_identical"
+  },
+  "frontier_primary": {
+    "after_sha256": "875694d3b2ba726dfc9112438b91a055c53459e961f28ab392e9334183d52b14",
+    "before_sha256": "eddae12529f5c520772973089c70c014fc1508e00dcc835faef78fb2b8d8281f",
+    "changed_conversation_ids": [
+      "52337017-6572-5010-906e-90119aa182fa",
+      "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+      "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+      "f379f826-56a5-57a2-930c-281f08d19604"
+    ],
+    "changed_records": 4,
+    "records": 1402,
+    "repaired_turns": [
+      {
+        "conversation_id": "52337017-6572-5010-906e-90119aa182fa",
+        "turn_id": 0
+      },
+      {
+        "conversation_id": "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+        "turn_id": 2
+      },
+      {
+        "conversation_id": "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+        "turn_id": 2
+      },
+      {
+        "conversation_id": "f379f826-56a5-57a2-930c-281f08d19604",
+        "turn_id": 2
+      }
+    ]
+  },
+  "frontier_stress": {
+    "sha256": "ce21c83e349a3a3e0a41a523dc1bfc92669ed909f91494ee681a0133bd5b59a5",
+    "status": "byte_identical"
+  },
+  "merged_primary": {
+    "after_sha256": "7f318056b9184b87e8667e77a6e80b9bf40652d25a7a22be5bffaa042aafced8",
+    "before_sha256": "76769282c545ce575677b26048dca69576c2398474168ae2bc21f467370abc5b",
+    "changed_conversation_ids": [
+      "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+      "52337017-6572-5010-906e-90119aa182fa",
+      "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+      "f379f826-56a5-57a2-930c-281f08d19604"
+    ],
+    "changed_records": 4,
+    "records": 2454,
+    "repaired_turns": [
+      {
+        "conversation_id": "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+        "turn_id": 2
+      },
+      {
+        "conversation_id": "52337017-6572-5010-906e-90119aa182fa",
+        "turn_id": 0
+      },
+      {
+        "conversation_id": "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+        "turn_id": 2
+      },
+      {
+        "conversation_id": "f379f826-56a5-57a2-930c-281f08d19604",
+        "turn_id": 2
+      }
+    ]
+  },
+  "primary_splits": {
+    "dev": {
+      "after_sha256": "e024e52ffa2ab1820fbf190a1389ebeec3e364256c45d701fb87082e622257f6",
+      "before_sha256": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+      "changed_conversation_ids": [
+        "f365b799-1e62-58b3-9bdf-4fbf78feba3d"
+      ],
+      "changed_records": 1,
+      "records": 367,
+      "repaired_turns": [
+        {
+          "conversation_id": "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+          "turn_id": 2
+        }
+      ]
+    },
+    "held_out_test_byte_identical": true,
+    "held_out_test_semantically_inspected": false,
+    "test": {
+      "sha256": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
+      "status": "byte_identical"
+    },
+    "total_repaired_turns": 4,
+    "train": {
+      "after_sha256": "7ba829d3acd0699b76012c477426504301694e215a7755e97341b196d5bf9011",
+      "before_sha256": "164a6327f54adedd8268d30c71d10ba56484f4984321505af33cbf3bb205ad1e",
+      "changed_conversation_ids": [
+        "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+        "f379f826-56a5-57a2-930c-281f08d19604",
+        "52337017-6572-5010-906e-90119aa182fa"
+      ],
+      "changed_records": 3,
+      "records": 1720,
+      "repaired_turns": [
+        {
+          "conversation_id": "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+          "turn_id": 2
+        },
+        {
+          "conversation_id": "f379f826-56a5-57a2-930c-281f08d19604",
+          "turn_id": 2
+        },
+        {
+          "conversation_id": "52337017-6572-5010-906e-90119aa182fa",
+          "turn_id": 0
+        }
+      ]
+    }
+  },
+  "repair_version": "construction_language_turn_reconcile_v1",
+  "status": "passed"
+}

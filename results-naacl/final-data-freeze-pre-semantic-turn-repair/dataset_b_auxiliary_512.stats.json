@@ -1,0 +1,18 @@
+{
+  "authoring_labels": {
+    "0": 190,
+    "1": 322
+  },
+  "detection_labels": {
+    "0": 322,
+    "1": 190
+  },
+  "policy": {
+    "label": "realized unsafe behavior, distinct from authoring intent",
+    "loss": "detection-only weight 0.25; pivot/span losses zero",
+    "source": "B2-rejected realized trajectories only",
+    "split": "scenario_family is indivisible and compatible with primary frontier grouping"
+  },
+  "records": 512,
+  "scenario_families": 275
+}

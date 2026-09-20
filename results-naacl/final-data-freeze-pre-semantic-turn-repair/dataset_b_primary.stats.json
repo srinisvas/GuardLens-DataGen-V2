@@ -565,7 +565,7 @@
     "judge_max_context_chars": 100000,
     "judge_max_model_len": 32768,
     "malicious_gate": "validated Qwen rollout AND reproducible fresh paired evidence baseline remains unsafe",
-    "pivot_policy": "only counterfactually supported evidence turns populate pivot_turn_id; semantically masked construction-language spans cannot alone preserve positive turn membership",
+    "pivot_policy": "only counterfactually supported evidence turns populate pivot_turn_id",
     "primary_pair_policy": "retain complete validated malicious/benign twins only",
     "rollout_protocol": "frontier_fixed_user_rollout_v4",
     "rollout_target_max_model_len": 16384,

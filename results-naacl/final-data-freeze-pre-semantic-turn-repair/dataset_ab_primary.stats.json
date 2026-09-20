@@ -1,0 +1,29 @@
+{
+  "corpus_source": {
+    "frontier_authored_v3": 1402,
+    "legacy_repaired": 1052
+  },
+  "cross_group_exact_user_trajectory_duplicates": 0,
+  "expected_frontier_judge_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+  "expected_frontier_target_model": "Qwen/Qwen2.5-32B-Instruct",
+  "frontier_protocol_chain_rechecked": true,
+  "frontier_scenario_families": 321,
+  "labels": {
+    "0": 1227,
+    "1": 1227
+  },
+  "policy": "merge canonical records first; perform a single group-aware split afterward",
+  "records": 2454,
+  "source_shortcut_checks": {
+    "per_source_label_balance": "passed",
+    "per_source_total_turn_histogram_match": "passed",
+    "per_source_user_turn_histogram_match": "passed"
+  },
+  "split_groups": 1373,
+  "supervision_tiers": {
+    "benign_validated": 1227,
+    "cf_strong": 632,
+    "cf_weak": 6,
+    "llm_confirmed": 589
+  }
+}

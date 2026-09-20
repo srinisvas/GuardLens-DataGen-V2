@@ -1,17 +1,17 @@
 {
   "artifact_sha256": {
-    "auxiliary_candidate_dev": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+    "auxiliary_candidate_dev": "e024e52ffa2ab1820fbf190a1389ebeec3e364256c45d701fb87082e622257f6",
     "auxiliary_candidate_test": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
-    "auxiliary_candidate_train": "3533198efdb55fe33087170c50d62d301969b841422e283c5ebdc71f10c7490f",
+    "auxiliary_candidate_train": "b74e3615d0851c4d016e9aa8ddcce1ab0d3ea70171f89f67902cd0e203e5d403",
     "auxiliary_input": "f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594",
     "frontier_excluded": "6599ac563096a67e499f8939e0767dda2b3da853ebe8f3aff475c9f51c41d968",
-    "frontier_primary": "eddae12529f5c520772973089c70c014fc1508e00dcc835faef78fb2b8d8281f",
+    "frontier_primary": "875694d3b2ba726dfc9112438b91a055c53459e961f28ab392e9334183d52b14",
     "frontier_stress": "ce21c83e349a3a3e0a41a523dc1bfc92669ed909f91494ee681a0133bd5b59a5",
     "legacy_input": "a71def97f7d2cf73388e0f31643ba48a444b14213f9d20c8763c9ff74ac0b0aa",
-    "merged_input": "76769282c545ce575677b26048dca69576c2398474168ae2bc21f467370abc5b",
-    "primary_dev": "659394391b035fa5fa06607f304bd118872e44e61388704288cf27684034dbd0",
+    "merged_input": "7f318056b9184b87e8667e77a6e80b9bf40652d25a7a22be5bffaa042aafced8",
+    "primary_dev": "e024e52ffa2ab1820fbf190a1389ebeec3e364256c45d701fb87082e622257f6",
     "primary_test": "82771ea6ddef43a73f02de05e66d774f2c2f694bfb552929d28379c5a331cf45",
-    "primary_train": "164a6327f54adedd8268d30c71d10ba56484f4984321505af33cbf3bb205ad1e",
+    "primary_train": "7ba829d3acd0699b76012c477426504301694e215a7755e97341b196d5bf9011",
     "review_input": "74fe911313e23fa75cf48ed195957ce71346d4ab517d99081ec3864d069af37d",
     "review_manifest": "19bdd9884de0c231b3e76a1325f49e2dd85edf02345bedeb4062478e8849df58"
   },
@@ -104,6 +104,458 @@
     "records": 2999,
     "snapshot_digest": "7f219e4b78e09595bd3849306b09606111d3f6c20fe02ce98eb3a577e51c02f1",
     "status": "passed"
+  },
+  "semantic_turn_supervision": {
+    "adjudication_version": "construction_language_token_mask_v1",
+    "case_counts_by_span": {
+      "A_explicit_turn_negative_masked_only_support": 4,
+      "B_orphan_evidence_id_after_mask": 0,
+      "C_independently_supported_after_mask": 10,
+      "D_mask_has_no_turn_membership_dependency": 0
+    },
+    "case_counts_by_turn": {
+      "A_explicit_turn_negative_masked_only_support": 4,
+      "B_orphan_evidence_id_after_mask": 0,
+      "C_independently_supported_after_mask": 10,
+      "D_mask_has_no_turn_membership_dependency": 0
+    },
+    "case_descriptions": {
+      "A_explicit_turn_negative_masked_only_support": "Turn is in evidence_turn_ids, its whole-turn intervention is not_supported, and no eligible non-masked positive span remains.",
+      "B_orphan_evidence_id_after_mask": "Turn is in evidence_turn_ids, but after semantic masking it has neither a supported whole-turn intervention nor an eligible non-masked positive span. Current downstream logic would need an evidence-id fallback rather than direct local evidence.",
+      "C_independently_supported_after_mask": "Turn is in evidence_turn_ids and remains independently supported by a supported whole-turn intervention and/or an eligible non-masked positive span.",
+      "D_mask_has_no_turn_membership_dependency": "The semantically masked span is on a turn that is not in evidence_turn_ids, so masking has no turn-membership dependency."
+    },
+    "details": [
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "2a5db895-4a38-54ba-b394-0f1cf9cfd3de",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 84,
+            "char_start": 0,
+            "counterfactual_delta": 0.9,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The conversation should sound like ordinary work rather than a safety demonstration."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "dev",
+        "turn_id": 2,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "A_explicit_turn_negative_masked_only_support",
+        "conversation_id": "f365b799-1e62-58b3-9bdf-4fbf78feba3d",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 81,
+            "char_start": 0,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The earlier decision is meant to carry forward implicitly into the final request."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": false,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "remove_positive_membership_and_keep_explicit_negative",
+        "repair_applied": true,
+        "split": "dev",
+        "turn_id": 2,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "20de0b5f-932a-5751-86dc-a1fabca8128b",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 294,
+            "char_start": 237,
+            "counterfactual_delta": 0.7,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The final request should look ordinary if read by itself."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "228a1e9f-579f-5bc6-9fed-c1e46676b5a0",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 259,
+            "char_start": 186,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "Intent and prior context should matter more than obvious risk vocabulary."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "34909cff-26a7-540c-81b7-67646965ed98",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 253,
+            "char_start": 221,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "which makes the boundary subtle."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "4c497d4d-c939-5c60-9ff8-7782b00a09cb",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 261,
+            "char_start": 188,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "Intent and prior context should matter more than obvious risk vocabulary."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      },
+      {
+        "case": "A_explicit_turn_negative_masked_only_support",
+        "conversation_id": "52337017-6572-5010-906e-90119aa182fa",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 231,
+            "char_start": 199,
+            "counterfactual_delta": 0.7,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "which makes the boundary subtle."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": false,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "remove_positive_membership_and_keep_explicit_negative",
+        "repair_applied": true,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "75bcffab-1d07-5478-9162-b6af7281f7c3",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_weak"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 243,
+            "char_start": 186,
+            "counterfactual_delta": 0.3,
+            "evidence_status": "supported_weak",
+            "semantic_original_supervision_tier": "cf_weak",
+            "text": "The final request should look ordinary if read by itself."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "8c5c4301-f870-5be6-9131-635e82d34a1e",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 81,
+            "char_start": 0,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The earlier decision is meant to carry forward implicitly into the final request."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 2,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "c1ecd44e-936a-56b1-b50d-45584ee7b2e5",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 260,
+            "char_start": 194,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The participants already know the basic process and write briefly."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 0,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "c1ecd44e-936a-56b1-b50d-45584ee7b2e5",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 123,
+            "char_start": 39,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "so the participants are relying on shared context rather than restating the process."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 2,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "C_independently_supported_after_mask",
+        "conversation_id": "c49bafb1-90ce-56ae-99dd-04fe3d974214",
+        "eligible_nonmasked_positive_span_count": 1,
+        "eligible_nonmasked_positive_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 123,
+            "char_start": 39,
+            "counterfactual_delta": 0.7,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "so the participants are relying on shared context rather than restating the process."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": true,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "retain_positive_membership",
+        "repair_applied": false,
+        "split": "train",
+        "turn_id": 2,
+        "whole_turn_negative": false,
+        "whole_turn_status": "supported_strong",
+        "whole_turn_supported": true
+      },
+      {
+        "case": "A_explicit_turn_negative_masked_only_support",
+        "conversation_id": "cf60a47a-735c-5ad2-b31e-2dd25f3cc849",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 123,
+            "char_start": 39,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "so the participants are relying on shared context rather than restating the process."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": false,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "remove_positive_membership_and_keep_explicit_negative",
+        "repair_applied": true,
+        "split": "train",
+        "turn_id": 2,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      },
+      {
+        "case": "A_explicit_turn_negative_masked_only_support",
+        "conversation_id": "f379f826-56a5-57a2-930c-281f08d19604",
+        "eligible_nonmasked_positive_span_count": 0,
+        "eligible_nonmasked_positive_span_statuses": [],
+        "masked_span_count": 1,
+        "masked_span_statuses": [
+          "supported_strong"
+        ],
+        "masked_spans": [
+          {
+            "char_end": 84,
+            "char_start": 0,
+            "counterfactual_delta": 1.0,
+            "evidence_status": "supported_strong",
+            "semantic_original_supervision_tier": "cf_strong",
+            "text": "The conversation should sound like ordinary work rather than a safety demonstration."
+          }
+        ],
+        "prepared_in_evidence_turn_ids": false,
+        "raw_in_evidence_turn_ids": true,
+        "recommended_turn_effect": "remove_positive_membership_and_keep_explicit_negative",
+        "repair_applied": true,
+        "split": "train",
+        "turn_id": 2,
+        "whole_turn_negative": true,
+        "whole_turn_status": "not_supported",
+        "whole_turn_supported": false
+      }
+    ],
+    "held_out_test_accessed": false,
+    "masked_records": 13,
+    "masked_spans": 14,
+    "masked_turns": 14,
+    "repair_candidate_turns": 4,
+    "repaired_case_A_turns": 4,
+    "silent_fallback_case_B_turns": 0,
+    "status": "inspection_complete",
+    "unrepaired_case_A_turns": 0
   },
   "source_counts": {
     "frontier_authored_v3": 1402,
