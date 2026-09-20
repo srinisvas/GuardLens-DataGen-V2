@@ -207,6 +207,39 @@ This stage does not modify the current frozen train/dev/test artifacts. Inspect
 the recovered-pair count and structural distributions before deciding whether
 the candidate should replace the current legacy primary corpus.
 
+Before allocating the judge GPU, the launcher now fails closed unless all of the
+following hold:
+
+- the restoration input contains exactly 545 original benign twins, 545
+  validated interactive malicious siblings, and 526 final repaired malicious
+  candidates;
+- every benign twin matches the immutable pre-independent-validation source on
+  observable turn IDs, roles, and text;
+- each pair preserves the original shared setup prefix, target domain, style,
+  and exact pair ID;
+- the reconstructed 526 malicious records are exactly identical to the current
+  frozen prepared Dataset A malicious records;
+- the historical independent validator is uniformly
+  `mistralai/Mistral-7B-Instruct-v0.3`;
+- the 24B judge model revision, small model artifacts, package versions, A100
+  hardware profile, CUDA runtime, driver, v5 prompt fingerprints, seed policy,
+  and deterministic vLLM runtime match the frozen Dataset B B2 receipt;
+- the offline 24B cache is complete.
+
+For restored benign supervision, validated user-turn annotations become explicit
+negative span targets, while any legacy assistant-turn span annotations remain
+present only as ignored provenance because span localization is user-turn-only.
+The active validation provenance is rewritten to describe the 24B bridge plus
+the reused historical 7B replay; the old incomplete provenance is retained
+separately for auditability.
+
+The job holds an exclusive run lock, preserves an append-only resumable
+checkpoint, removes stale derived outputs at start, and writes
+`results-new/naacl_twin_bridge24b_completion.json` only after the bridge
+artifact, restored candidate, statistics, and exclusions all succeed. The
+completion receipt records SHA-256 digests for all inputs and outputs plus the
+Git revision and Slurm job ID.
+
 ### 3B. Judge-capacity agreement audit
 
 After the 24B bridge artifact exists, run a separate same-response agreement
