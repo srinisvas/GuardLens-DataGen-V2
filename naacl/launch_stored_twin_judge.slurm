@@ -12,6 +12,7 @@
 set -euo pipefail
 
 CANONICAL_BRIDGE_JUDGE="mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+CANONICAL_BRIDGE_REVISION="68faf511d618ef198fef186659617cfd2eb8e33a"
 EXPECTED_HISTORICAL_INDEPENDENT="mistralai/Mistral-7B-Instruct-v0.3"
 JUDGE_MODEL="${JUDGE_MODEL:-$CANONICAL_BRIDGE_JUDGE}"
 PORT="${VLLM_PORT:-8000}"
@@ -48,6 +49,7 @@ export HF_HUB_CACHE="$HF_HOME/hub"
 export TRANSFORMERS_CACHE="$HF_HOME/hub"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_BATCH_INVARIANT=1
 
 cd "$PROJECT_DIR"
 
@@ -57,7 +59,7 @@ echo "========================================================"
 echo "Input:                         $INPUT_FILE"
 echo "Bridge judge:                  $JUDGE_MODEL"
 echo "Expected historical validator: $EXPECTED_HISTORICAL_INDEPENDENT"
-echo "Bridge protocol:               Dataset B full-prefix context judge"
+echo "Bridge protocol:               Dataset B B2 v5 dual-boundary conservative union"
 echo "Unsafe / ambiguous / conf:     $UNSAFE_THRESHOLD / $AMBIGUOUS_THRESHOLD / $MIN_CONFIDENCE"
 echo "Judge runtime context:         $JUDGE_MAX_MODEL_LEN tokens"
 echo "Judge observable-char budget:  $JUDGE_MAX_CONTEXT_CHARS"
@@ -143,17 +145,41 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     echo "ERROR: bridge judge not found in offline cache: $MODEL_DIR"
     exit 1
 fi
+if [[ ! -f "$MODEL_DIR/refs/main" ]]; then
+    echo "ERROR: cached judge lacks refs/main revision pin"
+    exit 1
+fi
+CACHED_REVISION=$(tr -d '[:space:]' < "$MODEL_DIR/refs/main")
+if [[ "$CACHED_REVISION" != "$CANONICAL_BRIDGE_REVISION" ]]; then
+    echo "ERROR: bridge judge revision mismatch"
+    echo "  expected: $CANONICAL_BRIDGE_REVISION"
+    echo "  cached:   $CACHED_REVISION"
+    exit 1
+fi
+SNAPSHOT_DIR="$MODEL_DIR/snapshots/$CACHED_REVISION"
+if [[ ! -d "$SNAPSHOT_DIR" ]]; then
+    echo "ERROR: pinned judge snapshot missing: $SNAPSHOT_DIR"
+    exit 1
+fi
+echo "Bridge judge revision: $CACHED_REVISION"
 
 echo "--- Starting Dataset B 24B judge server ---"
 CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" \
+    --revision "$CACHED_REVISION" \
+    --tokenizer-revision "$CACHED_REVISION" \
     --port "$PORT" \
     --dtype bfloat16 \
+    --tensor-parallel-size 1 \
+    --tokenizer-mode mistral \
+    --config-format mistral \
+    --load-format mistral \
     --max-model-len "$JUDGE_MAX_MODEL_LEN" \
-    --gpu-memory-utilization 0.92 \
+    --gpu-memory-utilization 0.90 \
+    --enable-prefix-caching \
+    --enforce-eager \
     --download-dir "$HF_HOME/hub" \
     --no-enable-log-requests \
-    --disable-log-stats \
     2>"logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}.log" &
 SERVER_PID=$!
 
