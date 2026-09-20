@@ -28,6 +28,33 @@ For the frozen primary corpus, `--enforce-reviewed-counts` requires the
 previously audited 14 masked spans across 13 records. Any A/B finding is
 reported for review; it does not mutate or silently repair the artifact.
 
+
+### Approved semantic turn-supervision repair
+
+After inspection establishes exactly four case-A turns and zero case-B turns,
+the canonical preparation step reconciles only prepared record-level
+`evidence_turn_ids`. Raw B4 evidence inside
+`frontier_evidence_analysis` remains unchanged.
+
+The repair rule is intentionally narrow:
+
+- retain a masked evidence turn if the whole-turn intervention is supported;
+- retain it if another eligible non-masked positive span independently supports
+  that turn;
+- remove it only when the whole-turn intervention is explicitly
+  `not_supported` and the semantically masked span was the only positive
+  support;
+- fail closed on any other orphaned masked evidence-turn membership.
+
+Changed records carry `semantic_turn_supervision_repair` provenance. The
+expected frozen repair count is four turns across four conversations.
+
+Use `audit_semantic_turn_repair_delta.py` against the old freeze and a
+candidate regeneration before replacing any frozen artifact. The delta audit
+requires every non-repair record to be identical at the JSON-object level,
+requires split membership/order to remain unchanged, and requires the held-out
+test JSONL to remain byte-identical.
+
 # Optimized Dataset B execution
 
 **Production length recovery:** the approved opt-in adaptive budget policy, checked state migration and exact commands are in [RECOVER_LENGTH_LIMIT.md](RECOVER_LENGTH_LIMIT.md). The fixed 2,048-token contract below remains the default and reference path. Adaptive execution uses B1 v4 and B4 v8, while the B2 v5 rubric stays unchanged. B1 remains at 16K; adaptive B4 uses Qwen's native 32K context envelope so a valid 4K/8K replay budget is not rejected merely because its counterfactual prefix is longer than the factual one.
