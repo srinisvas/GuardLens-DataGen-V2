@@ -59,6 +59,9 @@ if [[ ! -f "$INPUT_FILE" ]]; then
     exit 1
 fi
 
+echo "--- CPU twin-restoration input audit ---"
+python naacl/audit_legacy_twin_restoration_input.py --input "$INPUT_FILE"
+
 echo "--- Existing independent-validation provenance ---"
 INDEPENDENT_MODELS=$(python - "$INPUT_FILE" <<'PY'
 import json, sys
