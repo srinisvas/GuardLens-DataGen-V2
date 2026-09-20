@@ -33,6 +33,17 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def audit_byte_identical(before_path: str, after_path: str, *, where: str) -> Dict:
+    before_sha = file_sha256(before_path)
+    after_sha = file_sha256(after_path)
+    if before_sha != after_sha:
+        raise RuntimeError(f"{where}: artifact is not byte-identical")
+    return {
+        "status": "byte_identical",
+        "sha256": before_sha,
+    }
+
+
 def _index(records: Iterable[Dict], where: str) -> Tuple[List[str], Dict[str, Dict]]:
     order: List[str] = []
     by_id: Dict[str, Dict] = {}
@@ -211,7 +222,8 @@ def _split_paths(root: str) -> Dict[str, str]:
 def audit_split_pair(before_dir: str, after_dir: str, *, where: str) -> Dict:
     report = {}
     total_repairs = 0
-    for split, before_path in _split_paths(before_dir).items():
+    for split in ("train", "dev"):
+        before_path = os.path.join(before_dir, f"{split}.jsonl")
         after_path = os.path.join(after_dir, f"{split}.jsonl")
         item = audit_artifact_pair(
             before_path,
@@ -221,18 +233,23 @@ def audit_split_pair(before_dir: str, after_dir: str, *, where: str) -> Dict:
         total_repairs += len(item["repaired_turns"])
         report[split] = item
 
+    # Do not semantically inspect held-out test content. Prove only that the
+    # candidate test file is byte-for-byte identical to the previous freeze.
+    report["test"] = audit_byte_identical(
+        os.path.join(before_dir, "test.jsonl"),
+        os.path.join(after_dir, "test.jsonl"),
+        where=f"{where} test",
+    )
+
     if total_repairs != EXPECTED_REPAIRED_TURNS:
         raise RuntimeError(
             f"{where}: total repaired turns={total_repairs} "
             f"!= expected {EXPECTED_REPAIRED_TURNS}"
         )
-    if report["test"]["repaired_turns"]:
-        raise RuntimeError(f"{where}: held-out test contains a semantic turn repair")
-    if report["test"]["before_sha256"] != report["test"]["after_sha256"]:
-        raise RuntimeError(f"{where}: held-out test is not byte-identical")
 
     report["total_repaired_turns"] = total_repairs
     report["held_out_test_byte_identical"] = True
+    report["held_out_test_semantically_inspected"] = False
     return report
 
 
@@ -240,6 +257,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--before-frontier", required=True)
     parser.add_argument("--after-frontier", required=True)
+    parser.add_argument("--before-stress", required=True)
+    parser.add_argument("--after-stress", required=True)
+    parser.add_argument("--before-excluded", required=True)
+    parser.add_argument("--after-excluded", required=True)
+    parser.add_argument("--before-auxiliary", required=True)
+    parser.add_argument("--after-auxiliary", required=True)
     parser.add_argument("--before-merged")
     parser.add_argument("--after-merged")
     parser.add_argument("--before-primary-split-dir")
@@ -258,6 +281,21 @@ def main() -> None:
             args.after_frontier,
             where="frontier primary",
             expected_total_repaired_turns=EXPECTED_REPAIRED_TURNS,
+        ),
+        "frontier_stress": audit_byte_identical(
+            args.before_stress,
+            args.after_stress,
+            where="frontier stress",
+        ),
+        "frontier_excluded": audit_byte_identical(
+            args.before_excluded,
+            args.after_excluded,
+            where="frontier excluded",
+        ),
+        "auxiliary_input": audit_byte_identical(
+            args.before_auxiliary,
+            args.after_auxiliary,
+            where="auxiliary input",
         ),
     }
 
