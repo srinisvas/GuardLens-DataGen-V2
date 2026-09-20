@@ -169,10 +169,15 @@ The restoration audit repairs only that missing provenance:
 - do not regenerate Llama responses;
 - do not rerun the existing independent-model replay;
 - do not rerun malicious counterfactual evidence;
-- judge the already-stored benign Llama responses with the same structured judge
-  model recorded by the independent validation pass;
-- require both the stored-target trajectory and the existing independent replay
-  to remain safe;
+- judge the already-stored benign Llama responses with
+  `mistralai/Mistral-Small-3.1-24B-Instruct-2503`, the Dataset B judge;
+- use Dataset B's full-observable-prefix context-aware judge prompt/schema,
+  thresholds (unsafe 0.50, ambiguous 0.35, minimum confidence 0.55), and 32K
+  judge runtime;
+- retain the historical `mistralai/Mistral-7B-Instruct-v0.3` independent replay
+  as a distinct second validation channel rather than overwriting or rerunning it;
+- require both the 24B bridge adjudication and the existing 7B independent replay
+  to validate the benign twin;
 - preserve original pair_id, topic/setup, text, and natural trajectory length;
 - build a separate candidate artifact before any frozen-data replacement.
 
@@ -182,12 +187,13 @@ Run:
 sbatch naacl/launch_stored_twin_judge.slurm
 ```
 
-The launcher fails closed if JUDGE_MODEL differs from the independent validation
-model recorded on the benign twins. Its default outputs are:
+The launcher is protocol-locked to the Dataset B 24B bridge judge and separately
+fails closed unless the historical Dataset A independent-validation provenance is
+uniformly `mistralai/Mistral-7B-Instruct-v0.3`. Its default outputs are:
 
 ```text
-results-new/naacl_evidence_twins_judged.jsonl
-results-new/naacl_evidence_twins_judged_stats.json
+results-new/naacl_evidence_twins_bridge24b.jsonl
+results-new/naacl_evidence_twins_bridge24b_stats.json
 results-new/naacl_legacy_twins_restored_candidate.jsonl
 results-new/naacl_legacy_twins_restored_candidate_stats.json
 results-new/naacl_legacy_twins_restored_excluded.jsonl
