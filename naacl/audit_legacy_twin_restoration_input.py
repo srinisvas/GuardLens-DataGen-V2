@@ -10,6 +10,8 @@ import sys
 from collections import Counter, defaultdict
 from typing import Dict, List
 
+from prepare_dataset import sanitize_attribution_targets
+
 
 def load_jsonl(path: str) -> List[Dict]:
     out = []
@@ -161,6 +163,14 @@ def main() -> None:
             "IDs/roles/text in the restoration input."
         ),
     )
+    parser.add_argument(
+        "--frozen-prepared",
+        default=None,
+        help=(
+            "Current frozen prepared Dataset A. When supplied, reconstructed "
+            "eligible malicious records must match it exactly before any GPU run."
+        ),
+    )
     parser.add_argument("--expected-benign-twins", type=int, default=545)
     parser.add_argument("--expected-validated-malicious", type=int, default=545)
     parser.add_argument("--expected-final-malicious-candidates", type=int, default=526)
@@ -298,6 +308,49 @@ def main() -> None:
                     f"{cid}: observable stored trajectory differs from original source"
                 )
 
+    frozen_malicious_reference_checked = False
+    frozen_malicious_reference_mismatch = 0
+    if args.frozen_prepared:
+        frozen_records = load_jsonl(args.frozen_prepared)
+        frozen_malicious = {
+            str(r.get("conversation_id", "")): r
+            for r in frozen_records
+            if r.get("label") == 1
+        }
+        reconstructed = {}
+        for record in records:
+            if record.get("label") != 1 or record.get("validation_status") != "validated":
+                continue
+            try:
+                sanitized = sanitize_attribution_targets(record)
+            except Exception as exc:
+                errors.append(
+                    f"{record.get('conversation_id')}: malicious sanitization failed: {exc}"
+                )
+                continue
+            if sanitized.get("training_eligible"):
+                reconstructed[str(sanitized.get("conversation_id", ""))] = sanitized
+
+        frozen_malicious_reference_checked = True
+        if set(frozen_malicious) != set(reconstructed):
+            missing = sorted(set(frozen_malicious) - set(reconstructed))
+            extra = sorted(set(reconstructed) - set(frozen_malicious))
+            frozen_malicious_reference_mismatch += len(missing) + len(extra)
+            errors.append(
+                "reconstructed malicious membership differs from frozen prepared A: "
+                f"missing={missing[:10]} extra={extra[:10]}"
+            )
+        changed = [
+            cid for cid in sorted(set(frozen_malicious) & set(reconstructed))
+            if frozen_malicious[cid] != reconstructed[cid]
+        ]
+        if changed:
+            frozen_malicious_reference_mismatch += len(changed)
+            errors.append(
+                "reconstructed malicious records differ from frozen prepared A: "
+                f"{changed[:10]}"
+            )
+
     summary = {
         "records": len(records),
         "original_benign_twins": len(twins),
@@ -312,6 +365,8 @@ def main() -> None:
         "source_lineage_checked": source_lineage_checked,
         "source_lineage_missing": source_lineage_missing,
         "source_lineage_mismatch": source_lineage_mismatch,
+        "frozen_malicious_reference_checked": frozen_malicious_reference_checked,
+        "frozen_malicious_reference_mismatch": frozen_malicious_reference_mismatch,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
 
