@@ -60,6 +60,47 @@ def validate_stored_trajectory(record: Dict) -> None:
         raise RuntimeError(f"{cid}: stored turn IDs are not strictly increasing")
 
 
+def assert_original_twin_semantics(malicious: Dict, benign: Dict) -> None:
+    pair_id = str(benign.get("pair_id", ""))
+    if malicious.get("pair_id") != benign.get("pair_id"):
+        raise RuntimeError(f"{pair_id}: pair_id mismatch between twins")
+    if malicious.get("target_domain") != benign.get("target_domain"):
+        raise RuntimeError(
+            f"{pair_id}: target_domain mismatch "
+            f"{malicious.get('target_domain')!r} vs {benign.get('target_domain')!r}"
+        )
+    if malicious.get("style") != benign.get("style"):
+        raise RuntimeError(
+            f"{pair_id}: style mismatch "
+            f"{malicious.get('style')!r} vs {benign.get('style')!r}"
+        )
+
+    mal_turns = malicious.get("turns", [])
+    ben_turns = benign.get("turns", [])
+    shared_setup = []
+    for turn in mal_turns:
+        if (
+            str(turn.get("role", "")).lower() == "user"
+            and str(turn.get("semantic_role", "")) != "setup"
+        ):
+            break
+        shared_setup.append(turn)
+
+    if not shared_setup:
+        raise RuntimeError(f"{pair_id}: malicious twin has no shared setup prefix")
+    if len(ben_turns) < len(shared_setup):
+        raise RuntimeError(
+            f"{pair_id}: benign twin shorter than malicious shared setup prefix"
+        )
+
+    for idx, (mal_turn, ben_turn) in enumerate(zip(shared_setup, ben_turns)):
+        for field in ("turn_id", "role", "text"):
+            if mal_turn.get(field) != ben_turn.get(field):
+                raise RuntimeError(
+                    f"{pair_id}: shared setup differs at index {idx} field={field}"
+                )
+
+
 def observable_turn_hash(record: Dict) -> str:
     payload = [
         {
@@ -113,6 +154,14 @@ def main() -> None:
     parser.add_argument("--expected-benign-twins", type=int, default=545)
     parser.add_argument("--expected-validated-malicious", type=int, default=545)
     parser.add_argument("--expected-final-malicious-candidates", type=int, default=526)
+    parser.add_argument(
+        "--expected-target-model",
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
+    )
+    parser.add_argument(
+        "--expected-independent-model",
+        default="mistralai/Mistral-7B-Instruct-v0.3",
+    )
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
@@ -154,6 +203,11 @@ def main() -> None:
                 f"{cid}: pair {pair_id} has malicious={len(malicious)} benign={len(benign)}"
             )
         else:
+            try:
+                assert_original_twin_semantics(malicious[0], benign[0])
+            except Exception as exc:
+                errors.append(str(exc))
+
             target_validation = malicious[0].get("llama_validation", {}) or {}
             target_model = (
                 target_validation.get("model_used")
@@ -268,6 +322,16 @@ def main() -> None:
     if target_models.get("UNKNOWN", 0):
         errors.append(
             f"{target_models['UNKNOWN']} twin pairs lack target-model provenance"
+        )
+    if dict(target_models) != {args.expected_target_model: len(twins)}:
+        errors.append(
+            f"unexpected target-model distribution {dict(target_models)}; "
+            f"expected only {args.expected_target_model!r}"
+        )
+    if dict(independent_models) != {args.expected_independent_model: len(twins)}:
+        errors.append(
+            f"unexpected independent-model distribution {dict(independent_models)}; "
+            f"expected only {args.expected_independent_model!r}"
         )
 
     if args.expected_benign_twins is not None and len(twins) != args.expected_benign_twins:
