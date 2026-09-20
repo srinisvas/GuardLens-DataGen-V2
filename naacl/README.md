@@ -210,9 +210,10 @@ the candidate should replace the current legacy primary corpus.
 Before allocating the judge GPU, the launcher now fails closed unless all of the
 following hold:
 
-- the restoration input contains exactly 545 original benign twins, 545
-  validated interactive malicious siblings, and 526 final repaired malicious
-  candidates;
+- the restoration input contains 750 original benign twins in total, 545
+  validated interactive malicious records, and 526 final repaired malicious
+  candidates; only the 526 benign twins linked one-to-one to those final
+  malicious candidates enter the 24B bridge population;
 - every benign twin matches the immutable pre-independent-validation source on
   observable turn IDs, roles, and text;
 - each pair preserves the original shared setup prefix, target domain, style,
