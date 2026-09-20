@@ -21,6 +21,7 @@ CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 INPUT_FILE="${INPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_clean.jsonl}"
+ORIGINAL_SOURCE_FILE="${ORIGINAL_SOURCE_FILE:-$HOME/staging/dataset_gen_output/combined_dedup.jsonl}"
 OUTPUT_FILE="${OUTPUT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b.jsonl}"
 STATS_FILE="${STATS_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b_stats.json}"
 CHECKPOINT_FILE="${CHECKPOINT_FILE:-$PROJECT_DIR/results-new/naacl_evidence_twins_bridge24b.checkpoint.jsonl}"
@@ -57,6 +58,7 @@ echo "========================================================"
 echo " Dataset A original-twin bridge adjudication"
 echo "========================================================"
 echo "Input:                         $INPUT_FILE"
+echo "Original source lineage:       $ORIGINAL_SOURCE_FILE"
 echo "Bridge judge:                  $JUDGE_MODEL"
 echo "Expected historical validator: $EXPECTED_HISTORICAL_INDEPENDENT"
 echo "Bridge protocol:               Dataset B B2 v5 dual-boundary conservative union"
@@ -79,6 +81,11 @@ fi
 
 if [[ ! -f "$INPUT_FILE" ]]; then
     echo "ERROR: input not found: $INPUT_FILE"
+    exit 1
+fi
+if [[ ! -f "$ORIGINAL_SOURCE_FILE" ]]; then
+    echo "ERROR: original pre-validation source not found: $ORIGINAL_SOURCE_FILE"
+    echo "Set ORIGINAL_SOURCE_FILE explicitly to the immutable source used before independent validation."
     exit 1
 fi
 
@@ -127,7 +134,12 @@ print("pass-B:", expected_b)
 PY
 
 echo "--- CPU twin-restoration input audit ---"
-python naacl/audit_legacy_twin_restoration_input.py --input "$INPUT_FILE"
+python naacl/audit_legacy_twin_restoration_input.py \
+    --input "$INPUT_FILE" \
+    --original-source "$ORIGINAL_SOURCE_FILE" \
+    --expected-benign-twins 545 \
+    --expected-validated-malicious 545 \
+    --expected-final-malicious-candidates 526
 
 echo "--- Historical independent-validation provenance ---"
 INDEPENDENT_MODELS=$(python - "$INPUT_FILE" <<'PY'
