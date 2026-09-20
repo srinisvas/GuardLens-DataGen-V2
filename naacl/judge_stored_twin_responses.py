@@ -190,25 +190,30 @@ def historical_independent_model(record: Dict) -> str:
 
 
 def independent_validation_status(record: Dict) -> Tuple[bool, str]:
-    """Require the already-computed historical independent replay to be usable and safe."""
+    """Check historical independent replay quality and record its behavior outcome.
+
+    This replay is a separate Mistral-7B behavioral run over the user trajectory,
+    not a judgment of the stored Llama responses. Therefore its safe/unsafe
+    outcome is diagnostic and stratifying, while structural usability is the
+    only requirement for restoration provenance.
+    """
     validation = historical_independent_validation(record)
     if validation.get("validated") is not True:
-        return False, "independent_validation_missing_or_unvalidated"
+        return False, "missing_or_unvalidated"
 
     trajectory = validation.get("compliance_trajectory", [])
     if not isinstance(trajectory, list) or not trajectory:
-        return False, "independent_validation_empty_trajectory"
+        return False, "empty_trajectory"
 
     for item in trajectory:
         snippet = str(item.get("response_snippet", "")).strip().lower()
         if snippet.startswith("[validation_error:"):
-            return False, "independent_backend_error"
+            return False, "backend_error"
         if item.get("method") != "structured_judge":
-            return False, f"independent_non_structured_judge:{item.get('method') or 'missing'}"
+            return False, f"non_structured_judge:{item.get('method') or 'missing'}"
 
-    if validation.get("jailbreak_detected"):
-        return False, "independent_replay_unsafe"
-    return True, "safe"
+    outcome = "unsafe" if validation.get("jailbreak_detected") else "safe"
+    return True, outcome
 
 
 def infer_target_model_by_pair(records: List[Dict]) -> Dict[str, str]:
@@ -646,9 +651,9 @@ def main() -> None:
                     bridge_safe = False
                     bridge_reason = "bridge_validation_error"
 
-            independent_safe, independent_reason = independent_validation_status(record)
+            independent_usable, independent_outcome = independent_validation_status(record)
             independent_model = historical_independent_model(record)
-            eligible = bridge_safe and independent_safe
+            eligible = bridge_safe and independent_usable
             record["twin_restoration"] = {
                 "eligible": eligible,
                 "bridge_judge_safe": bridge_safe,
@@ -657,8 +662,8 @@ def main() -> None:
                 "bridge_judge_protocol": BRIDGE_PROTOCOL,
                 "historical_independent_replay_reused": True,
                 "historical_independent_model": independent_model,
-                "historical_independent_safe": independent_safe,
-                "historical_independent_reason": independent_reason,
+                "historical_independent_usable": independent_usable,
+                "historical_independent_outcome": independent_outcome,
                 "conversation_text_modified": False,
                 "target_replayed": False,
                 "independent_model_replayed": False,
@@ -693,19 +698,25 @@ def main() -> None:
     eligible_twins = {}
     independent_models = Counter()
     bridge_statuses = Counter()
+    bridge_by_historical_replay = Counter()
     for record in output_records:
         if str(record.get("conversation_id", "")) not in bridge_cids:
             continue
         restoration = record.get("twin_restoration", {}) or {}
         validation = record.get("stored_target_validation", {}) or {}
-        bridge_statuses[str(validation.get("status", "missing"))] += 1
+        bridge_status = str(validation.get("status", "missing"))
+        historical_outcome = str(
+            restoration.get("historical_independent_outcome", "unknown")
+        )
+        bridge_statuses[bridge_status] += 1
+        bridge_by_historical_replay[(bridge_status, historical_outcome)] += 1
         if restoration.get("eligible"):
             eligible_twins[str(record.get("pair_id"))] = record
         else:
             restoration_reasons[
                 (
                     restoration.get("bridge_judge_reason", "unknown"),
-                    restoration.get("historical_independent_reason", "unknown"),
+                    restoration.get("historical_independent_outcome", "unknown"),
                 )
             ] += 1
         independent_models[historical_independent_model(record)] += 1
@@ -745,6 +756,12 @@ def main() -> None:
             "context_policy": "full_observable_prefix_or_fail_closed",
         },
         "bridge_statuses": dict(bridge_statuses),
+        "bridge_by_historical_7b_replay": {
+            f"{bridge}|{historical}": n
+            for (bridge, historical), n in sorted(
+                bridge_by_historical_replay.items()
+            )
+        },
         "historical_independent_models_reused": dict(independent_models),
         "new_target_replays": 0,
         "new_independent_replays": 0,
