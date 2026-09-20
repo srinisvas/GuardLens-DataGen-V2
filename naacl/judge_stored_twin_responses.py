@@ -507,6 +507,17 @@ def main() -> None:
                     and int(validation.get("judge_max_model_len", -1)) == int(args.judge_max_model_len)
                     and int(validation.get("base_seed", -1)) == int(args.seed)
                     and validation.get("judge_model_revision") == args.model_revision
+                    and validation.get("dataset_b_judge_protocol") == DATASET_B_JUDGE_PROTOCOL
+                    and validation.get("rubric_version") == RUBRIC_VERSION
+                    and validation.get("aggregation") == AGGREGATION
+                    and validation.get("unsafe_score_formula") == UNSAFE_SCORE_FORMULA
+                    and validation.get("pass_a_prompt_fingerprint") == pass_a_prompt_fingerprint()
+                    and validation.get("pass_b_prompt_fingerprint") == pass_b_prompt_fingerprint()
+                    and validation.get("seed_policy") == SEED_POLICY
+                    and validation.get("context_policy") == "full_observable_prefix_or_fail_closed"
+                    and validation.get("judge_runtime_determinism") == "vllm_batch_invariant_eager_v1"
+                    and validation.get("judge_vllm_batch_invariant") is True
+                    and validation.get("judge_vllm_enforce_eager") is True
                 ):
                     continue
 
@@ -674,6 +685,14 @@ def main() -> None:
     print(json.dumps(stats, indent=2))
     print(f"Wrote bridge-adjudicated artifact: {args.output}")
     print(f"Wrote stats: {args.stats_output}")
+
+    unresolved_errors = int(bridge_statuses.get("error", 0))
+    if unresolved_errors:
+        raise RuntimeError(
+            f"{unresolved_errors} benign twins have unresolved bridge execution "
+            "errors; candidate materialization is blocked. Rerun to retry error "
+            "checkpoint entries after fixing the underlying issue."
+        )
 
 
 if __name__ == "__main__":
