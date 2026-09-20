@@ -171,9 +171,10 @@ def main() -> None:
             "eligible malicious records must match it exactly before any GPU run."
         ),
     )
-    parser.add_argument("--expected-benign-twins", type=int, default=545)
+    parser.add_argument("--expected-all-benign-twins", type=int, default=750)
     parser.add_argument("--expected-validated-malicious", type=int, default=545)
     parser.add_argument("--expected-final-malicious-candidates", type=int, default=526)
+    parser.add_argument("--expected-bridge-twins", type=int, default=526)
     parser.add_argument(
         "--expected-target-model",
         default="meta-llama/Meta-Llama-3-8B-Instruct",
@@ -197,12 +198,68 @@ def main() -> None:
         if pair_id:
             pairs[pair_id].append(record)
 
-    twins = [
+    all_twins = [
         r for r in records
         if r.get("label") == 0
         and r.get("family") == "interactive_benign_twin"
         and r.get("pair_id")
     ]
+
+    malicious_validated = [
+        r for r in records
+        if r.get("label") == 1
+        and r.get("family") == "interactive_adversarial"
+        and r.get("validation_status") == "validated"
+        and r.get("pair_id")
+    ]
+
+    final_malicious_candidates = [
+        r for r in records
+        if r.get("label") == 1
+        and r.get("family") == "interactive_adversarial"
+        and r.get("validation_status") == "validated"
+        and r.get("pair_id")
+        and str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
+            not in {"error", "missing"}
+        and (
+            str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
+                == "complete"
+            or bool(
+                (r.get("validation_provenance", {}) or {}).get(
+                    "independent_success", False
+                )
+            )
+        )
+    ]
+
+    final_pair_ids = [str(r.get("pair_id")) for r in final_malicious_candidates]
+    if len(final_pair_ids) != len(set(final_pair_ids)):
+        errors.append("final malicious candidates contain duplicate pair_id values")
+    final_pair_id_set = set(final_pair_ids)
+
+    bridge_twins = [
+        r for r in all_twins if str(r.get("pair_id")) in final_pair_id_set
+    ]
+
+    bridge_twin_counts = Counter(str(r.get("pair_id")) for r in bridge_twins)
+    missing_final_pairs = sorted(
+        pair_id for pair_id in final_pair_id_set
+        if bridge_twin_counts.get(pair_id, 0) == 0
+    )
+    duplicate_final_pairs = sorted(
+        pair_id for pair_id, count in bridge_twin_counts.items()
+        if count > 1
+    )
+    if missing_final_pairs:
+        errors.append(
+            f"{len(missing_final_pairs)} final malicious pairs lack an original benign twin: "
+            f"{missing_final_pairs[:10]}"
+        )
+    if duplicate_final_pairs:
+        errors.append(
+            f"{len(duplicate_final_pairs)} final malicious pairs have multiple benign twins: "
+            f"{duplicate_final_pairs[:10]}"
+        )
 
     independent_models = Counter()
     independent_status = Counter()
@@ -214,7 +271,7 @@ def main() -> None:
     benign_user_span_annotations = 0
     benign_assistant_span_annotations = 0
 
-    for twin in twins:
+    for twin in bridge_twins:
         cid = str(twin.get("conversation_id", ""))
         pair_id = str(twin.get("pair_id", ""))
         siblings = pairs.get(pair_id, [])
@@ -319,37 +376,13 @@ def main() -> None:
         else:
             independent_status["safe"] += 1
 
-    malicious_validated = [
-        r for r in records
-        if r.get("label") == 1
-        and r.get("family") == "interactive_adversarial"
-        and r.get("validation_status") == "validated"
-    ]
-
-    final_malicious_candidates = [
-        r for r in records
-        if r.get("label") == 1
-        and r.get("validation_status") == "validated"
-        and str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
-            not in {"error", "missing"}
-        and (
-            str((r.get("evidence_analysis", {}) or {}).get("status", "missing"))
-                == "complete"
-            or bool(
-                (r.get("validation_provenance", {}) or {}).get(
-                    "independent_success", False
-                )
-            )
-        )
-    ]
-
     source_lineage_checked = False
     source_lineage_missing = 0
     source_lineage_mismatch = 0
     if args.original_source:
         source_hashes = load_source_hashes(args.original_source)
         source_lineage_checked = True
-        for twin in twins:
+        for twin in bridge_twins:
             cid = str(twin.get("conversation_id", ""))
             expected_hash = source_hashes.get(cid)
             if expected_hash is None:
@@ -406,9 +439,13 @@ def main() -> None:
 
     summary = {
         "records": len(records),
-        "original_benign_twins": len(twins),
+        "all_original_benign_twins": len(all_twins),
         "validated_interactive_malicious": len(malicious_validated),
         "final_malicious_candidates": len(final_malicious_candidates),
+        "bridge_benign_twins": len(bridge_twins),
+        "excluded_original_twins_not_in_final_pair_universe": (
+            len(all_twins) - len(bridge_twins)
+        ),
         "pair_groups": len(pairs),
         "bad_pair_structure": bad_pair_structure,
         "malformed_stored_benign_trajectories": malformed,
@@ -446,20 +483,32 @@ def main() -> None:
         errors.append(
             f"{target_models['UNKNOWN']} twin pairs lack target-model provenance"
         )
-    if dict(target_models) != {args.expected_target_model: len(twins)}:
+    if dict(target_models) != {args.expected_target_model: len(bridge_twins)}:
         errors.append(
             f"unexpected target-model distribution {dict(target_models)}; "
             f"expected only {args.expected_target_model!r}"
         )
-    if dict(independent_models) != {args.expected_independent_model: len(twins)}:
+    if dict(independent_models) != {args.expected_independent_model: len(bridge_twins)}:
         errors.append(
             f"unexpected independent-model distribution {dict(independent_models)}; "
             f"expected only {args.expected_independent_model!r}"
         )
 
-    if args.expected_benign_twins is not None and len(twins) != args.expected_benign_twins:
+    if (
+        args.expected_all_benign_twins is not None
+        and len(all_twins) != args.expected_all_benign_twins
+    ):
         errors.append(
-            f"expected {args.expected_benign_twins} original benign twins, found {len(twins)}"
+            f"expected {args.expected_all_benign_twins} total original benign twins, "
+            f"found {len(all_twins)}"
+        )
+    if (
+        args.expected_bridge_twins is not None
+        and len(bridge_twins) != args.expected_bridge_twins
+    ):
+        errors.append(
+            f"expected {args.expected_bridge_twins} bridge-relevant benign twins, "
+            f"found {len(bridge_twins)}"
         )
     if (
         args.expected_validated_malicious is not None
@@ -478,8 +527,10 @@ def main() -> None:
             f"candidates, found {len(final_malicious_candidates)}"
         )
 
-    if not twins:
+    if not all_twins:
         errors.append("no original interactive benign twins found")
+    if not bridge_twins:
+        errors.append("no benign twins linked to final malicious candidates found")
 
     if errors:
         print("TWIN RESTORATION INPUT AUDIT FAILED", file=sys.stderr)
