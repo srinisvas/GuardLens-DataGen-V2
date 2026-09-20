@@ -12,6 +12,7 @@ The existing frozen dataset is not modified by this script.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -25,6 +26,24 @@ from prepare_dataset import (
     sanitize_benign_targets,
     write_jsonl,
 )
+
+
+def turn_text_hash(record: Dict) -> str:
+    observable = [
+        {
+            "turn_id": t.get("turn_id"),
+            "role": t.get("role"),
+            "text": t.get("text"),
+        }
+        for t in record.get("turns", [])
+    ]
+    payload = json.dumps(
+        observable,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def final_malicious(records: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
@@ -122,8 +141,33 @@ def main() -> None:
             rejection_reasons[reason] += 1
             continue
 
+        original_hash = turn_text_hash(benign)
+        restored = sanitize_benign_targets(benign)
+        if turn_text_hash(restored) != original_hash:
+            raise RuntimeError(
+                f"{benign.get('conversation_id')}: benign text changed during supervision sanitization"
+            )
+
+        metadata = restored.setdefault("metadata", {})
+        metadata["pre_twin_restoration_validation_status"] = benign.get(
+            "validation_status"
+        )
+        metadata["pre_twin_restoration_training_eligible"] = benign.get(
+            "training_eligible"
+        )
+        restored["validation_status"] = "validated"
+        restored["training_eligible"] = True
+        restored["benign_status"] = "validated_original_interactive_twin_restored"
+        restored["restored_validation_provenance"] = {
+            "stored_target_validation": "judge_only_existing_llama_responses",
+            "independent_validation": "existing_replay_reused",
+            "conversation_text_modified": False,
+            "target_replayed": False,
+            "independent_model_replayed": False,
+        }
+
         restored_malicious.append(mal)
-        restored_benign.append(sanitize_benign_targets(benign))
+        restored_benign.append(restored)
 
     if not restored_malicious:
         raise RuntimeError(
