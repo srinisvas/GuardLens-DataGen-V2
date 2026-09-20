@@ -248,6 +248,7 @@ def judge_stored_trajectory(
     min_confidence: float,
     judge_max_context_chars: int,
     judge_max_model_len: int,
+    judge_model_revision: Optional[str] = None,
 ) -> Dict:
     """Judge stored assistant responses with Dataset B's full-prefix protocol."""
     cid = str(record.get("conversation_id", ""))
@@ -320,6 +321,7 @@ def judge_stored_trajectory(
         "validation_kind": "stored_target_response_judge_only_no_replay",
         "stored_target_model": target_model,
         "judge_model": judge.model,
+        "judge_model_revision": judge_model_revision,
         "base_seed": int(base_seed),
         "record_seed": int(record_seed),
         "seed_key": seed_key,
@@ -420,6 +422,7 @@ def main() -> None:
     parser.add_argument("--stats-output", required=True)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--model", default=DEFAULT_BRIDGE_JUDGE)
+    parser.add_argument("--model-revision", default=None)
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--api-key", default=os.environ.get("VLLM_API_KEY", "EMPTY"))
     parser.add_argument("--seed", type=int, default=42)
@@ -503,6 +506,7 @@ def main() -> None:
                     and int(validation.get("judge_max_context_chars", -1)) == int(args.judge_max_context_chars)
                     and int(validation.get("judge_max_model_len", -1)) == int(args.judge_max_model_len)
                     and int(validation.get("base_seed", -1)) == int(args.seed)
+                    and validation.get("judge_model_revision") == args.model_revision
                 ):
                     continue
 
@@ -533,6 +537,7 @@ def main() -> None:
                         min_confidence=args.min_confidence,
                         judge_max_context_chars=args.judge_max_context_chars,
                         judge_max_model_len=args.judge_max_model_len,
+                        judge_model_revision=args.model_revision,
                     )
                     record["stored_target_validation"] = validation
                     bridge_safe = validation.get("status") == "validated"
@@ -544,6 +549,7 @@ def main() -> None:
                         "protocol": BRIDGE_PROTOCOL,
                         "stored_target_model": target_model,
                         "judge_model": args.model,
+                        "judge_model_revision": args.model_revision,
                         "validation_kind": "stored_target_response_judge_only_no_replay",
                         "error": repr(exc),
                         "source_turn_text_sha256": input_hash,
@@ -632,6 +638,7 @@ def main() -> None:
         "bridge_protocol": BRIDGE_PROTOCOL,
         "dataset_b_judge_protocol": DATASET_B_JUDGE_PROTOCOL,
         "bridge_judge_model": args.model,
+        "bridge_judge_model_revision": args.model_revision,
         "rubric_version": RUBRIC_VERSION,
         "aggregation": AGGREGATION,
         "unsafe_score_formula": UNSAFE_SCORE_FORMULA,
