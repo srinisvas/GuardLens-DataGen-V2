@@ -78,6 +78,12 @@ if ! flock -n 9; then
     exit 1
 fi
 rm -f "$COMPLETION_MANIFEST"
+rm -f \
+    "$OUTPUT_FILE" \
+    "$STATS_FILE" \
+    "$CANDIDATE_FILE" \
+    "$CANDIDATE_STATS" \
+    "$EXCLUDED_FILE"
 
 echo "========================================================"
 echo " Dataset A original-twin bridge adjudication"
