@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=06:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/a_twin_bridge24b_%j.out
 #SBATCH --error=logs/a_twin_bridge24b_%j.err
 
@@ -104,15 +104,38 @@ python - <<'PY'
 import importlib.metadata
 import os
 import sys
+import torch
 import vllm.envs
 sys.path.insert(0, "naacl")
 from frontier_judge_v5 import pass_a_prompt_fingerprint, pass_b_prompt_fingerprint
 expected_a = "eaff8c323e79e7cdc0c40741c25a8d5c75d795b96406fdf6b94b411016282f04"
 expected_b = "cbd557a4d670ce1e2bee1ce28c8b5440849f2ba482c905cf6d726fd97443f888"
-if importlib.metadata.version("vllm") != "0.28.0":
+expected_packages = {
+    "vllm": "0.28.0",
+    "torch": "2.13.0",
+    "transformers": "5.16.1",
+    "mistral-common": "1.11.7",
+    "tokenizers": "0.23.1",
+    "safetensors": "0.8.0",
+}
+found = {name: importlib.metadata.version(name) for name in expected_packages}
+if found != expected_packages:
     raise RuntimeError(
-        "Dataset B bridge requires frozen vLLM 0.28.0; found "
-        + importlib.metadata.version("vllm")
+        "Dataset B frozen package set mismatch: "
+        f"expected={expected_packages} found={found}"
+    )
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is unavailable inside the Slurm allocation")
+props = torch.cuda.get_device_properties(0)
+if "A100" not in props.name or props.total_memory < 75 * 1024**3:
+    raise RuntimeError(
+        f"Dataset B runtime requires A100 80GB-class hardware; got "
+        f"{props.name} with {props.total_memory} bytes"
+    )
+if (props.major, props.minor) != (8, 0):
+    raise RuntimeError(
+        f"Dataset B runtime requires SM80; got capability "
+        f"{props.major}.{props.minor}"
     )
 if "VLLM_BATCH_INVARIANT" not in vllm.envs.environment_variables:
     raise RuntimeError("installed vLLM does not expose VLLM_BATCH_INVARIANT")
@@ -211,11 +234,21 @@ if [[ ! -d "$SNAPSHOT_DIR" ]]; then
 fi
 echo "Bridge judge revision: $CACHED_REVISION"
 
+echo "--- Checking local judge port availability ---"
+python - "$PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", port))
+print(f"Port {port} is available")
+PY
+
 echo "--- Starting Dataset B 24B judge server ---"
 CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
     --model "$JUDGE_MODEL" \
     --revision "$CACHED_REVISION" \
     --tokenizer-revision "$CACHED_REVISION" \
+    --host 127.0.0.1 \
     --port "$PORT" \
     --dtype bfloat16 \
     --tensor-parallel-size 1 \
