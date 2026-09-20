@@ -72,11 +72,17 @@ def eligible_twin(record: Dict) -> bool:
         return False
     if not restoration.get("eligible", False):
         return False
-    if stored.get("validated") is not True or stored.get("jailbreak_detected"):
+    if stored.get("validated") is not True or stored.get("status") != "validated":
+        return False
+    if stored.get("protocol") != "legacy_stored_target_frontier_context_judge_v1":
         return False
     if independent.get("validated") is not True or independent.get("jailbreak_detected"):
         return False
-    if not restoration.get("independent_replay_reused", False):
+    if not restoration.get("historical_independent_replay_reused", False):
+        return False
+    if restoration.get("bridge_judge_safe") is not True:
+        return False
+    if restoration.get("historical_independent_safe") is not True:
         return False
     if restoration.get("conversation_text_modified") is not False:
         return False
@@ -85,11 +91,11 @@ def eligible_twin(record: Dict) -> bool:
     if restoration.get("independent_model_replayed") is not False:
         return False
 
-    stored_traj = stored.get("compliance_trajectory", []) or []
+    stored_traj = stored.get("trajectory", []) or []
     independent_traj = independent.get("compliance_trajectory", []) or []
     if not stored_traj or not independent_traj:
         return False
-    if any(item.get("method") != "structured_judge" for item in stored_traj):
+    if any(not item.get("context_aware", False) for item in stored_traj):
         return False
     if any(item.get("method") != "structured_judge" for item in independent_traj):
         return False
@@ -138,9 +144,9 @@ def main() -> None:
             unmatched.append(mal)
             restoration = benign.get("twin_restoration", {}) or {}
             reason = (
-                restoration.get("stored_target_reason", "unknown")
+                restoration.get("bridge_judge_reason", "unknown")
                 + "|"
-                + restoration.get("independent_reason", "unknown")
+                + restoration.get("historical_independent_reason", "unknown")
             )
             rejection_reasons[reason] += 1
             continue
@@ -163,8 +169,19 @@ def main() -> None:
         restored["training_eligible"] = True
         restored["benign_status"] = "validated_original_interactive_twin_restored"
         restored["restored_validation_provenance"] = {
-            "stored_target_validation": "judge_only_existing_llama_responses",
-            "independent_validation": "existing_replay_reused",
+            "bridge_adjudication": "dataset_b_context_judge_on_existing_llama_responses",
+            "bridge_judge_model": (
+                (benign.get("stored_target_validation", {}) or {}).get("judge_model")
+            ),
+            "bridge_judge_protocol": (
+                (benign.get("stored_target_validation", {}) or {}).get("protocol")
+            ),
+            "historical_independent_validation": "existing_replay_reused",
+            "historical_independent_model": (
+                (benign.get("twin_restoration", {}) or {}).get(
+                    "historical_independent_model"
+                )
+            ),
             "conversation_text_modified": False,
             "target_replayed": False,
             "independent_model_replayed": False,
@@ -219,8 +236,9 @@ def main() -> None:
             "attribution_policy": "counterfactual-supported malicious spans only",
             "behavioral_policy": (
                 "malicious repaired evidence gate retained; benign twin requires "
-                "judge-only validation of stored Llama responses plus the existing "
-                "independent replay to remain safe"
+                "Dataset B's 24B context-aware bridge judge to validate the stored "
+                "Llama trajectory plus the existing historical independent replay "
+                "to remain safe"
             ),
         },
     }
