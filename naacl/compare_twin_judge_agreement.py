@@ -122,8 +122,23 @@ def main() -> None:
             })
 
     n = len(ids)
+    reference_models = sorted({
+        str((validation_of(r) or {}).get("judge_model", "unknown"))
+        for r in ref_records
+        if r.get("stored_target_validation")
+    })
+    comparison_models = sorted({
+        str(r.get("judge_model", "unknown")) for r in cmp_records
+    })
+    comparison_revisions = sorted({
+        str(r.get("judge_model_revision", "unknown")) for r in cmp_records
+    })
+
     result = {
         "n": n,
+        "reference_24b_models": reference_models,
+        "comparison_7b_models": comparison_models,
+        "comparison_7b_revisions": comparison_revisions,
         "status_agreement": sum(a == b for a, b in zip(status24, status7)) / n,
         "status_cohen_kappa": kappa(status24, status7),
         "binary_safe_agreement": sum(a == b for a, b in zip(binary24, binary7)) / n,
