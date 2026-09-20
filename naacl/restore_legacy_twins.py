@@ -74,7 +74,7 @@ def eligible_twin(record: Dict) -> bool:
         return False
     if stored.get("validated") is not True or stored.get("status") != "validated":
         return False
-    if stored.get("protocol") != "legacy_stored_target_frontier_context_judge_v1":
+    if stored.get("protocol") != "legacy_stored_target_dataset_b_v5_bridge_v1":
         return False
     if independent.get("validated") is not True or independent.get("jailbreak_detected"):
         return False
@@ -236,9 +236,9 @@ def main() -> None:
             "attribution_policy": "counterfactual-supported malicious spans only",
             "behavioral_policy": (
                 "malicious repaired evidence gate retained; benign twin requires "
-                "Dataset B's 24B context-aware bridge judge to validate the stored "
-                "Llama trajectory plus the existing historical independent replay "
-                "to remain safe"
+                "Dataset B's Mistral-Small-3.1-24B v5 dual-rubric conservative-union "
+                "bridge judge to validate the stored Llama trajectory plus the existing "
+                "historical Mistral-7B independent replay to remain safe"
             ),
         },
     }
