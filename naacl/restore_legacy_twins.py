@@ -243,6 +243,9 @@ def main() -> None:
         metadata["pre_twin_restoration_training_eligible"] = benign.get(
             "training_eligible"
         )
+        restored["pre_twin_restoration_validation_provenance"] = copy.deepcopy(
+            benign.get("validation_provenance", {}) or {}
+        )
         # evidence_analysis_v3 reset legacy span evidence to "unassessed"
         # on every record before returning benign examples as not-applicable.
         # A validated benign twin supplies explicit negative span supervision,
@@ -274,6 +277,34 @@ def main() -> None:
         restored["pivot_kind"] = "none"
         restored["pivot_supervision_ignore"] = False
         restored["benign_status"] = "validated_original_interactive_twin_restored"
+        stored_validation = benign.get("stored_target_validation", {}) or {}
+        restoration = benign.get("twin_restoration", {}) or {}
+        restored["target_validation_model"] = stored_validation.get(
+            "stored_target_model"
+        )
+        restored["bridge_judge_model"] = stored_validation.get("judge_model")
+        restored["bridge_judge_model_revision"] = stored_validation.get(
+            "judge_model_revision"
+        )
+        restored["validation_provenance"] = {
+            "protocol": CANONICAL_BRIDGE_PROTOCOL,
+            "stored_target_model": stored_validation.get("stored_target_model"),
+            "bridge_judge_model": stored_validation.get("judge_model"),
+            "bridge_judge_model_revision": stored_validation.get(
+                "judge_model_revision"
+            ),
+            "bridge_stored_target_usable": True,
+            "bridge_stored_target_safe": True,
+            "historical_independent_model": restoration.get(
+                "historical_independent_model"
+            ),
+            "historical_independent_usable": True,
+            "historical_independent_safe": True,
+            "combined_usable": True,
+            "conversation_text_modified": False,
+            "target_replayed": False,
+            "independent_model_replayed": False,
+        }
         restored["restored_validation_provenance"] = {
             "bridge_adjudication": "dataset_b_context_judge_on_existing_llama_responses",
             "bridge_judge_model": (
