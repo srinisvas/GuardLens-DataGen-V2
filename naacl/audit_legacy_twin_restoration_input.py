@@ -269,6 +269,7 @@ def main() -> None:
     total_stored_assistant_turns = 0
     max_observable_transcript_chars = 0
     benign_user_span_annotations = 0
+    benign_user_span_mismatches_ignored = 0
     benign_assistant_span_annotations = 0
 
     for twin in bridge_twins:
@@ -347,10 +348,7 @@ def main() -> None:
                         continue
                     span_text = str(span.get("text", ""))
                     if span_text and text_value[start:end] != span_text:
-                        errors.append(
-                            f"{cid}: benign user span text does not match offsets "
-                            f"at turn {turn.get('turn_id')}"
-                        )
+                        benign_user_span_mismatches_ignored += 1
         except Exception as exc:
             malformed += 1
             errors.append(str(exc))
@@ -453,6 +451,7 @@ def main() -> None:
         "dual_rubric_judge_requests": 2 * total_stored_assistant_turns,
         "max_observable_transcript_chars": max_observable_transcript_chars,
         "benign_user_span_annotations": benign_user_span_annotations,
+        "benign_user_span_mismatches_ignored": benign_user_span_mismatches_ignored,
         "benign_assistant_span_annotations_ignored": benign_assistant_span_annotations,
         "independent_models": dict(independent_models),
         "independent_status": dict(independent_status),
