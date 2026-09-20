@@ -72,6 +72,31 @@ def load_jsonl(path: str) -> List[Dict]:
     return out
 
 
+def load_checkpoint(path: str) -> List[Dict]:
+    """Load append-only checkpoint, tolerating only a torn final write."""
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+
+    out: List[Dict] = []
+    nonempty = [(i, line) for i, line in enumerate(lines, 1) if line.strip()]
+    for position, (line_no, line) in enumerate(nonempty):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            is_last_nonempty = position == len(nonempty) - 1
+            if is_last_nonempty:
+                print(
+                    f"WARNING: ignoring truncated final checkpoint line "
+                    f"{path}:{line_no}: {exc}"
+                )
+                break
+            raise RuntimeError(
+                f"Corrupt checkpoint JSON before final line at "
+                f"{path}:{line_no}: {exc}"
+            ) from exc
+    return out
+
+
 def write_jsonl(records: Iterable[Dict], path: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
@@ -459,7 +484,7 @@ def main() -> None:
     checkpoint_path = args.checkpoint or args.output + ".checkpoint"
     completed: Dict[str, Dict] = {}
     if os.path.exists(checkpoint_path):
-        for record in load_jsonl(checkpoint_path):
+        for record in load_checkpoint(checkpoint_path):
             cid = str(record.get("conversation_id", ""))
             if cid:
                 completed[cid] = record
