@@ -279,13 +279,13 @@ contract:
 - `auxiliary_detection_only=true`
 - `use_as=auxiliary_detection_only`
 - `detection_label=0`
-- default `detection_loss_weight=0.25`
+- default `detection_loss_weight=1.0` for the dual-validated A benign auxiliary population
 - `localization_supervision_ignore=true`
 - `pivot_supervision_ignore=true`
 - `pivot_loss_weight=0.0`
 - `span_loss_weight=0.0`
 
-Primary splitting must remain independent. As with Dataset B, auxiliary rows are
+All 721 broad benign records extend to at most 64 physical turns. The canonical\nGuardLens runtime ceiling is therefore 64 so these validated conversations can be\nretained unchanged rather than truncated or silently dropped.\n\nPrimary splitting must remain independent. As with Dataset B, auxiliary rows are
 added to training only after the primary train/dev/test split is frozen; they do
 not enter dev or test and cannot provide localization targets.
 
