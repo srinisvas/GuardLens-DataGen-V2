@@ -180,8 +180,11 @@ The restoration audit repairs only that missing provenance:
   `68faf511d618ef198fef186659617cfd2eb8e33a`;
 - retain the historical `mistralai/Mistral-7B-Instruct-v0.3` independent replay
   as a distinct second validation channel rather than overwriting or rerunning it;
-- require both the 24B bridge adjudication and the existing 7B independent replay
-  to validate the benign twin;
+- require the 24B bridge adjudication to validate the actual stored Llama
+  trajectory; require the historical 7B independent replay to be structurally
+  usable, but retain its safe/unsafe outcome only as a diagnostic because it is
+  a separate Mistral-7B behavioral replay, not a judgment of the stored Llama
+  responses;
 - preserve original pair_id, topic/setup, text, and natural trajectory length;
 - build a separate candidate artifact before any frozen-data replacement.
 
