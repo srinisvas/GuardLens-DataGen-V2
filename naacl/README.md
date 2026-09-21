@@ -342,6 +342,53 @@ Use `naacl/locate_frozen_b_artifacts.py` to identify B artifacts by contract
 rather than filename, then `naacl/build_consolidated_frozen_dataset.py` for the
 single final build.
 
+### 3E. Final restored-A + frozen-B consolidation
+
+The authoritative frozen Dataset B inputs come from the final optimized-branch
+freeze, not from historical protocol wrappers on this branch:
+
+```text
+B primary
+records  1402 = 701 complete pairs
+SHA-256 875694d3b2ba726dfc9112438b91a055c53459e961f28ab392e9334183d52b14
+
+B detection auxiliary INPUT
+records  512
+detection labels  322 safe / 190 unsafe
+SHA-256 f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594
+```
+
+Do not treat 424 as the B auxiliary corpus size. The previous freeze had 424
+B auxiliary records in training only because its particular primary split
+withheld 45 records owned by primary dev scenario families and 43 records owned
+by primary test scenario families. The restored-A split must reconsider all 512
+records and recompute the included/withheld subset using the same frozen policy.
+
+Use `naacl/locate_frozen_b_artifacts.py` to locate exact local copies by
+SHA-256. Then build into a fresh canonical directory:
+
+```text
+results-naacl/final-data-freeze-restored-a
+```
+
+with `naacl/build_consolidated_frozen_dataset.py`. The builder:
+
+1. pins all four A/B input hashes;
+2. validates A's 516 primary pairs and B's 701 primary pairs;
+3. splits only the 2,434 primary records;
+4. keeps A generation-time pair IDs and B scenario families indivisible;
+5. attaches all 721 non-overlapping A benign detection auxiliaries to train;
+6. considers all 512 B auxiliaries and withholds those owned by primary dev/test
+   scenario families or exact/equivalent user trajectories;
+7. copies primary dev/test byte-for-byte into the auxiliary training variant;
+8. reports train/dev shortcut diagnostics overall and by A/B source;
+9. does not compute held-out-test shortcut diagnostics;
+10. emits the exact freeze-report schema consumed by GuardLens-Transformer.
+
+The builder also performs a second NFKC+casefold user-trajectory leakage audit in
+addition to the frozen whitespace-normalized B hash. It requires a clean tracked
+working tree on `naacl-validity-repair` and records the exact DataGen commit.
+
 ### 3B. Judge-capacity agreement audit
 
 After the 24B bridge artifact exists, run a separate same-response agreement
