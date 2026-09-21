@@ -850,9 +850,18 @@ def main() -> None:
             ] += 1
         independent_models[historical_independent_model(record)] += 1
 
+    shard_pair_ids = {
+        str(record.get("pair_id", "")) for record in twins
+    }
+    shard_malicious = [
+        record
+        for record in final_malicious
+        if str(record.get("pair_id", "")) in shard_pair_ids
+    ]
+
     restored_pairs: List[Tuple[Dict, Dict]] = []
     no_restorable_twin = []
-    for malicious in final_malicious:
+    for malicious in shard_malicious:
         pair_id = str(malicious.get("pair_id", ""))
         benign = eligible_twins.get(pair_id)
         if benign is None:
@@ -913,6 +922,7 @@ def main() -> None:
             f"{a}|{b}": n for (a, b), n in restoration_reasons.items()
         },
         "final_malicious_candidates": len(final_malicious),
+        "shard_malicious_candidates": len(shard_malicious),
         "restorable_final_pairs": len(restored_pairs),
         "final_malicious_without_restorable_twin": len(no_restorable_twin),
         "restorable_pair_structure": paired_structure_stats(restored_pairs),
