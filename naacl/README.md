@@ -21,8 +21,8 @@ The repair addresses the validity issues found in v11:
 7. only supported evidence is exposed to attribution supervision;
 8. unknown malicious pivots are ignored by the pivot loss rather than trained as
    a true no-pivot class;
-9. benign training trajectories are length controlled;
-10. the original untrimmed benign pool is retained as a stress set.
+9. original interactive semantic twins are restored as the paired primary Dataset A;
+10. the validated broad benign pool is retained separately as detection-only auxiliary data rather than being used to replace or truncate semantic twins.
 
 ## Important protocol boundary
 
@@ -243,6 +243,57 @@ checkpoint, removes stale derived outputs at start, and writes
 artifact, restored candidate, statistics, and exclusions all succeed. The
 completion receipt records SHA-256 digests for all inputs and outputs plus the
 Git revision and Slurm job ID.
+
+### 3C. Dataset A detection-only auxiliary
+
+The restored twin artifact is the paired primary Dataset A. After the frozen 24B
+bridge gate, the accepted primary contains 516 malicious records and their 516
+original semantic benign twins. Do not length-match, truncate, or replace those
+twins.
+
+The older broad benign population remains useful, but it has a different role.
+`results-new/naacl_legacy_benign_stress.jsonl` contains the 721 historically
+validated full benign conversations before the old one-to-one prefix
+length-matching step. Materialize those records as detection-only auxiliary
+examples:
+
+```bash
+python naacl/prepare_legacy_detection_aux.py \
+  --primary-input results-new/naacl_legacy_twins_restored_candidate.jsonl \
+  --benign-source results-new/naacl_legacy_benign_stress.jsonl \
+  --output results-new/naacl_legacy_detection_aux.jsonl \
+  --stats-output results-new/naacl_legacy_detection_aux_stats.json \
+  --excluded-output results-new/naacl_legacy_detection_aux_excluded.jsonl
+```
+
+When frozen Dataset B artifacts are available locally, repeat
+`--exclude-against PATH` for B primary and B auxiliary so exact conversation-ID
+or normalized user-trajectory overlap cannot enter A auxiliary.
+
+The auxiliary materializer fails closed unless primary A is exactly 516 complete
+pairs and the broad benign source contains the expected 721 validated,
+training-eligible, pre-length-matching records. Conversation text is preserved
+exactly. Auxiliary rows follow the existing GuardLens-Transformer detection-only
+contract:
+
+- `auxiliary_detection_only=true`
+- `use_as=auxiliary_detection_only`
+- `detection_label=0`
+- default `detection_loss_weight=0.25`
+- `localization_supervision_ignore=true`
+- `pivot_supervision_ignore=true`
+- `pivot_loss_weight=0.0`
+- `span_loss_weight=0.0`
+
+Primary splitting must remain independent. As with Dataset B, auxiliary rows are
+added to training only after the primary train/dev/test split is frozen; they do
+not enter dev or test and cannot provide localization targets.
+
+This separation preserves the scientific role of each population: original
+semantic twins provide paired primary detection/localization supervision, while
+the broad historical benign pool supplies trajectory-diverse negative detection
+support. The materializer reports turn-count diagnostics for primary A alone
+and for the primary-plus-auxiliary detection population.
 
 ### 3B. Judge-capacity agreement audit
 
