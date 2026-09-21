@@ -593,6 +593,78 @@ def unweighted_auc(records: Sequence[Dict]) -> float:
     return weighted_auc(copied)
 
 
+def threshold_balanced_accuracy(
+    records: Sequence[Dict],
+    threshold: int,
+    *,
+    weighted: bool,
+) -> Dict:
+    pos_total = neg_total = tp = tn = 0.0
+    for record in records:
+        label = detection_label(record)
+        weight = detection_weight(record) if weighted else 1.0
+        pred = 1 if user_turns(record) > threshold else 0
+        if label == 1:
+            pos_total += weight
+            if pred == 1:
+                tp += weight
+        else:
+            neg_total += weight
+            if pred == 0:
+                tn += weight
+    if pos_total <= 0 or neg_total <= 0:
+        raise RuntimeError("threshold diagnostic requires both detection classes")
+    tpr = tp / pos_total
+    tnr = tn / neg_total
+    return {
+        "threshold": threshold,
+        "rule": f"predict malicious iff n_user_turns > {threshold}",
+        "tpr": tpr,
+        "tnr": tnr,
+        "balanced_accuracy": 0.5 * (tpr + tnr),
+    }
+
+
+def corpus_family(record: Dict) -> str:
+    source = str(record.get("corpus_source", ""))
+    if source in {"legacy_restored_primary", "legacy_detection_aux"}:
+        return "A"
+    if source in {"frontier_authored_v3", "frontier_detection_aux"}:
+        return "B"
+    return source or "unknown"
+
+
+def source_diagnostics(records: Sequence[Dict]) -> Dict:
+    out = {}
+    for family in sorted({corpus_family(r) for r in records}):
+        subset = [r for r in records if corpus_family(r) == family]
+        labels = Counter(detection_label(r) for r in subset)
+        item = {
+            "records": len(subset),
+            "labels": dict(labels),
+            "mean_user_turns": {
+                str(label): (
+                    sum(user_turns(r) for r in subset if detection_label(r) == label)
+                    / labels[label]
+                )
+                for label in sorted(labels)
+            },
+        }
+        if labels.get(0, 0) and labels.get(1, 0):
+            item.update({
+                "turn_count_auc_unweighted": unweighted_auc(subset),
+                "turn_count_auc_detection_weighted": weighted_auc(subset),
+                "gt_10_unweighted": threshold_balanced_accuracy(
+                    subset, 10, weighted=False
+                ),
+                "gt_10_detection_weighted": threshold_balanced_accuracy(
+                    subset, 10, weighted=True
+                ),
+            })
+        out[family] = item
+    return out
+
+
 def describe(records: Sequence[Dict]) -> Dict:
     return {
         "records": len(records),
@@ -620,6 +692,13 @@ def describe(records: Sequence[Dict]) -> Dict:
         "max_physical_turns": max(len(r.get("turns", [])) for r in records),
         "turn_count_auc_unweighted": unweighted_auc(records),
         "turn_count_auc_detection_weighted": weighted_auc(records),
+        "gt_10_unweighted": threshold_balanced_accuracy(
+            records, 10, weighted=False
+        ),
+        "gt_10_detection_weighted": threshold_balanced_accuracy(
+            records, 10, weighted=True
+        ),
+        "source_diagnostics": source_diagnostics(records),
     }
 
 
