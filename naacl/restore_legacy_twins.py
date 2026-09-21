@@ -27,7 +27,6 @@ from prepare_dataset import (
     sanitize_benign_targets,
     write_jsonl,
 )
-from judge_stored_twin_responses import final_malicious_candidate
 
 
 CANONICAL_BRIDGE_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
@@ -59,50 +58,23 @@ def turn_text_hash(record: Dict) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def final_malicious(
-    records: List[Dict],
-) -> Tuple[List[Dict], List[Dict], int]:
-    """Return the exact repaired malicious universe used by bridge judging.
+def final_malicious(records: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    """Recompute the repaired evidence gate, then keep only eligible malicious rows.
 
-    Historical validation leaves 545 interactive malicious records marked
-    validated/training-eligible. The repaired evidence gate narrows that to the
-    526 records whose fresh evidence analysis is complete or whose independent
-    validation succeeded. Candidate materialization must use that same 526
-    universe, not the broader historical training_eligible set.
+    Important: this does NOT trust the historical training_eligible value on the
+    545 validated malicious records. sanitize_attribution_targets() recomputes
+    supervision_tier/training_eligible from repaired detection evidence
+    (fresh evidence-analysis status == complete OR independent_success), which
+    narrows the current Dataset A universe to the 526 repaired malicious rows.
     """
-    validated = [
-        record
+    sanitized = [
+        sanitize_attribution_targets(record)
         for record in records
-        if record.get("label") == 1
-        and record.get("validation_status") == "validated"
+        if record.get("label") == 1 and record.get("validation_status") == "validated"
     ]
-
-    selected_source = [
-        record for record in validated if final_malicious_candidate(record)
-    ]
-    excluded_source = [
-        record for record in validated if not final_malicious_candidate(record)
-    ]
-
-    kept = [sanitize_attribution_targets(record) for record in selected_source]
-    excluded = [
-        sanitize_attribution_targets(record) for record in excluded_source
-    ]
-
-    # The final evidence gate and attribution sanitizer must agree that all
-    # selected records remain training-eligible. Fail closed if they drift.
-    sanitizer_rejected = [
-        str(record.get("conversation_id", ""))
-        for record in kept
-        if not record.get("training_eligible")
-    ]
-    if sanitizer_rejected:
-        raise RuntimeError(
-            "final evidence-gated malicious records became ineligible during "
-            f"attribution sanitization: {sanitizer_rejected[:10]}"
-        )
-
-    return kept, excluded, len(validated)
+    kept = [record for record in sanitized if record.get("training_eligible")]
+    excluded = [record for record in sanitized if not record.get("training_eligible")]
+    return kept, excluded
 
 
 def eligible_twin(record: Dict) -> bool:
@@ -212,7 +184,7 @@ def main() -> None:
     args = parser.parse_args()
 
     records = load_jsonl(args.input)
-    malicious, evidence_excluded, validated_malicious_count = final_malicious(records)
+    malicious, evidence_excluded = final_malicious(records)
     groups = pair_index(records)
 
     if args.reference_prepared:
@@ -414,9 +386,8 @@ def main() -> None:
     stats = {
         "input_records": len(records),
         "frozen_malicious_reference_checked": bool(args.reference_prepared),
-        "validated_malicious_before_evidence_gate": validated_malicious_count,
-        "malicious_excluded_by_repaired_evidence_gate": len(evidence_excluded),
         "repaired_malicious_before_pair_gate": len(malicious),
+        "malicious_excluded_by_repaired_evidence_gate": len(evidence_excluded),
         "restored_pairs": len(restored_malicious),
         "primary_records": len(combined),
         "malicious_without_valid_original_twin": len(unmatched),
