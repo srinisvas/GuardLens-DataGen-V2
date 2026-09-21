@@ -24,6 +24,11 @@ import random
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+from prepare_frontier_dataset import assert_expected_provenance
+
+
+DEFAULT_B_TARGET = "Qwen/Qwen2.5-32B-Instruct"
+DEFAULT_B_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
 A_PRIMARY_RECORDS = 1032
 A_PRIMARY_PAIRS = 516
@@ -31,6 +36,8 @@ A_AUX_RECORDS = 721
 B_PRIMARY_RECORDS = 1402
 B_PRIMARY_PAIRS = 701
 B_AUX_RECORDS = 424
+B_AUX_LABELS = Counter({0: 271, 1: 153})
+B_AUX_DETECTION_WEIGHT = 0.25
 EXPECTED_A_PRIMARY_SHA256 = (
     "f9021672150696b2c3a367b1a1c67edafa4ce2f1a6a83fc1293870eaa7e6c34f"
 )
@@ -189,7 +196,13 @@ def frontier_scenario(record: Dict) -> str:
     return str(metadata.get("scenario_family", ""))
 
 
-def validate_b_primary(records: Sequence[Dict], max_turns: int) -> None:
+def validate_b_primary(
+    records: Sequence[Dict],
+    max_turns: int,
+    *,
+    expected_target: str,
+    expected_judge: str,
+) -> None:
     if len(records) != B_PRIMARY_RECORDS:
         raise RuntimeError(
             f"B primary expected {B_PRIMARY_RECORDS}, got {len(records)}"
@@ -207,6 +220,27 @@ def validate_b_primary(records: Sequence[Dict], max_turns: int) -> None:
             raise RuntimeError("B primary missing conversation_id")
         if record.get("training_eligible") is not True:
             raise RuntimeError(f"{cid}: B primary is not training eligible")
+        try:
+            assert_expected_provenance(
+                record,
+                expected_target=expected_target,
+                expected_judge=expected_judge,
+                require_evidence=(record.get("label") == 1),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{cid}: B canonical protocol-chain validation failed: {exc}"
+            ) from exc
+        if record.get("canonical_target_model") != expected_target:
+            raise RuntimeError(
+                f"{cid}: B target model mismatch: "
+                f"{record.get('canonical_target_model')!r}"
+            )
+        if record.get("canonical_judge_model") != expected_judge:
+            raise RuntimeError(
+                f"{cid}: B judge model mismatch: "
+                f"{record.get('canonical_judge_model')!r}"
+            )
         if record.get("primary_pair_complete") is not True:
             raise RuntimeError(f"{cid}: B primary lacks primary_pair_complete=true")
 
@@ -237,11 +271,15 @@ def validate_aux(
     name: str,
     expected_records: int,
     max_turns: int,
+    expected_labels: Counter | None = None,
+    expected_weight: float | None = None,
 ) -> None:
     if len(records) != expected_records:
         raise RuntimeError(
             f"{name} expected {expected_records} records, got {len(records)}"
         )
+    observed_labels = Counter()
+    observed_weights = Counter()
     for record in records:
         validate_trajectory(record, name, max_turns)
         cid = str(record.get("conversation_id", ""))
@@ -254,6 +292,7 @@ def validate_aux(
         detection_label = record.get("detection_label")
         if isinstance(detection_label, bool) or detection_label not in (0, 1):
             raise RuntimeError(f"{name}:{cid}: invalid detection_label")
+        observed_labels[int(detection_label)] += 1
         weight = record.get("detection_loss_weight")
         if (
             isinstance(weight, bool)
@@ -262,6 +301,14 @@ def validate_aux(
             or float(weight) <= 0
         ):
             raise RuntimeError(f"{name}:{cid}: invalid detection_loss_weight")
+        observed_weights[float(weight)] += 1
+        if expected_weight is not None and not math.isclose(
+            float(weight), float(expected_weight), rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise RuntimeError(
+                f"{name}:{cid}: detection weight {weight} differs from "
+                f"expected {expected_weight}"
+            )
         if record.get("localization_supervision_ignore") is not True:
             raise RuntimeError(f"{name}:{cid}: localization must be ignored")
         if record.get("pivot_supervision_ignore") is not True:
@@ -270,6 +317,12 @@ def validate_aux(
             raise RuntimeError(f"{name}:{cid}: pivot_loss_weight must be 0")
         if record.get("span_loss_weight") != 0.0:
             raise RuntimeError(f"{name}:{cid}: span_loss_weight must be 0")
+
+    if expected_labels is not None and observed_labels != expected_labels:
+        raise RuntimeError(
+            f"{name}: detection-label counts {dict(observed_labels)} differ "
+            f"from expected {dict(expected_labels)}"
+        )
 
 
 def canonical_primary_record(record: Dict, corpus: str) -> Dict:
@@ -628,6 +681,8 @@ def main() -> None:
     parser.add_argument("--b-aux", required=True)
     parser.add_argument("--b-primary-sha256", required=True)
     parser.add_argument("--b-aux-sha256", required=True)
+    parser.add_argument("--expected-b-target-model", default=DEFAULT_B_TARGET)
+    parser.add_argument("--expected-b-judge-model", default=DEFAULT_B_JUDGE)
     parser.add_argument(
         "--a-primary-sha256",
         default=EXPECTED_A_PRIMARY_SHA256,
@@ -681,18 +736,27 @@ def main() -> None:
     b_aux = load_jsonl(args.b_aux)
 
     validate_a_primary(a_primary, args.max_turns)
-    validate_b_primary(b_primary, args.max_turns)
+    validate_b_primary(
+        b_primary,
+        args.max_turns,
+        expected_target=args.expected_b_target_model,
+        expected_judge=args.expected_b_judge_model,
+    )
     validate_aux(
         a_aux,
         name="A-aux",
         expected_records=A_AUX_RECORDS,
         max_turns=args.max_turns,
+        expected_labels=Counter({0: A_AUX_RECORDS}),
+        expected_weight=1.0,
     )
     validate_aux(
         b_aux,
         name="B-aux",
         expected_records=B_AUX_RECORDS,
         max_turns=args.max_turns,
+        expected_labels=B_AUX_LABELS,
+        expected_weight=B_AUX_DETECTION_WEIGHT,
     )
 
     primary = [
@@ -808,6 +872,10 @@ def main() -> None:
             "max_turns": args.max_turns,
             "seed": args.seed,
             "fractions": fractions,
+            "b_expected_target_model": args.expected_b_target_model,
+            "b_expected_judge_model": args.expected_b_judge_model,
+            "b_aux_expected_labels": dict(B_AUX_LABELS),
+            "b_aux_expected_detection_weight": B_AUX_DETECTION_WEIGHT,
         },
         "output_sha256": output_hashes,
     }
