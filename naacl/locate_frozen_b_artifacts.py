@@ -243,8 +243,11 @@ def extract_embedded_aux(
             f"{changed[:10]}"
         )
 
-    aux_ids = sorted(set(candidate_by_id) - set(primary_by_id))
-    auxiliary = [candidate_by_id[cid] for cid in aux_ids]
+    aux_id_set = set(candidate_by_id) - set(primary_by_id)
+    auxiliary = [
+        record for record in candidate
+        if str(record.get("conversation_id", "")) in aux_id_set
+    ]
     ok, reason = aux_contract(auxiliary)
     if not ok:
         raise RuntimeError(
@@ -279,9 +282,8 @@ def main() -> None:
 
     for path in files:
         try:
-            size = sum(
-                1 for line in open(path, "r", encoding="utf-8") if line.strip()
-            )
+            with open(path, "r", encoding="utf-8") as handle:
+                size = sum(1 for line in handle if line.strip())
         except Exception:
             continue
 
