@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Build the frozen GuardLens consolidated primary and train-only auxiliary view.
+"""Build the restored-A + frozen-B GuardLens data freeze.
 
-Order is deliberate and fail-closed:
-1. Validate and merge paired primary Dataset A + paired primary Dataset B.
-2. Split the primary corpus only, preserving A pair IDs and B scenario groups.
-3. Freeze primary train/dev/test.
-4. Validate A/B detection-only auxiliary records against all primary records.
-5. Append auxiliaries to TRAIN ONLY.
-6. Verify byte identity of primary dev/test and run leakage/shortcut diagnostics.
+Scientific order
+----------------
+1. Verify exact frozen input hashes and structural contracts.
+2. Merge PRIMARY A (516 semantic pairs) with frozen PRIMARY B (701 pairs).
+3. Split PRIMARY records only. A pair IDs and B scenario families are indivisible.
+4. Add all independently generated A detection auxiliaries to train only.
+5. Attach B's full 512-record auxiliary pool using the frozen B policy:
+   include only when its scenario group is owned by primary train or absent
+   from primary, and withhold when its group or exact user trajectory is owned
+   by primary dev/test.
+6. Copy primary dev/test byte-for-byte into the auxiliary training variant.
+7. Emit source-stratified shortcut diagnostics, hashes, and the exact freeze
+   report schema consumed by GuardLens-Transformer.
 
-No auxiliary record participates in split allocation.
+This script never truncates or rewrites conversation text. It refuses to write
+into a non-empty output directory.
 """
 
 from __future__ import annotations
@@ -25,40 +32,71 @@ import shutil
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-from prepare_frontier_dataset import assert_expected_provenance
 
+# -------------------------------
+# Frozen input identities
+# -------------------------------
 
-DEFAULT_B_TARGET = "Qwen/Qwen2.5-32B-Instruct"
-DEFAULT_B_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+A_PRIMARY_SHA256 = (
+    "f9021672150696b2c3a367b1a1c67edafa4ce2f1a6a83fc1293870eaa7e6c34f"
+)
+A_AUX_SHA256 = (
+    "9d17f3b094957ba2626184e98c33dde81a153a55e91fbb94799fbe7a0ae577ad"
+)
+B_PRIMARY_SHA256 = (
+    "875694d3b2ba726dfc9112438b91a055c53459e961f28ab392e9334183d52b14"
+)
+B_AUX_SHA256 = (
+    "f8e19e89dbbfcc2e41a3ff0bf560d6aa9d0d8e07a794f7306b2fc56daa00f594"
+)
 
 A_PRIMARY_RECORDS = 1032
 A_PRIMARY_PAIRS = 516
 A_AUX_RECORDS = 721
+
 B_PRIMARY_RECORDS = 1402
 B_PRIMARY_PAIRS = 701
-B_AUX_RECORDS = 424
-B_AUX_LABELS = Counter({0: 271, 1: 153})
-B_AUX_DETECTION_WEIGHT = 0.25
-EXPECTED_A_PRIMARY_SHA256 = (
-    "f9021672150696b2c3a367b1a1c67edafa4ce2f1a6a83fc1293870eaa7e6c34f"
-)
-EXPECTED_A_AUX_SHA256 = (
-    "9d17f3b094957ba2626184e98c33dde81a153a55e91fbb94799fbe7a0ae577ad"
-)
-SPLITS = ("train", "dev", "test")
+B_PRIMARY_SCENARIOS = 321
+B_PRIMARY_LABELS = Counter({0: 701, 1: 701})
+B_PRIMARY_USER_HIST_PER_LABEL = Counter({6: 240, 7: 286, 8: 92, 9: 83})
+B_PRIMARY_TIERS = Counter({
+    "benign_validated": 701,
+    "cf_strong": 629,
+    "cf_weak": 4,
+    "llm_confirmed": 68,
+})
 
+B_AUX_RECORDS = 512
+B_AUX_DETECTION_LABELS = Counter({0: 322, 1: 190})
+B_AUX_AUTHORING_LABELS = Counter({0: 190, 1: 322})
+B_AUX_SCENARIOS = 275
+B_AUX_WEIGHT = 0.25
+B_AUX_SOURCE = "frontier_authored_v3_auxiliary"
+
+B_TARGET = "Qwen/Qwen2.5-32B-Instruct"
+B_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+
+SPLITS = ("train", "dev", "test")
+DEFAULT_MAX_TURNS = 64
+
+
+# -------------------------------
+# Generic file helpers
+# -------------------------------
 
 def load_jsonl(path: str) -> List[Dict]:
-    out: List[Dict] = []
+    rows: List[Dict] = []
     with open(path, "r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
             if not line.strip():
                 continue
             try:
-                out.append(json.loads(line))
+                rows.append(json.loads(line))
             except json.JSONDecodeError as exc:
-                raise RuntimeError(f"invalid JSON at {path}:{line_no}: {exc}") from exc
-    return out
+                raise RuntimeError(
+                    f"invalid JSON at {path}:{line_no}: {exc}"
+                ) from exc
+    return rows
 
 
 def write_jsonl(records: Iterable[Dict], path: str) -> None:
@@ -72,11 +110,11 @@ def write_jsonl(records: Iterable[Dict], path: str) -> None:
     os.replace(tmp, path)
 
 
-def write_json(obj: Dict, path: str) -> None:
+def write_json(payload: Dict, path: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(obj, handle, indent=2, sort_keys=True)
+        json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -91,44 +129,70 @@ def sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
-def normalized_user_hash(record: Dict) -> str:
-    parts = [
-        " ".join(str(turn.get("text", "")).strip().split())
-        for turn in record.get("turns", [])
-        if str(turn.get("role", "")).lower() == "user"
-    ]
-    return hashlib.sha256(
-        "\n<USER_TURN>\n".join(parts).encode("utf-8")
-    ).hexdigest()
+def require_sha(path: str, expected: str, name: str) -> str:
+    actual = sha256_file(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"{name} SHA-256 mismatch: expected={expected} actual={actual}"
+        )
+    return actual
 
 
-def physical_turn_hash(record: Dict) -> str:
-    payload = [
-        {
-            "turn_id": t.get("turn_id"),
-            "role": t.get("role"),
-            "text": t.get("text"),
-        }
-        for t in record.get("turns", [])
-    ]
-    return hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+def ensure_fresh_output_dir(path: str) -> None:
+    if os.path.exists(path):
+        if not os.path.isdir(path):
+            raise RuntimeError(f"output path exists and is not a directory: {path}")
+        entries = os.listdir(path)
+        if entries:
+            raise RuntimeError(
+                f"output directory is not empty: {path}; existing entries={entries[:10]}"
+            )
+    else:
+        os.makedirs(path, exist_ok=False)
 
 
-def user_turns(record: Dict) -> int:
+# -------------------------------
+# Observable-content identities
+# -------------------------------
+
+def n_user_turns(record: Dict) -> int:
     return sum(
         str(turn.get("role", "")).lower() == "user"
         for turn in record.get("turns", [])
     )
 
 
-def validate_trajectory(record: Dict, source: str, max_turns: int) -> None:
+def normalized_user_hash(record: Dict) -> str:
+    texts = [
+        str(turn.get("text", "")).strip()
+        for turn in record.get("turns", [])
+        if str(turn.get("role", "")).lower() == "user"
+    ]
+    normalized = "\n<USER_TURN>\n".join(
+        " ".join(text.split()) for text in texts
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def observable_turn_hash(record: Dict) -> str:
+    payload = [
+        {
+            "turn_id": turn.get("turn_id"),
+            "role": turn.get("role"),
+            "text": turn.get("text"),
+        }
+        for turn in record.get("turns", [])
+    ]
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def validate_realized_trajectory(record: Dict, *, source: str, max_turns: int) -> None:
     cid = str(record.get("conversation_id", "")) or "<missing>"
     turns = record.get("turns")
     if not isinstance(turns, list) or not turns:
@@ -137,236 +201,393 @@ def validate_trajectory(record: Dict, source: str, max_turns: int) -> None:
         raise RuntimeError(
             f"{source}:{cid}: {len(turns)} physical turns exceed max_turns={max_turns}"
         )
+
     expected_role = "user"
     for index, turn in enumerate(turns):
         if turn.get("turn_id") != index:
             raise RuntimeError(
-                f"{source}:{cid}: non-contiguous turn_id at index {index}"
+                f"{source}:{cid}: turn_id={turn.get('turn_id')!r} "
+                f"at physical index={index}"
             )
         role = str(turn.get("role", "")).lower()
         if role != expected_role:
             raise RuntimeError(
-                f"{source}:{cid}: expected {expected_role}, got {role!r} at {index}"
+                f"{source}:{cid}: expected role={expected_role}, got={role!r} "
+                f"at turn {index}"
             )
         text = turn.get("text")
         if not isinstance(text, str) or not text.strip():
-            raise RuntimeError(f"{source}:{cid}: empty/non-string text at {index}")
+            raise RuntimeError(
+                f"{source}:{cid}: empty/non-string text at turn {index}"
+            )
         expected_role = "assistant" if expected_role == "user" else "user"
+
     if expected_role != "user":
-        raise RuntimeError(f"{source}:{cid}: trajectory ends on unmatched user turn")
+        raise RuntimeError(f"{source}:{cid}: trajectory ends with unmatched user turn")
+
     declared = record.get("conversation_length")
     if declared is not None and int(declared) != len(turns):
         raise RuntimeError(
-            f"{source}:{cid}: declared conversation_length mismatch"
+            f"{source}:{cid}: conversation_length={declared} "
+            f"!= physical turns={len(turns)}"
         )
 
+
+# -------------------------------
+# Dataset A contracts
+# -------------------------------
 
 def validate_a_primary(records: Sequence[Dict], max_turns: int) -> None:
     if len(records) != A_PRIMARY_RECORDS:
         raise RuntimeError(
             f"A primary expected {A_PRIMARY_RECORDS}, got {len(records)}"
         )
-    labels = Counter(r.get("label") for r in records)
+    labels = Counter(record.get("label") for record in records)
     if labels != Counter({0: A_PRIMARY_PAIRS, 1: A_PRIMARY_PAIRS}):
-        raise RuntimeError(f"A primary label mismatch: {dict(labels)}")
+        raise RuntimeError(f"A primary label counts invalid: {dict(labels)}")
 
-    groups = defaultdict(list)
+    ids = set()
+    pairs = defaultdict(list)
     for record in records:
-        validate_trajectory(record, "A-primary", max_turns)
+        validate_realized_trajectory(record, source="A-primary", max_turns=max_turns)
         cid = str(record.get("conversation_id", ""))
-        if not cid:
-            raise RuntimeError("A primary missing conversation_id")
-        pair_id = str(record.get("pair_id", ""))
+        if not cid or cid in ids:
+            raise RuntimeError(f"A primary missing/duplicate conversation_id: {cid!r}")
+        ids.add(cid)
+
+        pair_id = str(record.get("pair_id", "")).strip()
         if not pair_id:
             raise RuntimeError(f"{cid}: A primary missing pair_id")
-        groups[pair_id].append(record)
+        pairs[pair_id].append(record)
 
-    if len(groups) != A_PRIMARY_PAIRS:
+    if len(pairs) != A_PRIMARY_PAIRS:
         raise RuntimeError(
-            f"A primary expected {A_PRIMARY_PAIRS} pair IDs, got {len(groups)}"
+            f"A primary expected {A_PRIMARY_PAIRS} pair groups, got {len(pairs)}"
         )
-    for pair_id, group in groups.items():
-        if len(group) != 2 or Counter(r.get("label") for r in group) != Counter({0: 1, 1: 1}):
+    for pair_id, group in pairs.items():
+        if (
+            len(group) != 2
+            or Counter(record.get("label") for record in group)
+            != Counter({0: 1, 1: 1})
+        ):
             raise RuntimeError(
-                f"A primary pair {pair_id} is not one benign + one malicious"
+                f"A primary pair {pair_id} is not exactly one benign + one malicious"
             )
 
 
-def frontier_scenario(record: Dict) -> str:
-    metadata = record.get("metadata", {}) or {}
-    return str(metadata.get("scenario_family", ""))
+def validate_a_aux(records: Sequence[Dict], max_turns: int) -> None:
+    if len(records) != A_AUX_RECORDS:
+        raise RuntimeError(f"A auxiliary expected {A_AUX_RECORDS}, got {len(records)}")
+
+    ids = set()
+    for record in records:
+        validate_realized_trajectory(record, source="A-aux", max_turns=max_turns)
+        cid = str(record.get("conversation_id", ""))
+        if not cid or cid in ids:
+            raise RuntimeError(f"A auxiliary missing/duplicate conversation_id: {cid!r}")
+        ids.add(cid)
+
+        if record.get("label") != 0 or record.get("detection_label") != 0:
+            raise RuntimeError(f"{cid}: A auxiliary must be benign detection label 0")
+        if record.get("validation_status") != "validated":
+            raise RuntimeError(f"{cid}: A auxiliary is not validated")
+        if record.get("auxiliary_detection_only") is not True:
+            raise RuntimeError(f"{cid}: A auxiliary missing auxiliary_detection_only")
+        if record.get("use_as") != "auxiliary_detection_only":
+            raise RuntimeError(f"{cid}: A auxiliary use_as mismatch")
+        if record.get("supervision_tier") != "auxiliary_detection":
+            raise RuntimeError(f"{cid}: A auxiliary supervision tier mismatch")
+        if float(record.get("detection_loss_weight", -1)) != 1.0:
+            raise RuntimeError(f"{cid}: A auxiliary detection weight must be 1.0")
+        if record.get("localization_supervision_ignore") is not True:
+            raise RuntimeError(f"{cid}: A auxiliary localization not masked")
+        if record.get("pivot_supervision_ignore") is not True:
+            raise RuntimeError(f"{cid}: A auxiliary pivot not masked")
+        if record.get("pivot_loss_weight") != 0.0:
+            raise RuntimeError(f"{cid}: A auxiliary pivot loss must be 0")
+        if record.get("span_loss_weight") != 0.0:
+            raise RuntimeError(f"{cid}: A auxiliary span loss must be 0")
 
 
-def validate_b_primary(
-    records: Sequence[Dict],
-    max_turns: int,
-    *,
-    expected_target: str,
-    expected_judge: str,
-) -> None:
+# -------------------------------
+# Dataset B contracts
+# -------------------------------
+
+def b_scenario(record: Dict) -> str:
+    return str(
+        (record.get("metadata", {}) or {}).get("scenario_family", "")
+    ).strip()
+
+
+def b_group(record: Dict) -> str:
+    scenario = b_scenario(record)
+    return f"frontier::{scenario}" if scenario else ""
+
+
+def validate_b_primary(records: Sequence[Dict], max_turns: int) -> None:
+    """Validate the exact already-frozen B artifact structurally.
+
+    Full v4/v5/v8 production provenance was audited before the pinned file hash
+    was frozen. This stage does not reinterpret historical protocol wrappers.
+    """
     if len(records) != B_PRIMARY_RECORDS:
         raise RuntimeError(
             f"B primary expected {B_PRIMARY_RECORDS}, got {len(records)}"
         )
-    labels = Counter(r.get("label") for r in records)
-    if labels != Counter({0: B_PRIMARY_PAIRS, 1: B_PRIMARY_PAIRS}):
-        raise RuntimeError(f"B primary label mismatch: {dict(labels)}")
 
-    pair_groups = defaultdict(list)
-    scenarios = defaultdict(list)
+    labels = Counter(record.get("label") for record in records)
+    if labels != B_PRIMARY_LABELS:
+        raise RuntimeError(f"B primary labels invalid: {dict(labels)}")
+
+    tiers = Counter(str(record.get("supervision_tier")) for record in records)
+    if tiers != B_PRIMARY_TIERS:
+        raise RuntimeError(
+            f"B primary supervision tiers changed: {dict(tiers)}"
+        )
+
+    ids = set()
+    pairs = defaultdict(list)
+    scenarios = set()
+    per_label_hist = {0: Counter(), 1: Counter()}
+
     for record in records:
-        validate_trajectory(record, "B-primary", max_turns)
+        validate_realized_trajectory(record, source="B-primary", max_turns=max_turns)
         cid = str(record.get("conversation_id", ""))
-        if not cid:
-            raise RuntimeError("B primary missing conversation_id")
+        if not cid or cid in ids:
+            raise RuntimeError(f"B primary missing/duplicate conversation_id: {cid!r}")
+        ids.add(cid)
+
+        if record.get("validation_status") != "validated":
+            raise RuntimeError(f"{cid}: B primary not validation_status=validated")
         if record.get("training_eligible") is not True:
             raise RuntimeError(f"{cid}: B primary is not training eligible")
-        try:
-            assert_expected_provenance(
-                record,
-                expected_target=expected_target,
-                expected_judge=expected_judge,
-                require_evidence=(record.get("label") == 1),
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"{cid}: B canonical protocol-chain validation failed: {exc}"
-            ) from exc
-        if record.get("canonical_target_model") != expected_target:
-            raise RuntimeError(
-                f"{cid}: B target model mismatch: "
-                f"{record.get('canonical_target_model')!r}"
-            )
-        if record.get("canonical_judge_model") != expected_judge:
-            raise RuntimeError(
-                f"{cid}: B judge model mismatch: "
-                f"{record.get('canonical_judge_model')!r}"
-            )
         if record.get("primary_pair_complete") is not True:
-            raise RuntimeError(f"{cid}: B primary lacks primary_pair_complete=true")
+            raise RuntimeError(f"{cid}: B primary missing primary_pair_complete=true")
+        if record.get("canonical_target_model") != B_TARGET:
+            raise RuntimeError(f"{cid}: B canonical target model changed")
+        if record.get("canonical_judge_model") != B_JUDGE:
+            raise RuntimeError(f"{cid}: B canonical judge model changed")
 
-        pair_id = str(record.get("pair_id", ""))
+        pair_id = str(record.get("pair_id", "")).strip()
         if not pair_id:
             raise RuntimeError(f"{cid}: B primary missing pair_id")
-        pair_groups[pair_id].append(record)
+        pairs[pair_id].append(record)
 
-        scenario = frontier_scenario(record)
+        scenario = b_scenario(record)
         if not scenario:
-            raise RuntimeError(f"{cid}: B primary missing metadata.scenario_family")
-        scenarios[scenario].append(record)
+            raise RuntimeError(f"{cid}: B primary missing scenario_family")
+        scenarios.add(scenario)
 
-    if len(pair_groups) != B_PRIMARY_PAIRS:
+        label = int(record["label"])
+        per_label_hist[label][n_user_turns(record)] += 1
+
+    if len(pairs) != B_PRIMARY_PAIRS:
         raise RuntimeError(
-            f"B primary expected {B_PRIMARY_PAIRS} pair IDs, got {len(pair_groups)}"
+            f"B primary expected {B_PRIMARY_PAIRS} pair IDs, got {len(pairs)}"
         )
-    for pair_id, group in pair_groups.items():
-        if len(group) != 2 or Counter(r.get("label") for r in group) != Counter({0: 1, 1: 1}):
-            raise RuntimeError(
-                f"B primary pair {pair_id} is not one benign + one malicious"
-            )
-
-
-def validate_aux(
-    records: Sequence[Dict],
-    *,
-    name: str,
-    expected_records: int,
-    max_turns: int,
-    expected_labels: Counter | None = None,
-    expected_weight: float | None = None,
-) -> None:
-    if len(records) != expected_records:
-        raise RuntimeError(
-            f"{name} expected {expected_records} records, got {len(records)}"
-        )
-    observed_labels = Counter()
-    observed_weights = Counter()
-    for record in records:
-        validate_trajectory(record, name, max_turns)
-        cid = str(record.get("conversation_id", ""))
-        if not cid:
-            raise RuntimeError(f"{name}: missing conversation_id")
-        if record.get("auxiliary_detection_only") is not True and (
-            record.get("use_as") != "auxiliary_detection_only"
-        ):
-            raise RuntimeError(f"{name}:{cid}: not marked detection-only auxiliary")
-        detection_label = record.get("detection_label")
-        if isinstance(detection_label, bool) or detection_label not in (0, 1):
-            raise RuntimeError(f"{name}:{cid}: invalid detection_label")
-        observed_labels[int(detection_label)] += 1
-        weight = record.get("detection_loss_weight")
+    for pair_id, group in pairs.items():
         if (
-            isinstance(weight, bool)
-            or not isinstance(weight, (int, float))
-            or not math.isfinite(float(weight))
-            or float(weight) <= 0
+            len(group) != 2
+            or Counter(record.get("label") for record in group)
+            != Counter({0: 1, 1: 1})
         ):
-            raise RuntimeError(f"{name}:{cid}: invalid detection_loss_weight")
-        observed_weights[float(weight)] += 1
-        if expected_weight is not None and not math.isclose(
-            float(weight), float(expected_weight), rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise RuntimeError(
-                f"{name}:{cid}: detection weight {weight} differs from "
-                f"expected {expected_weight}"
-            )
-        if record.get("localization_supervision_ignore") is not True:
-            raise RuntimeError(f"{name}:{cid}: localization must be ignored")
-        if record.get("pivot_supervision_ignore") is not True:
-            raise RuntimeError(f"{name}:{cid}: pivot supervision must be ignored")
-        if record.get("pivot_loss_weight") != 0.0:
-            raise RuntimeError(f"{name}:{cid}: pivot_loss_weight must be 0")
-        if record.get("span_loss_weight") != 0.0:
-            raise RuntimeError(f"{name}:{cid}: span_loss_weight must be 0")
+            raise RuntimeError(f"B primary pair {pair_id} is structurally invalid")
 
-    if expected_labels is not None and observed_labels != expected_labels:
+    if len(scenarios) != B_PRIMARY_SCENARIOS:
         raise RuntimeError(
-            f"{name}: detection-label counts {dict(observed_labels)} differ "
-            f"from expected {dict(expected_labels)}"
+            f"B primary expected {B_PRIMARY_SCENARIOS} scenarios, got {len(scenarios)}"
+        )
+    for label in (0, 1):
+        if per_label_hist[label] != B_PRIMARY_USER_HIST_PER_LABEL:
+            raise RuntimeError(
+                f"B primary label={label} user-turn histogram changed: "
+                f"{dict(per_label_hist[label])}"
+            )
+
+
+def validate_b_aux(records: Sequence[Dict], max_turns: int) -> None:
+    if len(records) != B_AUX_RECORDS:
+        raise RuntimeError(f"B auxiliary expected {B_AUX_RECORDS}, got {len(records)}")
+
+    ids = set()
+    detection = Counter()
+    authoring = Counter()
+    groups = set()
+    hash_groups = defaultdict(set)
+
+    for record in records:
+        validate_realized_trajectory(record, source="B-aux", max_turns=max_turns)
+        cid = str(record.get("conversation_id", ""))
+        if not cid or cid in ids:
+            raise RuntimeError(f"B auxiliary missing/duplicate conversation_id: {cid!r}")
+        ids.add(cid)
+
+        if record.get("corpus_source") != B_AUX_SOURCE:
+            raise RuntimeError(
+                f"{cid}: B auxiliary corpus_source={record.get('corpus_source')!r}"
+            )
+        if record.get("validation_status") != "rejected":
+            raise RuntimeError(f"{cid}: B auxiliary must be B2-rejected")
+        if record.get("training_eligible") is not True:
+            raise RuntimeError(f"{cid}: B auxiliary not training eligible")
+        if record.get("auxiliary_detection_only") is not True:
+            raise RuntimeError(f"{cid}: B auxiliary flag missing")
+        if record.get("use_as") != "auxiliary_detection_only":
+            raise RuntimeError(f"{cid}: B auxiliary use_as mismatch")
+        if record.get("primary_pair_complete") is not False:
+            raise RuntimeError(f"{cid}: B auxiliary cannot claim primary-pair membership")
+        if record.get("supervision_tier") != "auxiliary_detection":
+            raise RuntimeError(f"{cid}: B auxiliary supervision tier mismatch")
+        if float(record.get("loss_weight", -1)) != B_AUX_WEIGHT:
+            raise RuntimeError(f"{cid}: B auxiliary loss_weight must be {B_AUX_WEIGHT}")
+        if float(record.get("detection_loss_weight", -1)) != B_AUX_WEIGHT:
+            raise RuntimeError(
+                f"{cid}: B auxiliary detection_loss_weight must be {B_AUX_WEIGHT}"
+            )
+        if record.get("pivot_loss_weight") != 0.0:
+            raise RuntimeError(f"{cid}: B auxiliary pivot loss must be 0")
+        if record.get("span_loss_weight") != 0.0:
+            raise RuntimeError(f"{cid}: B auxiliary span loss must be 0")
+        if record.get("pivot_supervision_ignore") is not True:
+            raise RuntimeError(f"{cid}: B auxiliary pivot supervision not masked")
+        if record.get("localization_supervision_ignore") is not True:
+            raise RuntimeError(f"{cid}: B auxiliary localization not masked")
+        if record.get("pivot_turn_id") is not None:
+            raise RuntimeError(f"{cid}: B auxiliary carries pivot target")
+        if record.get("evidence_turn_ids") != []:
+            raise RuntimeError(f"{cid}: B auxiliary carries evidence-turn targets")
+
+        label = record.get("detection_label")
+        author_label = record.get("authoring_intent_label")
+        observed = record.get("observed_behavior_label")
+        if isinstance(label, bool) or label not in (0, 1):
+            raise RuntimeError(f"{cid}: invalid B auxiliary detection label")
+        if observed != label:
+            raise RuntimeError(f"{cid}: observed behavior label != detection label")
+        if author_label != record.get("label"):
+            raise RuntimeError(f"{cid}: authoring label provenance changed")
+        detection[int(label)] += 1
+        authoring[int(author_label)] += 1
+
+        scenario = b_scenario(record)
+        group = b_group(record)
+        metadata = record.get("metadata", {}) or {}
+        if not scenario or metadata.get("consolidated_split_group") != group:
+            raise RuntimeError(f"{cid}: B auxiliary split group is not frontier::<scenario>")
+        groups.add(group)
+
+        expected_hash = normalized_user_hash(record)
+        stored_hash = str(metadata.get("normalized_user_trajectory_hash", ""))
+        if stored_hash != expected_hash:
+            raise RuntimeError(f"{cid}: B auxiliary normalized user hash mismatch")
+        hash_groups[expected_hash].add(group)
+
+    if detection != B_AUX_DETECTION_LABELS:
+        raise RuntimeError(
+            f"B auxiliary detection labels changed: {dict(detection)}"
+        )
+    if authoring != B_AUX_AUTHORING_LABELS:
+        raise RuntimeError(
+            f"B auxiliary authoring labels changed: {dict(authoring)}"
+        )
+    if len(groups) != B_AUX_SCENARIOS:
+        raise RuntimeError(
+            f"B auxiliary expected {B_AUX_SCENARIOS} scenarios, got {len(groups)}"
+        )
+    cross_group = [h for h, owners in hash_groups.items() if len(owners) > 1]
+    if cross_group:
+        raise RuntimeError(
+            "B auxiliary exact user trajectories occur across independent "
+            f"scenario groups: {cross_group[:10]}"
         )
 
 
-def canonical_primary_record(record: Dict, corpus: str) -> Dict:
-    out = copy.deepcopy(record)
-    metadata = out.setdefault("metadata", {})
-    if corpus == "A":
-        pair_id = str(out.get("pair_id", ""))
-        split_group = f"A::pair::{pair_id}"
-        out["corpus_source"] = "legacy_restored_primary"
-    elif corpus == "B":
-        scenario = frontier_scenario(out)
-        split_group = f"B::scenario::{scenario}"
-        out["corpus_source"] = "frontier_authored_v3"
-    else:
-        raise RuntimeError(f"unsupported corpus {corpus!r}")
+# -------------------------------
+# Primary canonicalization
+# -------------------------------
 
-    metadata["consolidated_split_group"] = split_group
+def canonicalize_a_primary(record: Dict) -> Dict:
+    out = copy.deepcopy(record)
+    pair_id = str(out.get("pair_id", "")).strip()
+    out["corpus_source"] = "legacy_restored_primary"
+    metadata = out.setdefault("metadata", {})
+    metadata["consolidated_split_group"] = f"legacy::pair::{pair_id}"
     metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
-    metadata["observable_turn_hash"] = physical_turn_hash(out)
+    metadata["observable_turn_hash"] = observable_turn_hash(out)
     return out
 
 
-def assert_global_primary_uniqueness(records: Sequence[Dict]) -> None:
-    ids = Counter(str(r.get("conversation_id", "")) for r in records)
-    duplicate_ids = [cid for cid, count in ids.items() if count > 1]
-    if duplicate_ids:
+def canonicalize_b_primary(record: Dict) -> Dict:
+    out = copy.deepcopy(record)
+    out["corpus_source"] = "frontier_authored_v3"
+    metadata = out.setdefault("metadata", {})
+    expected_group = b_group(out)
+    existing = str(metadata.get("consolidated_split_group", "")).strip()
+    if existing and existing != expected_group:
         raise RuntimeError(
-            f"duplicate primary conversation IDs: {duplicate_ids[:10]}"
+            f"{out.get('conversation_id')}: B primary split group "
+            f"{existing!r} != {expected_group!r}"
         )
+    metadata["consolidated_split_group"] = expected_group
+    metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
+    metadata["observable_turn_hash"] = observable_turn_hash(out)
+    return out
+
+
+def assert_primary_cross_corpus_integrity(records: Sequence[Dict]) -> None:
+    ids = Counter(str(record.get("conversation_id", "")) for record in records)
+    duplicates = [cid for cid, count in ids.items() if not cid or count > 1]
+    if duplicates:
+        raise RuntimeError(f"primary missing/duplicate conversation IDs: {duplicates[:10]}")
 
     hash_groups = defaultdict(set)
     for record in records:
         metadata = record.get("metadata", {}) or {}
-        hash_groups[metadata["normalized_user_trajectory_hash"]].add(
-            metadata["consolidated_split_group"]
-        )
-    bad = {h: groups for h, groups in hash_groups.items() if len(groups) > 1}
-    if bad:
-        preview = list(bad.items())[:10]
+        trajectory_hash = str(metadata.get("normalized_user_trajectory_hash", ""))
+        group = str(metadata.get("consolidated_split_group", ""))
+        if not trajectory_hash or not group:
+            raise RuntimeError(
+                f"{record.get('conversation_id')}: missing primary hash/group"
+            )
+        hash_groups[trajectory_hash].add(group)
+
+    cross_group = [h for h, groups in hash_groups.items() if len(groups) > 1]
+    if cross_group:
         raise RuntimeError(
-            f"{len(bad)} normalized user trajectories span independent primary "
-            f"groups. examples={preview}"
+            "exact normalized primary user trajectories cross independent groups: "
+            f"{cross_group[:10]}"
         )
+
+
+# -------------------------------
+# Primary-only split
+# -------------------------------
+
+def effective_label(record: Dict) -> int:
+    value = (
+        record.get("detection_label")
+        if "detection_label" in record
+        else record.get("label")
+    )
+    if isinstance(value, bool) or value not in (0, 1):
+        raise RuntimeError(
+            f"{record.get('conversation_id')}: invalid effective detection label"
+        )
+    return int(value)
+
+
+def is_frontier(record: Dict) -> bool:
+    return str(record.get("corpus_source", "")).startswith("frontier_authored_v3")
+
+
+def frontier_author(record: Dict) -> str:
+    metadata = record.get("metadata", {}) or {}
+    return str(
+        metadata.get("corpus_version")
+        or metadata.get("generator")
+        or record.get("seed_source")
+        or "unknown_source"
+    )
 
 
 def group_records(records: Sequence[Dict]) -> Dict[str, List[Dict]]:
@@ -374,7 +595,7 @@ def group_records(records: Sequence[Dict]) -> Dict[str, List[Dict]]:
     for record in records:
         group = str(
             (record.get("metadata", {}) or {}).get("consolidated_split_group", "")
-        )
+        ).strip()
         if not group:
             raise RuntimeError(
                 f"{record.get('conversation_id')}: missing consolidated_split_group"
@@ -384,154 +605,368 @@ def group_records(records: Sequence[Dict]) -> Dict[str, List[Dict]]:
 
 
 def group_signature(group: Sequence[Dict]) -> Counter:
-    sig = Counter()
+    signature = Counter()
     for record in group:
-        source = str(record.get("corpus_source"))
-        label = str(record.get("label"))
-        turns = str(user_turns(record))
-        sig[("source", source)] += 1
-        sig[("label", label)] += 1
-        sig[("source_label", source, label)] += 1
-        sig[("source_label_turns", source, label, turns)] += 1
+        source = str(record.get("corpus_source", "unknown"))
+        label = str(effective_label(record))
+        difficulty = str(record.get("difficulty", "unknown"))
+        user_len = str(n_user_turns(record))
 
-        if source == "frontier_authored_v3":
+        signature[("label", label)] += 1
+        signature[("source", source)] += 1
+        signature[("source_label", source, label)] += 1
+        signature[("source_difficulty", source, difficulty)] += 1
+        signature[("source_label_user_turns", source, label, user_len)] += 1
+
+        if is_frontier(record):
             metadata = record.get("metadata", {}) or {}
             intended = record.get("intended_structure", {}) or {}
-            sig[("B_domain", str(record.get("target_domain", "unknown")))] += 1
-            sig[("B_slice", str(metadata.get("slice_role", "unknown")))] += 1
-            sig[("B_hardness", str(intended.get("pair_hardness", "unknown")))] += 1
-            sig[("B_trajectory", str(intended.get("trajectory_family", "unknown")))] += 1
+            author = frontier_author(record)
+            signature[("frontier_author", author)] += 1
+            signature[("frontier_author_label", author, label)] += 1
+            signature[("frontier_domain", str(record.get("target_domain", "unknown")))] += 1
+            signature[("frontier_slice_role", str(metadata.get("slice_role", "unknown")))] += 1
+            signature[("frontier_pair_hardness", str(intended.get("pair_hardness", "none")))] += 1
+            signature[("frontier_trajectory_family", str(intended.get("trajectory_family", "unknown")))] += 1
+            signature[("frontier_mechanism_family", str(metadata.get("mechanism_family", "unknown")))] += 1
+            signature[("frontier_style", str(record.get("style", "unknown")))] += 1
         else:
-            sig[("A_family", str(record.get("family", "unknown")))] += 1
-    return sig
+            signature[("legacy_family", str(record.get("family", "unknown")))] += 1
+    return signature
 
 
-def split_groups(
+def split_primary(
     groups: Dict[str, List[Dict]],
     *,
     fractions: Dict[str, float],
     seed: int,
 ) -> Dict[str, List[Dict]]:
     rng = random.Random(seed)
-    total = sum(len(group) for group in groups.values())
-    target_total = {name: total * fractions[name] for name in SPLITS}
-
-    global_sig = Counter()
-    for group in groups.values():
-        global_sig.update(group_signature(group))
-    target_sig = {
-        name: {key: value * fractions[name] for key, value in global_sig.items()}
-        for name in SPLITS
+    total_records = sum(len(group) for group in groups.values())
+    target_total = {
+        split_name: total_records * fractions[split_name]
+        for split_name in SPLITS
     }
 
-    assigned = {name: [] for name in SPLITS}
-    count = {name: 0 for name in SPLITS}
-    sig_count = {name: Counter() for name in SPLITS}
+    global_signature = Counter()
+    for group in groups.values():
+        global_signature.update(group_signature(group))
+    target_signature = {
+        split_name: {
+            key: value * fractions[split_name]
+            for key, value in global_signature.items()
+        }
+        for split_name in SPLITS
+    }
+
+    assigned = {split_name: [] for split_name in SPLITS}
+    counts = {split_name: 0 for split_name in SPLITS}
+    signature_counts = {split_name: Counter() for split_name in SPLITS}
 
     items = list(groups.items())
     rng.shuffle(items)
     items.sort(key=lambda item: len(item[1]), reverse=True)
 
     for group_id, group in items:
-        signature = group_signature(group)
-        candidates = []
+        group_sig = group_signature(group)
+        best_split = None
+        best_score = None
+
         for split_name in SPLITS:
             total_fill = (
-                count[split_name] + len(group)
+                counts[split_name] + len(group)
             ) / max(target_total[split_name], 1.0)
-            feature_fills = []
-            for key, amount in signature.items():
-                target = target_sig[split_name].get(key, 0.0)
-                if target > 0:
-                    feature_fills.append(
-                        (sig_count[split_name][key] + amount) / target
-                    )
-            feature_fill = (
-                sum(feature_fills) / len(feature_fills)
-                if feature_fills else total_fill
-            )
-            score = 0.72 * total_fill + 0.28 * feature_fill
-            candidates.append((score, rng.random(), split_name))
-        _, _, chosen = min(candidates)
-        assigned[chosen].append((group_id, group))
-        count[chosen] += len(group)
-        sig_count[chosen].update(signature)
 
-    result: Dict[str, List[Dict]] = {}
+            signature_fills = []
+            for key, amount in group_sig.items():
+                target = target_signature[split_name].get(key, 0.0)
+                if target > 0:
+                    signature_fills.append(
+                        (signature_counts[split_name][key] + amount) / target
+                    )
+            signature_fill = (
+                sum(signature_fills) / len(signature_fills)
+                if signature_fills else total_fill
+            )
+
+            score = (
+                0.72 * total_fill
+                + 0.28 * signature_fill
+                + rng.random() * 1e-9
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_split = split_name
+
+        assigned[best_split].append((group_id, group))
+        counts[best_split] += len(group)
+        signature_counts[best_split].update(group_sig)
+
+    output: Dict[str, List[Dict]] = {}
     for split_name in SPLITS:
-        result[split_name] = [
+        output[split_name] = [
             record
             for _, group in assigned[split_name]
             for record in group
         ]
-        rng.shuffle(result[split_name])
-    return result
+        rng.shuffle(output[split_name])
+    return output
 
 
-def assert_primary_split_integrity(splits: Dict[str, List[Dict]]) -> None:
-    id_owner: Dict[str, str] = {}
-    pair_owner: Dict[Tuple[str, str], str] = {}
-    group_owner: Dict[str, str] = {}
-    hash_owner: Dict[str, str] = {}
-
-    for split_name, records in splits.items():
-        for record in records:
-            cid = str(record.get("conversation_id", ""))
-            if cid in id_owner:
-                raise RuntimeError(
-                    f"conversation {cid} appears in {id_owner[cid]} and {split_name}"
-                )
-            id_owner[cid] = split_name
-
-            metadata = record.get("metadata", {}) or {}
-            group = str(metadata.get("consolidated_split_group", ""))
-            previous = group_owner.setdefault(group, split_name)
-            if previous != split_name:
-                raise RuntimeError(
-                    f"group {group} appears in {previous} and {split_name}"
-                )
-
-            trajectory_hash = str(metadata.get("normalized_user_trajectory_hash", ""))
-            previous = hash_owner.setdefault(trajectory_hash, split_name)
-            if previous != split_name:
-                raise RuntimeError(
-                    "normalized user trajectory appears across primary splits"
-                )
-
-            pair_id = str(record.get("pair_id", ""))
-            key = (str(record.get("corpus_source")), pair_id)
-            previous = pair_owner.setdefault(key, split_name)
-            if previous != split_name:
-                raise RuntimeError(
-                    f"pair {key} appears in {previous} and {split_name}"
-                )
-
-
-def check_split_ratios(
+def assert_primary_split_integrity(
     splits: Dict[str, List[Dict]],
     fractions: Dict[str, float],
-    max_group: int,
+    max_group_size: int,
 ) -> None:
+    group_owner = {}
+    pair_owner = {}
+    scenario_owner = {}
+    hash_owner = {}
+    ids = set()
+
+    for split_name, records in splits.items():
+        if not records:
+            raise RuntimeError(f"primary split {split_name} is empty")
+
+        for record in records:
+            cid = str(record.get("conversation_id", ""))
+            if cid in ids:
+                raise RuntimeError(
+                    f"duplicate primary conversation_id across splits: {cid}"
+                )
+            ids.add(cid)
+
+            metadata = record.get("metadata", {}) or {}
+            group = str(metadata.get("consolidated_split_group", "")).strip()
+            prior = group_owner.setdefault(group, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    f"primary group leakage: {group} in {prior} and {split_name}"
+                )
+
+            trajectory_hash = str(
+                metadata.get("normalized_user_trajectory_hash", "")
+            ).strip()
+            prior = hash_owner.setdefault(trajectory_hash, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    "exact primary user-trajectory leakage across splits"
+                )
+
+            pair_id = str(record.get("pair_id", "")).strip()
+            pair_key = (str(record.get("corpus_source")), pair_id)
+            prior = pair_owner.setdefault(pair_key, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    f"primary pair leakage: {pair_key} in {prior} and {split_name}"
+                )
+
+            if is_frontier(record):
+                scenario = b_scenario(record)
+                prior = scenario_owner.setdefault(scenario, split_name)
+                if prior != split_name:
+                    raise RuntimeError(
+                        f"B scenario leakage: {scenario} in {prior} and {split_name}"
+                    )
+
     total = sum(len(records) for records in splits.values())
-    tolerance = max_group / total + 0.005
+    tolerance = max_group_size / total + 0.005
     for split_name in SPLITS:
         actual = len(splits[split_name]) / total
         if abs(actual - fractions[split_name]) > tolerance:
             raise RuntimeError(
-                f"{split_name} ratio {actual:.4f} exceeds tolerance "
-                f"around target {fractions[split_name]:.4f}"
+                f"{split_name} primary ratio={actual:.4f} differs from target "
+                f"{fractions[split_name]:.4f} beyond tolerance={tolerance:.4f}"
             )
 
 
-def detection_label(record: Dict) -> int:
-    value = (
-        record.get("detection_label")
-        if (
-            record.get("auxiliary_detection_only") is True
-            or record.get("use_as") == "auxiliary_detection_only"
-        )
-        else record.get("label")
+# -------------------------------
+# Auxiliary attachment
+# -------------------------------
+
+def index_primary_ownership(
+    splits: Dict[str, List[Dict]],
+) -> Tuple[Dict[str, str], Dict[str, str], set]:
+    group_owner: Dict[str, str] = {}
+    hash_owner: Dict[str, str] = {}
+    ids = set()
+
+    for split_name, records in splits.items():
+        for record in records:
+            cid = str(record.get("conversation_id", ""))
+            if cid in ids:
+                raise RuntimeError(f"duplicate primary ID while indexing: {cid}")
+            ids.add(cid)
+
+            metadata = record.get("metadata", {}) or {}
+            group = str(metadata.get("consolidated_split_group", "")).strip()
+            trajectory_hash = str(
+                metadata.get("normalized_user_trajectory_hash", "")
+            ).strip()
+            if not group or not trajectory_hash:
+                raise RuntimeError(f"{cid}: primary group/hash missing")
+
+            prior = group_owner.setdefault(group, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    f"primary group ownership conflict for {group}"
+                )
+            prior = hash_owner.setdefault(trajectory_hash, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    "primary exact trajectory ownership conflict"
+                )
+
+    return group_owner, hash_owner, ids
+
+
+def canonicalize_a_aux(record: Dict) -> Dict:
+    out = copy.deepcopy(record)
+    out["corpus_source"] = "legacy_detection_aux"
+    metadata = out.setdefault("metadata", {})
+    metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
+    metadata["observable_turn_hash"] = observable_turn_hash(out)
+    return out
+
+
+def attach_auxiliary(
+    splits: Dict[str, List[Dict]],
+    a_aux: Sequence[Dict],
+    b_aux: Sequence[Dict],
+) -> Tuple[Dict[str, List[Dict]], List[Dict], List[Dict], Dict]:
+    group_owner, hash_owner, primary_ids = index_primary_ownership(splits)
+
+    # A auxiliary is independently generated and intentionally train-only.
+    # Any exact overlap with primary is unexpected and therefore fail-closed.
+    seen_ids = set(primary_ids)
+    seen_hashes = set(hash_owner)
+    included_a: List[Dict] = []
+
+    for original in a_aux:
+        record = canonicalize_a_aux(original)
+        cid = str(record.get("conversation_id", ""))
+        trajectory_hash = normalized_user_hash(record)
+
+        if cid in seen_ids:
+            raise RuntimeError(
+                f"A auxiliary conversation_id overlaps primary material: {cid}"
+            )
+        if trajectory_hash in seen_hashes:
+            raise RuntimeError(
+                f"A auxiliary exact user trajectory overlaps primary material: {cid}"
+            )
+        seen_ids.add(cid)
+        seen_hashes.add(trajectory_hash)
+        included_a.append(record)
+
+    # B auxiliary follows the frozen optimized-branch attachment policy.
+    included_b: List[Dict] = []
+    withheld_b: List[Dict] = []
+    disposition = Counter()
+    included_b_labels = Counter()
+    included_b_groups = set()
+
+    for original in b_aux:
+        record = copy.deepcopy(original)
+        cid = str(record.get("conversation_id", ""))
+        if cid in seen_ids:
+            raise RuntimeError(
+                f"B auxiliary conversation_id collides with primary/A auxiliary: {cid}"
+            )
+        seen_ids.add(cid)
+
+        metadata = record.get("metadata", {}) or {}
+        group = str(metadata.get("consolidated_split_group", "")).strip()
+        trajectory_hash = str(
+            metadata.get("normalized_user_trajectory_hash", "")
+        ).strip()
+        if not group or not trajectory_hash:
+            raise RuntimeError(f"{cid}: B auxiliary missing frozen group/hash")
+
+        # Cross-A/B exact auxiliary duplication is an independent-corpus defect.
+        if trajectory_hash in seen_hashes and trajectory_hash not in hash_owner:
+            raise RuntimeError(
+                f"B auxiliary exact trajectory duplicates A auxiliary: {cid}"
+            )
+
+        owner = group_owner.get(group)
+        exact_owner = hash_owner.get(trajectory_hash)
+        reason = None
+        if owner in {"dev", "test"}:
+            reason = f"primary_{owner}_family"
+        elif exact_owner in {"dev", "test"}:
+            reason = f"primary_{exact_owner}_exact_user_trajectory"
+
+        if reason is not None:
+            withheld = copy.deepcopy(record)
+            withheld["auxiliary_withheld_reason"] = reason
+            withheld_b.append(withheld)
+            disposition[f"withheld_{reason}"] += 1
+            continue
+
+        included_b.append(record)
+        included_b_labels[int(record["detection_label"])] += 1
+        included_b_groups.add(group)
+        disposition[
+            "included_primary_train_family"
+            if owner == "train"
+            else "included_aux_only_family"
+        ] += 1
+        seen_hashes.add(trajectory_hash)
+
+    train_with_aux = (
+        list(splits["train"])
+        + included_a
+        + included_b
     )
+
+    return (
+        {
+            "train": train_with_aux,
+            "dev": list(splits["dev"]),
+            "test": list(splits["test"]),
+        },
+        included_b,
+        withheld_b,
+        {
+            "primary_records": {
+                split_name: len(splits[split_name])
+                for split_name in SPLITS
+            },
+            "a_auxiliary_input": len(a_aux),
+            "a_auxiliary_included": len(included_a),
+            "b_auxiliary_input": len(b_aux),
+            "b_auxiliary_included": len(included_b),
+            "b_auxiliary_withheld": len(withheld_b),
+            "b_auxiliary_included_detection_labels": dict(
+                sorted(included_b_labels.items())
+            ),
+            "b_auxiliary_included_groups": len(included_b_groups),
+            "b_auxiliary_disposition": dict(sorted(disposition.items())),
+            "policy": (
+                "freeze primary split; add all non-overlapping independent A "
+                "auxiliary to train; add B auxiliary only when scenario-family "
+                "and exact-user-trajectory ownership do not belong to primary "
+                "dev/test"
+            ),
+            "dev_test_primary_only": True,
+            "dev_test_copy_policy": "byte_for_byte_from_frozen_primary_inputs",
+        },
+    )
+
+
+# -------------------------------
+# Shortcut diagnostics
+# -------------------------------
+
+def detection_label(record: Dict) -> int:
+    if (
+        record.get("auxiliary_detection_only") is True
+        or record.get("use_as") == "auxiliary_detection_only"
+    ):
+        value = record.get("detection_label")
+    else:
+        value = record.get("label")
     if isinstance(value, bool) or value not in (0, 1):
         raise RuntimeError(
             f"{record.get('conversation_id')}: invalid effective detection label"
@@ -554,308 +989,184 @@ def detection_weight(record: Dict) -> float:
         or float(value) <= 0
     ):
         raise RuntimeError(
-            f"{record.get('conversation_id')}: invalid effective detection weight"
+            f"{record.get('conversation_id')}: invalid detection weight={value!r}"
         )
     return float(value)
 
 
-def weighted_auc(records: Sequence[Dict]) -> float:
-    positives = [
-        (user_turns(r), detection_weight(r))
-        for r in records if detection_label(r) == 1
-    ]
-    negatives = [
-        (user_turns(r), detection_weight(r))
-        for r in records if detection_label(r) == 0
-    ]
+def turn_auc(records: Sequence[Dict], *, weighted: bool) -> float:
+    positives = []
+    negatives = []
+    for record in records:
+        item = (
+            n_user_turns(record),
+            detection_weight(record) if weighted else 1.0,
+        )
+        if detection_label(record) == 1:
+            positives.append(item)
+        else:
+            negatives.append(item)
+
+    if not positives or not negatives:
+        raise RuntimeError("turn-count AUC requires both detection classes")
     pos_mass = sum(weight for _, weight in positives)
     neg_mass = sum(weight for _, weight in negatives)
-    if not positives or not negatives or pos_mass <= 0 or neg_mass <= 0:
-        raise RuntimeError("turn-count AUC requires both classes")
+
     credit = 0.0
     for p_value, p_weight in positives:
         for n_value, n_weight in negatives:
-            c = 1.0 if p_value > n_value else 0.5 if p_value == n_value else 0.0
-            credit += c * p_weight * n_weight
+            if p_value > n_value:
+                pair_credit = 1.0
+            elif p_value == n_value:
+                pair_credit = 0.5
+            else:
+                pair_credit = 0.0
+            credit += pair_credit * p_weight * n_weight
+
     return credit / (pos_mass * neg_mass)
 
 
-def unweighted_auc(records: Sequence[Dict]) -> float:
-    copied = []
-    for record in records:
-        item = copy.deepcopy(record)
-        if (
-            item.get("auxiliary_detection_only") is True
-            or item.get("use_as") == "auxiliary_detection_only"
-        ):
-            item["detection_loss_weight"] = 1.0
-        copied.append(item)
-    return weighted_auc(copied)
-
-
-def threshold_balanced_accuracy(
+def threshold_diagnostic(
     records: Sequence[Dict],
     threshold: int,
     *,
     weighted: bool,
 ) -> Dict:
-    pos_total = neg_total = tp = tn = 0.0
+    pos_mass = neg_mass = tp = tn = 0.0
+
     for record in records:
         label = detection_label(record)
         weight = detection_weight(record) if weighted else 1.0
-        pred = 1 if user_turns(record) > threshold else 0
+        pred = int(n_user_turns(record) > threshold)
+
         if label == 1:
-            pos_total += weight
+            pos_mass += weight
             if pred == 1:
                 tp += weight
         else:
-            neg_total += weight
+            neg_mass += weight
             if pred == 0:
                 tn += weight
-    if pos_total <= 0 or neg_total <= 0:
-        raise RuntimeError("threshold diagnostic requires both detection classes")
-    tpr = tp / pos_total
-    tnr = tn / neg_total
+
+    if pos_mass <= 0 or neg_mass <= 0:
+        raise RuntimeError("threshold diagnostic requires both classes")
+
+    tpr = tp / pos_mass
+    tnr = tn / neg_mass
     return {
-        "threshold": threshold,
         "rule": f"predict malicious iff n_user_turns > {threshold}",
+        "threshold": threshold,
         "tpr": tpr,
         "tnr": tnr,
         "balanced_accuracy": 0.5 * (tpr + tnr),
     }
 
 
-def corpus_family(record: Dict) -> str:
+def source_family(record: Dict) -> str:
     source = str(record.get("corpus_source", ""))
     if source in {"legacy_restored_primary", "legacy_detection_aux"}:
         return "A"
-    if source in {"frontier_authored_v3", "frontier_detection_aux"}:
+    if source in {B_AUX_SOURCE, "frontier_authored_v3"}:
         return "B"
     return source or "unknown"
 
 
-def source_diagnostics(records: Sequence[Dict]) -> Dict:
-    out = {}
-    for family in sorted({corpus_family(r) for r in records}):
-        subset = [r for r in records if corpus_family(r) == family]
-        labels = Counter(detection_label(r) for r in subset)
-        item = {
-            "records": len(subset),
-            "labels": dict(labels),
-            "mean_user_turns": {
-                str(label): (
-                    sum(user_turns(r) for r in subset if detection_label(r) == label)
-                    / labels[label]
-                )
-                for label in sorted(labels)
-            },
-        }
-        if labels.get(0, 0) and labels.get(1, 0):
-            item.update({
-                "turn_count_auc_unweighted": unweighted_auc(subset),
-                "turn_count_auc_detection_weighted": weighted_auc(subset),
-                "gt_10_unweighted": threshold_balanced_accuracy(
-                    subset, 10, weighted=False
-                ),
-                "gt_10_detection_weighted": threshold_balanced_accuracy(
-                    subset, 10, weighted=True
-                ),
-            })
-        out[family] = item
-    return out
-
-
-def describe(records: Sequence[Dict]) -> Dict:
-    return {
+def diagnostic_block(records: Sequence[Dict]) -> Dict:
+    labels = Counter(detection_label(record) for record in records)
+    result = {
         "records": len(records),
-        "labels": dict(Counter(str(detection_label(r)) for r in records)),
-        "primary_labels": dict(
-            Counter(
-                str(r.get("label"))
-                for r in records
-                if not (
-                    r.get("auxiliary_detection_only") is True
-                    or r.get("use_as") == "auxiliary_detection_only"
+        "labels": dict(sorted(labels.items())),
+        "mean_user_turns": {
+            str(label): (
+                sum(
+                    n_user_turns(record)
+                    for record in records
+                    if detection_label(record) == label
                 )
+                / labels[label]
             )
-        ),
-        "corpus_source": dict(
-            Counter(str(r.get("corpus_source", "unknown")) for r in records)
-        ),
-        "auxiliary_records": sum(
-            1 for r in records
-            if (
-                r.get("auxiliary_detection_only") is True
-                or r.get("use_as") == "auxiliary_detection_only"
-            )
-        ),
-        "max_physical_turns": max(len(r.get("turns", [])) for r in records),
-        "turn_count_auc_unweighted": unweighted_auc(records),
-        "turn_count_auc_detection_weighted": weighted_auc(records),
-        "gt_10_unweighted": threshold_balanced_accuracy(
-            records, 10, weighted=False
-        ),
-        "gt_10_detection_weighted": threshold_balanced_accuracy(
-            records, 10, weighted=True
-        ),
-        "source_diagnostics": source_diagnostics(records),
+            for label in sorted(labels)
+        },
+        "max_physical_turns": max(len(record.get("turns", [])) for record in records),
     }
 
+    if labels.get(0, 0) and labels.get(1, 0):
+        result.update({
+            "turn_count_auc_unweighted": turn_auc(records, weighted=False),
+            "turn_count_auc_detection_weighted": turn_auc(records, weighted=True),
+            "gt_10_unweighted": threshold_diagnostic(
+                records, 10, weighted=False
+            ),
+            "gt_10_detection_weighted": threshold_diagnostic(
+                records, 10, weighted=True
+            ),
+        })
 
-def make_aux_copy(record: Dict, source: str) -> Dict:
-    out = copy.deepcopy(record)
-    out["corpus_source"] = source
-    metadata = out.setdefault("metadata", {})
-    metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
-    metadata["observable_turn_hash"] = physical_turn_hash(out)
-    return out
-
-
-def filter_aux_against_primary_and_each_other(
-    a_aux: Sequence[Dict],
-    b_aux: Sequence[Dict],
-    primary: Sequence[Dict],
-) -> Tuple[List[Dict], List[Dict], Dict]:
-    forbidden_ids = {str(r.get("conversation_id", "")) for r in primary}
-    forbidden_hashes = {normalized_user_hash(r) for r in primary}
-
-    seen_ids = set(forbidden_ids)
-    seen_hashes = set(forbidden_hashes)
-    kept_a: List[Dict] = []
-    kept_b: List[Dict] = []
-    excluded = Counter()
-
-    for source_name, records, target in (
-        ("A_aux", a_aux, kept_a),
-        ("B_aux", b_aux, kept_b),
-    ):
-        for record in records:
-            cid = str(record.get("conversation_id", ""))
-            h = normalized_user_hash(record)
-            reason = None
-            if cid in seen_ids:
-                reason = "conversation_id_overlap"
-            elif h in seen_hashes:
-                reason = "normalized_user_trajectory_overlap"
-            if reason:
-                excluded[f"{source_name}:{reason}"] += 1
-                continue
-            seen_ids.add(cid)
-            seen_hashes.add(h)
-            target.append(
-                make_aux_copy(
-                    record,
-                    "legacy_detection_aux" if source_name == "A_aux"
-                    else "frontier_detection_aux",
-                )
-            )
-
-    return kept_a, kept_b, dict(excluded)
+    return result
 
 
-def assert_b_aux_no_eval_group_leakage(
-    b_aux: Sequence[Dict],
-    splits: Dict[str, List[Dict]],
-) -> Dict:
-    """B auxiliary may join train only if it does not belong to a dev/test B group."""
-    primary_groups = {}
-    for split_name, records in splits.items():
-        pair_ids = {
-            str(r.get("pair_id"))
-            for r in records
-            if r.get("corpus_source") == "frontier_authored_v3"
-            and r.get("pair_id") not in (None, "")
-        }
-        scenarios = {
-            frontier_scenario(r)
-            for r in records
-            if r.get("corpus_source") == "frontier_authored_v3"
-            and frontier_scenario(r)
-        }
-        primary_groups[split_name] = {
-            "pair_ids": pair_ids,
-            "scenarios": scenarios,
-        }
-
-    overlaps = Counter()
-    examples = []
-    missing_group_identity = []
-    for record in b_aux:
-        cid = str(record.get("conversation_id", ""))
-        pair_id = str(record.get("pair_id", ""))
-        scenario = frontier_scenario(record)
-
-        if not pair_id and not scenario:
-            missing_group_identity.append(cid)
-            continue
-
-        for split_name in ("dev", "test"):
-            if pair_id and pair_id in primary_groups[split_name]["pair_ids"]:
-                overlaps[f"{split_name}:pair_id"] += 1
-                examples.append((cid, split_name, "pair_id", pair_id))
-            if scenario and scenario in primary_groups[split_name]["scenarios"]:
-                overlaps[f"{split_name}:scenario_family"] += 1
-                examples.append((cid, split_name, "scenario_family", scenario))
-
-    if missing_group_identity:
-        raise RuntimeError(
-            "B auxiliary contains records with neither pair_id nor scenario_family; "
-            "cannot prove train/dev/test group independence. examples="
-            f"{missing_group_identity[:10]}"
-        )
-    if overlaps:
-        raise RuntimeError(
-            "B auxiliary would leak primary dev/test grouping information into "
-            f"training: counts={dict(overlaps)} examples={examples[:10]}"
-        )
-
-    train_pair_overlap = sum(
-        1 for r in b_aux
-        if str(r.get("pair_id", ""))
-        and str(r.get("pair_id", "")) in primary_groups["train"]["pair_ids"]
+def describe_training_view(records: Sequence[Dict]) -> Dict:
+    result = diagnostic_block(records)
+    result["corpus_source"] = dict(
+        Counter(str(record.get("corpus_source", "unknown")) for record in records)
     )
-    train_scenario_overlap = sum(
-        1 for r in b_aux
-        if frontier_scenario(r)
-        and frontier_scenario(r) in primary_groups["train"]["scenarios"]
+    result["auxiliary_records"] = sum(
+        1
+        for record in records
+        if (
+            record.get("auxiliary_detection_only") is True
+            or record.get("use_as") == "auxiliary_detection_only"
+        )
     )
-    return {
-        "dev_test_group_overlap": 0,
-        "train_pair_id_overlap": train_pair_overlap,
-        "train_scenario_family_overlap": train_scenario_overlap,
-        "records_without_pair_id": sum(
-            1 for r in b_aux if r.get("pair_id") in (None, "")
-        ),
-        "records_without_scenario_family": sum(
-            1 for r in b_aux if not frontier_scenario(r)
-        ),
+    result["source_diagnostics"] = {
+        family: diagnostic_block(
+            [record for record in records if source_family(record) == family]
+        )
+        for family in sorted({source_family(record) for record in records})
     }
+    return result
 
+
+def describe_primary_split(records: Sequence[Dict]) -> Dict:
+    result = diagnostic_block(records)
+    result["corpus_source"] = dict(
+        Counter(str(record.get("corpus_source", "unknown")) for record in records)
+    )
+    result["source_label"] = dict(
+        Counter(
+            f"{record.get('corpus_source')}|{record.get('label')}"
+            for record in records
+        )
+    )
+    result["groups"] = len({
+        (record.get("metadata", {}) or {}).get("consolidated_split_group")
+        for record in records
+    })
+    result["source_diagnostics"] = {
+        family: diagnostic_block(
+            [record for record in records if source_family(record) == family]
+        )
+        for family in sorted({source_family(record) for record in records})
+    }
+    return result
+
+
+# -------------------------------
+# Main
+# -------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--a-primary", required=True)
-    parser.add_argument("--b-primary", required=True)
     parser.add_argument("--a-aux", required=True)
+    parser.add_argument("--b-primary", required=True)
     parser.add_argument("--b-aux", required=True)
-    parser.add_argument("--b-primary-sha256", required=True)
-    parser.add_argument("--b-aux-sha256", required=True)
-    parser.add_argument("--expected-b-target-model", default=DEFAULT_B_TARGET)
-    parser.add_argument("--expected-b-judge-model", default=DEFAULT_B_JUDGE)
-    parser.add_argument(
-        "--a-primary-sha256",
-        default=EXPECTED_A_PRIMARY_SHA256,
-    )
-    parser.add_argument(
-        "--a-aux-sha256",
-        default=EXPECTED_A_AUX_SHA256,
-    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-frac", type=float, default=0.70)
     parser.add_argument("--dev-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
-    parser.add_argument("--max-turns", type=int, default=64)
+    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     args = parser.parse_args()
 
     fractions = {
@@ -864,240 +1175,225 @@ def main() -> None:
         "test": args.test_frac,
     }
     if not math.isclose(sum(fractions.values()), 1.0, abs_tol=1e-9):
-        raise RuntimeError("split fractions must sum to 1")
+        raise RuntimeError("train/dev/test fractions must sum to 1")
     if min(fractions.values()) <= 0:
         raise RuntimeError("all split fractions must be positive")
+    if args.max_turns <= 0:
+        raise RuntimeError("--max-turns must be positive")
 
-    input_paths = {
-        "a_primary": args.a_primary,
-        "b_primary": args.b_primary,
-        "a_aux": args.a_aux,
-        "b_aux": args.b_aux,
+    # Verify immutable input identities before parsing or writing anything.
+    input_hashes = {
+        "a_primary": require_sha(args.a_primary, A_PRIMARY_SHA256, "A primary"),
+        "a_aux": require_sha(args.a_aux, A_AUX_SHA256, "A auxiliary"),
+        "b_primary": require_sha(args.b_primary, B_PRIMARY_SHA256, "B primary"),
+        "b_aux": require_sha(args.b_aux, B_AUX_SHA256, "B auxiliary"),
     }
-    actual_hashes = {name: sha256_file(path) for name, path in input_paths.items()}
-    expected_hashes = {
-        "a_primary": args.a_primary_sha256,
-        "b_primary": args.b_primary_sha256,
-        "a_aux": args.a_aux_sha256,
-        "b_aux": args.b_aux_sha256,
-    }
-    mismatches = {
-        name: {"expected": expected_hashes[name], "actual": actual_hashes[name]}
-        for name in input_paths
-        if actual_hashes[name] != expected_hashes[name]
-    }
-    if mismatches:
-        raise RuntimeError(f"input SHA-256 mismatch: {mismatches}")
 
     a_primary = load_jsonl(args.a_primary)
-    b_primary = load_jsonl(args.b_primary)
     a_aux = load_jsonl(args.a_aux)
+    b_primary = load_jsonl(args.b_primary)
     b_aux = load_jsonl(args.b_aux)
 
     validate_a_primary(a_primary, args.max_turns)
-    validate_b_primary(
-        b_primary,
-        args.max_turns,
-        expected_target=args.expected_b_target_model,
-        expected_judge=args.expected_b_judge_model,
-    )
-    validate_aux(
-        a_aux,
-        name="A-aux",
-        expected_records=A_AUX_RECORDS,
-        max_turns=args.max_turns,
-        expected_labels=Counter({0: A_AUX_RECORDS}),
-        expected_weight=1.0,
-    )
-    validate_aux(
-        b_aux,
-        name="B-aux",
-        expected_records=B_AUX_RECORDS,
-        max_turns=args.max_turns,
-        expected_labels=B_AUX_LABELS,
-        expected_weight=B_AUX_DETECTION_WEIGHT,
-    )
+    validate_a_aux(a_aux, args.max_turns)
+    validate_b_primary(b_primary, args.max_turns)
+    validate_b_aux(b_aux, args.max_turns)
 
     primary = [
-        canonical_primary_record(record, "A") for record in a_primary
+        canonicalize_a_primary(record) for record in a_primary
     ] + [
-        canonical_primary_record(record, "B") for record in b_primary
+        canonicalize_b_primary(record) for record in b_primary
     ]
-    if len(primary) != A_PRIMARY_RECORDS + B_PRIMARY_RECORDS:
-        raise RuntimeError("unexpected consolidated primary record count")
-    if Counter(r.get("label") for r in primary) != Counter({0: 1217, 1: 1217}):
-        raise RuntimeError("consolidated primary is not exactly 1217/1217 balanced")
 
-    assert_global_primary_uniqueness(primary)
+    if len(primary) != 2434:
+        raise RuntimeError(f"consolidated primary expected 2434, got {len(primary)}")
+    labels = Counter(record.get("label") for record in primary)
+    if labels != Counter({0: 1217, 1: 1217}):
+        raise RuntimeError(
+            f"consolidated primary must be 1217/1217 balanced, got {dict(labels)}"
+        )
+
+    assert_primary_cross_corpus_integrity(primary)
     groups = group_records(primary)
-    splits = split_groups(groups, fractions=fractions, seed=args.seed)
-    assert_primary_split_integrity(splits)
-    check_split_ratios(
+    splits = split_primary(groups, fractions=fractions, seed=args.seed)
+    assert_primary_split_integrity(
         splits,
         fractions,
-        max_group=max(len(group) for group in groups.values()),
+        max_group_size=max(len(group) for group in groups.values()),
     )
-    b_aux_group_audit = assert_b_aux_no_eval_group_leakage(b_aux, splits)
 
-    kept_a_aux, kept_b_aux, aux_exclusions = filter_aux_against_primary_and_each_other(
-        a_aux, b_aux, primary
+    candidate_splits, included_b_aux, withheld_b_aux, attachment = attach_auxiliary(
+        splits,
+        a_aux,
+        b_aux,
     )
-    if len(kept_a_aux) != A_AUX_RECORDS:
-        raise RuntimeError(
-            f"A auxiliary overlap removed {A_AUX_RECORDS - len(kept_a_aux)} records; "
-            "review before freezing"
-        )
-    if len(kept_b_aux) != B_AUX_RECORDS:
-        raise RuntimeError(
-            f"B auxiliary overlap removed {B_AUX_RECORDS - len(kept_b_aux)} records; "
-            "review before freezing"
-        )
 
+    # Deterministic training order after attachment.
     rng = random.Random(args.seed)
-    train_with_aux = (
-        list(splits["train"]) + list(kept_a_aux) + list(kept_b_aux)
-    )
-    rng.shuffle(train_with_aux)
+    rng.shuffle(candidate_splits["train"])
 
-    # Aux must be train-only. Dev/test are exact primary subsets.
-    primary_dev_ids = {str(r.get("conversation_id", "")) for r in splits["dev"]}
-    primary_test_ids = {str(r.get("conversation_id", "")) for r in splits["test"]}
-    aux_ids = {
-        str(r.get("conversation_id", ""))
-        for r in list(kept_a_aux) + list(kept_b_aux)
-    }
-    if aux_ids & primary_dev_ids or aux_ids & primary_test_ids:
-        raise RuntimeError("auxiliary record leaked into dev/test")
-
-    # Emit the exact layout consumed by GuardLens-Transformer/train_naacl.slurm.
-    os.makedirs(args.output_dir, exist_ok=True)
+    ensure_fresh_output_dir(args.output_dir)
     primary_dir = os.path.join(args.output_dir, "splits_primary")
-    aux_dir = os.path.join(args.output_dir, "splits_primary_plus_train_auxiliary")
-    os.makedirs(primary_dir, exist_ok=True)
-    os.makedirs(aux_dir, exist_ok=True)
+    candidate_dir = os.path.join(
+        args.output_dir, "splits_primary_plus_train_auxiliary"
+    )
+    os.makedirs(primary_dir, exist_ok=False)
+    os.makedirs(candidate_dir, exist_ok=False)
 
-    primary_path = os.path.join(args.output_dir, "primary_all.jsonl")
-    train_path = os.path.join(primary_dir, "train.jsonl")
-    dev_path = os.path.join(primary_dir, "dev.jsonl")
-    test_path = os.path.join(primary_dir, "test.jsonl")
-    train_aux_path = os.path.join(aux_dir, "train.jsonl")
-    aux_dev_path = os.path.join(aux_dir, "dev.jsonl")
-    aux_test_path = os.path.join(aux_dir, "test.jsonl")
-    a_aux_path = os.path.join(args.output_dir, "a_detection_aux.jsonl")
-    b_aux_path = os.path.join(args.output_dir, "b_detection_aux.jsonl")
+    primary_all_path = os.path.join(args.output_dir, "primary_all.jsonl")
+    primary_train_path = os.path.join(primary_dir, "train.jsonl")
+    primary_dev_path = os.path.join(primary_dir, "dev.jsonl")
+    primary_test_path = os.path.join(primary_dir, "test.jsonl")
 
-    write_jsonl(primary, primary_path)
-    write_jsonl(splits["train"], train_path)
-    write_jsonl(splits["dev"], dev_path)
-    write_jsonl(splits["test"], test_path)
-    write_jsonl(train_with_aux, train_aux_path)
-    # Auxiliary candidate changes TRAIN only. Copy bytes so identity is literal.
-    shutil.copyfile(dev_path, aux_dev_path)
-    shutil.copyfile(test_path, aux_test_path)
-    write_jsonl(kept_a_aux, a_aux_path)
-    write_jsonl(kept_b_aux, b_aux_path)
+    candidate_train_path = os.path.join(candidate_dir, "train.jsonl")
+    candidate_dev_path = os.path.join(candidate_dir, "dev.jsonl")
+    candidate_test_path = os.path.join(candidate_dir, "test.jsonl")
 
-    if sha256_file(dev_path) != sha256_file(aux_dev_path):
-        raise RuntimeError("auxiliary candidate dev is not byte-identical to primary dev")
-    if sha256_file(test_path) != sha256_file(aux_test_path):
-        raise RuntimeError("auxiliary candidate test is not byte-identical to primary test")
+    a_aux_path = os.path.join(args.output_dir, "a_detection_aux_721.jsonl")
+    b_aux_input_path = os.path.join(args.output_dir, "b_detection_aux_512.jsonl")
+    b_aux_included_path = os.path.join(
+        args.output_dir, "b_detection_aux_included_train.jsonl"
+    )
+    b_aux_withheld_path = os.path.join(
+        args.output_dir, "b_detection_aux_withheld.jsonl"
+    )
 
-    output_hashes = {
-        name: sha256_file(path)
-        for name, path in {
-            "primary_all": primary_path,
-            "primary_train": train_path,
-            "primary_dev": dev_path,
-            "primary_test": test_path,
-            "auxiliary_candidate_train": train_aux_path,
-            "auxiliary_candidate_dev": aux_dev_path,
-            "auxiliary_candidate_test": aux_test_path,
-            "a_detection_aux": a_aux_path,
-            "b_detection_aux": b_aux_path,
-        }.items()
+    write_jsonl(primary, primary_all_path)
+    write_jsonl(splits["train"], primary_train_path)
+    write_jsonl(splits["dev"], primary_dev_path)
+    write_jsonl(splits["test"], primary_test_path)
+
+    write_jsonl(candidate_splits["train"], candidate_train_path)
+    shutil.copyfile(primary_dev_path, candidate_dev_path)
+    shutil.copyfile(primary_test_path, candidate_test_path)
+
+    write_jsonl(
+        [canonicalize_a_aux(record) for record in a_aux],
+        a_aux_path,
+    )
+    write_jsonl(b_aux, b_aux_input_path)
+    write_jsonl(included_b_aux, b_aux_included_path)
+    write_jsonl(withheld_b_aux, b_aux_withheld_path)
+
+    if sha256_file(primary_dev_path) != sha256_file(candidate_dev_path):
+        raise RuntimeError("candidate dev is not byte-identical to primary dev")
+    if sha256_file(primary_test_path) != sha256_file(candidate_test_path):
+        raise RuntimeError("candidate test is not byte-identical to primary test")
+
+    artifact_paths = {
+        "primary_all": primary_all_path,
+        "primary_train": primary_train_path,
+        "primary_dev": primary_dev_path,
+        "primary_test": primary_test_path,
+        "auxiliary_candidate_train": candidate_train_path,
+        "auxiliary_candidate_dev": candidate_dev_path,
+        "auxiliary_candidate_test": candidate_test_path,
+        "a_auxiliary": a_aux_path,
+        "b_auxiliary_input": b_aux_input_path,
+        "b_auxiliary_included": b_aux_included_path,
+        "b_auxiliary_withheld": b_aux_withheld_path,
+    }
+    artifact_hashes = {
+        name: sha256_file(path) for name, path in artifact_paths.items()
     }
 
-    metadata = {
-        "input_integrity": {
-            "actual_sha256": actual_hashes,
-            "expected_sha256": expected_hashes,
-        },
+    primary_descriptions = {
+        split_name: describe_primary_split(splits[split_name])
+        for split_name in SPLITS
+    }
+    training_description = describe_training_view(candidate_splits["train"])
+
+    manifest = {
+        "status": "passed",
+        "input_sha256": input_hashes,
         "counts": {
             "primary_all": len(primary),
             "a_primary": len(a_primary),
             "b_primary": len(b_primary),
-            "a_detection_aux": len(kept_a_aux),
-            "b_detection_aux": len(kept_b_aux),
-            "train_primary": len(splits["train"]),
-            "dev_primary": len(splits["dev"]),
-            "test_primary": len(splits["test"]),
-            "train_with_aux": len(train_with_aux),
+            "a_auxiliary_input": len(a_aux),
+            "b_auxiliary_input": len(b_aux),
+            "primary_splits": {
+                split_name: len(splits[split_name])
+                for split_name in SPLITS
+            },
+            "candidate_train": len(candidate_splits["train"]),
+            "b_auxiliary_included": len(included_b_aux),
+            "b_auxiliary_withheld": len(withheld_b_aux),
         },
-        "primary_splits": {
-            name: describe(records) for name, records in splits.items()
-        },
-        "train_with_aux": describe(train_with_aux),
-        "auxiliary_exclusions": aux_exclusions,
-        "b_aux_group_audit": b_aux_group_audit,
+        "primary_splits": primary_descriptions,
+        "train_with_auxiliary": training_description,
+        "auxiliary_attachment": attachment,
         "policy": {
             "primary_split_before_auxiliary_attachment": True,
-            "a_grouping": "original generation-time pair_id",
-            "b_grouping": "scenario_family",
-            "auxiliary_train_only": True,
-            "dev_is_primary_only": True,
-            "test_is_primary_only": True,
-            "normalized_user_trajectory_overlap_forbidden": True,
+            "a_primary_group": "legacy::pair::<generation-time pair_id>",
+            "b_primary_group": "frontier::<scenario_family>",
+            "a_auxiliary": "all 721 independent validated benign records train-only after exact-overlap rejection",
+            "b_auxiliary": (
+                "all 512 frozen rejected-outcome records considered; withhold "
+                "records owned by primary dev/test scenario family or exact "
+                "user trajectory; include primary-train-family and aux-only-family "
+                "records in train"
+            ),
+            "dev_test_primary_only": True,
+            "dev_test_candidate_copy": "byte-for-byte",
             "max_turns": args.max_turns,
             "seed": args.seed,
             "fractions": fractions,
-            "b_expected_target_model": args.expected_b_target_model,
-            "b_expected_judge_model": args.expected_b_judge_model,
-            "b_aux_expected_labels": dict(B_AUX_LABELS),
-            "b_aux_expected_detection_weight": B_AUX_DETECTION_WEIGHT,
+            "length_shortcut_policy": "diagnostic_only_no_arbitrary_auc_gate",
         },
-        "output_sha256": output_hashes,
+        "artifact_sha256": artifact_hashes,
     }
 
-    # Keep a detailed manifest for DataGen review.
-    write_json(metadata, os.path.join(args.output_dir, "freeze_manifest.json"))
+    # Detailed review artifact.
+    write_json(manifest, os.path.join(args.output_dir, "freeze_manifest.json"))
 
-    # Emit the compatibility report consumed fail-closed by Transformer
-    # guardlens.data.verify_freeze and train_naacl.slurm.
+    # Exact schema consumed by GuardLens-Transformer/guardlens.data.verify_freeze.
     freeze_report = {
         "status": "passed",
         "artifact_sha256": {
-            "primary_train": output_hashes["primary_train"],
-            "primary_dev": output_hashes["primary_dev"],
-            "primary_test": output_hashes["primary_test"],
-            "auxiliary_candidate_train": output_hashes["auxiliary_candidate_train"],
-            "auxiliary_candidate_dev": output_hashes["auxiliary_candidate_dev"],
-            "auxiliary_candidate_test": output_hashes["auxiliary_candidate_test"],
+            "primary_train": artifact_hashes["primary_train"],
+            "primary_dev": artifact_hashes["primary_dev"],
+            "primary_test": artifact_hashes["primary_test"],
+            "auxiliary_candidate_train": artifact_hashes["auxiliary_candidate_train"],
+            "auxiliary_candidate_dev": artifact_hashes["auxiliary_candidate_dev"],
+            "auxiliary_candidate_test": artifact_hashes["auxiliary_candidate_test"],
         },
         "counts": {
             "primary_splits": {
-                "train": len(splits["train"]),
-                "dev": len(splits["dev"]),
-                "test": len(splits["test"]),
+                split_name: len(splits[split_name])
+                for split_name in SPLITS
             },
             "primary_all": len(primary),
         },
         "auxiliary_candidate": {
-            "train_records": len(train_with_aux),
+            "train_records": len(candidate_splits["train"]),
             "dev_records": len(splits["dev"]),
             "test_records": len(splits["test"]),
-            "a_auxiliary_records": len(kept_a_aux),
-            "b_auxiliary_records": len(kept_b_aux),
+            "a_auxiliary_records_in_train": len(a_aux),
+            "b_auxiliary_input_records": len(b_aux),
+            "b_auxiliary_records_in_train": len(included_b_aux),
+            "b_auxiliary_records_withheld": len(withheld_b_aux),
             "dev_byte_identical_to_primary": True,
             "test_byte_identical_to_primary": True,
+            "attachment_metadata": attachment,
         },
-        "input_sha256": actual_hashes,
-        "policy": metadata["policy"],
+        "input_sha256": input_hashes,
+        "shortcut_diagnostics": {
+            "primary": primary_descriptions,
+            "train_with_auxiliary": training_description,
+        },
+        "policy": manifest["policy"],
     }
     write_json(
         freeze_report,
         os.path.join(args.output_dir, "data_prep_freeze_report.json"),
     )
-    print(json.dumps(metadata, indent=2, sort_keys=True))
+    write_json(
+        attachment,
+        os.path.join(candidate_dir, "auxiliary_attachment_metadata.json"),
+    )
+
+    print(json.dumps(manifest, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
