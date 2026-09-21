@@ -779,10 +779,15 @@ def assert_b_aux_no_eval_group_leakage(
 
     overlaps = Counter()
     examples = []
+    missing_group_identity = []
     for record in b_aux:
         cid = str(record.get("conversation_id", ""))
         pair_id = str(record.get("pair_id", ""))
         scenario = frontier_scenario(record)
+
+        if not pair_id and not scenario:
+            missing_group_identity.append(cid)
+            continue
 
         for split_name in ("dev", "test"):
             if pair_id and pair_id in primary_groups[split_name]["pair_ids"]:
@@ -792,6 +797,12 @@ def assert_b_aux_no_eval_group_leakage(
                 overlaps[f"{split_name}:scenario_family"] += 1
                 examples.append((cid, split_name, "scenario_family", scenario))
 
+    if missing_group_identity:
+        raise RuntimeError(
+            "B auxiliary contains records with neither pair_id nor scenario_family; "
+            "cannot prove train/dev/test group independence. examples="
+            f"{missing_group_identity[:10]}"
+        )
     if overlaps:
         raise RuntimeError(
             "B auxiliary would leak primary dev/test grouping information into "
