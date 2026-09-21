@@ -306,6 +306,42 @@ the broad historical benign pool supplies trajectory-diverse negative detection
 support. The materializer reports turn-count diagnostics for primary A alone
 and for the primary-plus-auxiliary detection population.
 
+### 3D. Frozen Dataset A population
+
+After restored-pair validation and detection-auxiliary materialization, freeze
+Dataset A at the following artifacts and SHA-256 values:
+
+```text
+results-new/naacl_legacy_twins_restored_candidate.jsonl
+f9021672150696b2c3a367b1a1c67edafa4ce2f1a6a83fc1293870eaa7e6c34f
+
+results-new/naacl_legacy_detection_aux.jsonl
+9d17f3b094957ba2626184e98c33dde81a153a55e91fbb94799fbe7a0ae577ad
+
+results-new/naacl_legacy_detection_aux_stats.json
+427af5f9de489c41ce2d2515f6ae5729207cbf3b5831d1b193905746a57db090
+```
+
+The primary artifact is 1,032 records = 516 complete original semantic pairs.
+The auxiliary artifact is 721 validated broad benign trajectories, detection
+only, weight 1.0, localization fully masked. No records were excluded during
+auxiliary materialization. Primary-plus-auxiliary turn-count AUC is
+0.6164286878, with the weighted and unweighted diagnostics identical.
+
+For final A+B construction, auxiliary records never participate in partition
+allocation. The required order is:
+
+1. merge A primary and B primary;
+2. split the 2,434 primary records by indivisible A pair / B scenario groups;
+3. freeze primary train/dev/test;
+4. validate and append A and B auxiliaries to train only;
+5. rerun leakage and shortcut diagnostics;
+6. freeze all resulting hashes before GPU training.
+
+Use `naacl/locate_frozen_b_artifacts.py` to identify B artifacts by contract
+rather than filename, then `naacl/build_consolidated_frozen_dataset.py` for the
+single final build.
+
 ### 3B. Judge-capacity agreement audit
 
 After the 24B bridge artifact exists, run a separate same-response agreement
