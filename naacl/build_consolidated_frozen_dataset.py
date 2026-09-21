@@ -566,7 +566,10 @@ def assert_primary_cross_corpus_integrity(records: Sequence[Dict]) -> None:
 def effective_label(record: Dict) -> int:
     value = (
         record.get("detection_label")
-        if "detection_label" in record
+        if (
+            record.get("auxiliary_detection_only") is True
+            or record.get("use_as") == "auxiliary_detection_only"
+        )
         else record.get("label")
     )
     if isinstance(value, bool) or value not in (0, 1):
@@ -1134,6 +1137,31 @@ def describe_training_view(records: Sequence[Dict]) -> Dict:
     return result
 
 
+def describe_primary_test_structure(records: Sequence[Dict]) -> Dict:
+    """Structural provenance only. Do not compute shortcut metrics on held-out test."""
+    return {
+        "records": len(records),
+        "labels": dict(
+            Counter(str(record.get("label")) for record in records)
+        ),
+        "corpus_source": dict(
+            Counter(str(record.get("corpus_source", "unknown")) for record in records)
+        ),
+        "source_label": dict(
+            Counter(
+                f"{record.get('corpus_source')}|{record.get('label')}"
+                for record in records
+            )
+        ),
+        "groups": len({
+            (record.get("metadata", {}) or {}).get("consolidated_split_group")
+            for record in records
+        }),
+        "shortcut_diagnostics_computed": False,
+        "semantic_inspection_performed": False,
+    }
+
+
 def describe_primary_split(records: Sequence[Dict]) -> Dict:
     result = diagnostic_block(records)
     result["corpus_source"] = dict(
@@ -1305,8 +1333,9 @@ def main() -> None:
     }
 
     primary_descriptions = {
-        split_name: describe_primary_split(splits[split_name])
-        for split_name in SPLITS
+        "train": describe_primary_split(splits["train"]),
+        "dev": describe_primary_split(splits["dev"]),
+        "test": describe_primary_test_structure(splits["test"]),
     }
     training_description = describe_training_view(candidate_splits["train"])
 
@@ -1346,7 +1375,9 @@ def main() -> None:
             "max_turns": args.max_turns,
             "seed": args.seed,
             "fractions": fractions,
-            "length_shortcut_policy": "diagnostic_only_no_arbitrary_auc_gate",
+            "length_shortcut_policy": "train_dev_diagnostic_only_no_arbitrary_auc_gate",
+            "held_out_test_shortcut_diagnostics_computed": False,
+            "held_out_test_semantically_inspected": False,
         },
         "artifact_sha256": artifact_hashes,
     }
@@ -1386,8 +1417,13 @@ def main() -> None:
         },
         "input_sha256": input_hashes,
         "shortcut_diagnostics": {
-            "primary": primary_descriptions,
+            "primary_train": primary_descriptions["train"],
+            "primary_dev": primary_descriptions["dev"],
             "train_with_auxiliary": training_description,
+            "held_out_test": {
+                "computed": False,
+                "semantic_inspection_performed": False,
+            },
         },
         "policy": manifest["policy"],
     }
