@@ -444,6 +444,7 @@ PY
 echo "--- Starting four independent Dataset B 24B judge replicas ---"
 declare -a SERVER_PIDS=()
 declare -a SERVER_PORTS=()
+declare -a WORKER_PIDS=()
 stop_servers() {
     for pid in "${SERVER_PIDS[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
@@ -455,13 +456,32 @@ stop_servers() {
     done
     SERVER_PIDS=()
 }
-cleanup() {
+stop_workers() {
+    for pid in "${WORKER_PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    for pid in "${WORKER_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+    WORKER_PIDS=()
+}
+cleanup_exit() {
     local code=$?
     trap - EXIT INT TERM
+    stop_workers
     stop_servers
     exit "$code"
 }
-trap cleanup EXIT INT TERM
+cleanup_signal() {
+    trap - EXIT INT TERM
+    stop_workers
+    stop_servers
+    exit 143
+}
+trap cleanup_exit EXIT
+trap cleanup_signal INT TERM
 
 for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
     port=$((PORT_BASE + shard_idx))
@@ -518,7 +538,6 @@ for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
 done
 
 echo "--- Running four deterministic bridge shards in parallel ---"
-declare -a WORKER_PIDS=()
 declare -a SHARD_CHECKPOINTS=()
 for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
     port="${SERVER_PORTS[$shard_idx]}"
@@ -616,13 +635,13 @@ echo "--- Writing completion receipt ---"
 python - \
     "$COMPLETION_MANIFEST" "$REVIEWED_HEAD" "$INPUT_FILE" "$ORIGINAL_SOURCE_FILE" \
     "$ORIGINAL_SOURCE_MANIFEST" "$FROZEN_PREPARED_A" "$OUTPUT_FILE" "$STATS_FILE" "$CANDIDATE_FILE" \
-    "$CANDIDATE_STATS" "$EXCLUDED_FILE" "$CACHED_REVISION" "${SLURM_JOB_ID:-unknown}" <<'PY'
+    "$CANDIDATE_STATS" "$EXCLUDED_FILE" "$CHECKPOINT_FILE" "$CACHED_REVISION" "${SLURM_JOB_ID:-unknown}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
 (
     manifest_path, git_head, input_file, source_file, source_manifest,
     frozen_prepared, bridge_output, bridge_stats, candidate, candidate_stats,
-    excluded, judge_revision, job_id,
+    excluded, merged_checkpoint, judge_revision, job_id,
 ) = sys.argv[1:]
 
 def digest(path):
@@ -665,6 +684,7 @@ receipt = {
     "outputs": {
         "bridge_output": digest(bridge_output),
         "bridge_stats": digest(bridge_stats),
+        "merged_bridge_checkpoint": digest(merged_checkpoint),
         "candidate": digest(candidate),
         "candidate_stats": digest(candidate_stats),
         "excluded": digest(excluded),
