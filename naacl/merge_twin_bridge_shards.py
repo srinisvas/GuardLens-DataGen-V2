@@ -99,6 +99,7 @@ def main() -> None:
 
         rows = load_checkpoint(str(path))
         local: Dict[str, Dict] = {}
+        superseded = 0
         for record in rows:
             cid = str(record.get("conversation_id", ""))
             if cid not in by_cid:
@@ -110,23 +111,25 @@ def main() -> None:
                     f"{cid}: found in shard {shard_idx}, deterministic assignment "
                     f"is shard {assignments[cid]}"
                 )
-            if cid in local:
-                raise RuntimeError(
-                    f"shard {shard_idx}: duplicate conversation_id {cid}"
-                )
-            if cid in merged:
-                raise RuntimeError(
-                    f"{cid}: duplicated across shard checkpoints"
-                )
             if turn_text_hash(record) != turn_text_hash(by_cid[cid]):
                 raise RuntimeError(
                     f"{cid}: checkpoint changed observable stored trajectory"
                 )
+            if cid in local:
+                superseded += 1
+            # Append-only checkpoint semantics: the newest entry for a CID wins.
+            local[cid] = record
 
+        # Validate only the final entry for each CID, exactly as resume does.
+        for cid, record in local.items():
+            if cid in merged:
+                raise RuntimeError(
+                    f"{cid}: duplicated across shard checkpoints"
+                )
             validation = record.get("stored_target_validation", {}) or {}
             if validation.get("validated") is not True:
                 raise RuntimeError(
-                    f"{cid}: shard checkpoint lacks completed bridge validation"
+                    f"{cid}: final shard checkpoint entry lacks completed bridge validation"
                 )
             if validation.get("protocol") != BRIDGE_PROTOCOL:
                 raise RuntimeError(
@@ -145,9 +148,13 @@ def main() -> None:
                     f"{cid}: restoration policy mismatch "
                     f"{restoration.get('policy_version')!r}"
                 )
-
-            local[cid] = record
             merged[cid] = record
+
+        if superseded:
+            print(
+                f"Shard {shard_idx}: ignored {superseded} superseded "
+                "append-only checkpoint entries"
+            )
 
         expected_local = {
             cid for cid, idx in assignments.items() if idx == shard_idx
