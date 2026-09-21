@@ -55,6 +55,16 @@ B_AUX_SHA256 = (
 A_PRIMARY_RECORDS = 1032
 A_PRIMARY_PAIRS = 516
 A_AUX_RECORDS = 721
+A_PRIMARY_FAMILIES = Counter({
+    "interactive_adversarial": 516,
+    "interactive_benign_twin": 516,
+})
+A_PRIMARY_TIERS = Counter({
+    "benign_validated": 516,
+    "cf_strong": 3,
+    "cf_weak": 2,
+    "llm_confirmed": 511,
+})
 
 B_PRIMARY_RECORDS = 1402
 B_PRIMARY_PAIRS = 701
@@ -296,6 +306,12 @@ def validate_a_primary(records: Sequence[Dict], max_turns: int) -> None:
     labels = Counter(record.get("label") for record in records)
     if labels != Counter({0: A_PRIMARY_PAIRS, 1: A_PRIMARY_PAIRS}):
         raise RuntimeError(f"A primary label counts invalid: {dict(labels)}")
+    families = Counter(str(record.get("family")) for record in records)
+    if families != A_PRIMARY_FAMILIES:
+        raise RuntimeError(f"A primary family counts changed: {dict(families)}")
+    tiers = Counter(str(record.get("supervision_tier")) for record in records)
+    if tiers != A_PRIMARY_TIERS:
+        raise RuntimeError(f"A primary supervision tiers changed: {dict(tiers)}")
 
     ids = set()
     pairs = defaultdict(list)
@@ -305,6 +321,10 @@ def validate_a_primary(records: Sequence[Dict], max_turns: int) -> None:
         if not cid or cid in ids:
             raise RuntimeError(f"A primary missing/duplicate conversation_id: {cid!r}")
         ids.add(cid)
+        if record.get("validation_status") != "validated":
+            raise RuntimeError(f"{cid}: A primary is not validation_status=validated")
+        if record.get("training_eligible") is not True:
+            raise RuntimeError(f"{cid}: A primary is not training eligible")
 
         pair_id = str(record.get("pair_id", "")).strip()
         if not pair_id:
