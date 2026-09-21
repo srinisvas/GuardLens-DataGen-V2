@@ -549,6 +549,11 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--stats-output", required=True)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--checkpoint-only",
+        action="store_true",
+        help="Reuse compatible checkpoint entries only; never call the judge server.",
+    )
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--model", default=DEFAULT_BRIDGE_JUDGE)
@@ -728,6 +733,12 @@ def main() -> None:
                         )
                     completed[cid] = cached
                     continue
+
+            if args.checkpoint_only:
+                raise RuntimeError(
+                    f"{cid}: checkpoint-only assembly found no fully reusable "
+                    "bridge checkpoint entry"
+                )
 
             record = copy.deepcopy(original)
             pair_id = str(record.get("pair_id", ""))
