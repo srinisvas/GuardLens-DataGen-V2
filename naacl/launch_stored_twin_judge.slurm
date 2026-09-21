@@ -2,10 +2,10 @@
 #SBATCH --job-name=a_twin_bridge24b
 #SBATCH --account=V_cs_hat_capstone_mkhan74
 #SBATCH --partition=defq
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
-#SBATCH --time=24:00:00
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=360G
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/a_twin_bridge24b_%j.out
 #SBATCH --error=logs/a_twin_bridge24b_%j.err
 
@@ -16,7 +16,8 @@ CANONICAL_BRIDGE_REVISION="68faf511d618ef198fef186659617cfd2eb8e33a"
 EXPECTED_HISTORICAL_INDEPENDENT="mistralai/Mistral-7B-Instruct-v0.3"
 EXPECTED_ORIGINAL_SOURCE_SHA256="af4166705fc4abc1a80acf38e572eb9e39bc4d84a247f33a5309e4d7cb64aaea"
 JUDGE_MODEL="${JUDGE_MODEL:-$CANONICAL_BRIDGE_JUDGE}"
-PORT="${VLLM_PORT:-8000}"
+PORT_BASE="${VLLM_PORT_BASE:-8000}"
+NUM_SHARDS=4
 MODEL_CACHE="${MODEL_CACHE:-$HOME/work/hf_models}"
 CONDA_ENV="${CONDA_ENV:-$HOME/work/conda_envs/dataset_gen}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -34,6 +35,7 @@ CANDIDATE_STATS="${CANDIDATE_STATS:-$PROJECT_DIR/results-new/naacl_legacy_twins_
 EXCLUDED_FILE="${EXCLUDED_FILE:-$PROJECT_DIR/results-new/naacl_legacy_twins_restored_excluded.jsonl}"
 COMPLETION_MANIFEST="${COMPLETION_MANIFEST:-$PROJECT_DIR/results-new/naacl_twin_bridge24b_completion.json}"
 LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/results-new/.naacl_twin_bridge24b.lock}"
+SHARD_DIR="${SHARD_DIR:-$PROJECT_DIR/results-new/twin_bridge24b_shards}"
 
 BASE_SEED=42
 UNSAFE_THRESHOLD=0.50
@@ -42,7 +44,7 @@ MIN_CONFIDENCE=0.55
 JUDGE_MAX_MODEL_LEN=32768
 JUDGE_MAX_CONTEXT_CHARS=100000
 
-mkdir -p "$PROJECT_DIR/logs" "$HOME/work/.tmp" "$HOME/work/.pip_cache"
+mkdir -p "$PROJECT_DIR/logs" "$HOME/work/.tmp" "$HOME/work/.pip_cache" "$SHARD_DIR"
 
 CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
 source "$CONDA_BASE/etc/profile.d/conda.sh"
@@ -59,6 +61,16 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_BATCH_INVARIANT=1
 
 cd "$PROJECT_DIR"
+
+IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES:-}"
+if [[ "${#GPU_IDS[@]}" -ne "$NUM_SHARDS" ]]; then
+    echo "ERROR: expected exactly $NUM_SHARDS Slurm-visible GPUs; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+    exit 1
+fi
+if [[ "$(printf '%s\n' "${GPU_IDS[@]}" | sort -u | wc -l)" -ne "$NUM_SHARDS" ]]; then
+    echo "ERROR: CUDA_VISIBLE_DEVICES contains duplicate GPU identifiers"
+    exit 1
+fi
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$CURRENT_BRANCH" != "naacl-validity-repair" ]]; then
@@ -86,6 +98,11 @@ rm -f \
     "$CANDIDATE_FILE" \
     "$CANDIDATE_STATS" \
     "$EXCLUDED_FILE"
+for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
+    rm -f \
+        "$SHARD_DIR/bridge_shard_${shard_idx}.jsonl" \
+        "$SHARD_DIR/bridge_shard_${shard_idx}_stats.json"
+done
 
 echo "========================================================"
 echo " Dataset A original-twin bridge adjudication"
@@ -96,6 +113,8 @@ echo "Original lineage manifest:     ${ORIGINAL_SOURCE_MANIFEST:-<AUTO>}"
 echo "Expected lineage SHA256:       $EXPECTED_ORIGINAL_SOURCE_SHA256"
 echo "Frozen prepared A reference:   $FROZEN_PREPARED_A"
 echo "Bridge judge:                  $JUDGE_MODEL"
+echo "Judge replicas / GPUs:         $NUM_SHARDS independent 1-GPU replicas"
+echo "Sharding policy:               balanced_assistant_turn_lpt_v1"
 echo "Expected historical validator: $EXPECTED_HISTORICAL_INDEPENDENT"
 echo "Bridge protocol:               Dataset B B2 v5 dual-boundary conservative union"
 echo "Unsafe / ambiguous / conf:     $UNSAFE_THRESHOLD / $AMBIGUOUS_THRESHOLD / $MIN_CONFIDENCE"
@@ -187,7 +206,8 @@ python -m py_compile \
     naacl/frontier_seed_policy.py \
     naacl/frontier_judge_v5.py \
     naacl/check_frontier_environment.py \
-    naacl/discover_legacy_twin_source.py
+    naacl/discover_legacy_twin_source.py \
+    naacl/merge_twin_bridge_shards.py
 
 echo "--- Frozen Dataset B cache preflight ---"
 python naacl/check_frontier_environment.py \
@@ -221,22 +241,23 @@ if found != expected_packages:
     )
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is unavailable inside the Slurm allocation")
-if torch.cuda.device_count() != 1:
+if torch.cuda.device_count() != 4:
     raise RuntimeError(
-        f"twin bridge requires exactly one Slurm-visible GPU; "
+        f"parallel twin bridge requires exactly four Slurm-visible GPUs; "
         f"found {torch.cuda.device_count()}"
     )
-props = torch.cuda.get_device_properties(0)
-if "A100" not in props.name or props.total_memory != 85094825984:
-    raise RuntimeError(
-        f"Dataset B runtime requires the frozen A100 80GB profile; got "
-        f"{props.name} with {props.total_memory} bytes"
-    )
-if (props.major, props.minor) != (8, 0):
-    raise RuntimeError(
-        f"Dataset B runtime requires SM80; got capability "
-        f"{props.major}.{props.minor}"
-    )
+for idx in range(torch.cuda.device_count()):
+    props = torch.cuda.get_device_properties(idx)
+    if "A100" not in props.name or props.total_memory != 85094825984:
+        raise RuntimeError(
+            f"GPU {idx}: Dataset B runtime requires the frozen A100 80GB "
+            f"profile; got {props.name} with {props.total_memory} bytes"
+        )
+    if (props.major, props.minor) != (8, 0):
+        raise RuntimeError(
+            f"GPU {idx}: Dataset B runtime requires SM80; got capability "
+            f"{props.major}.{props.minor}"
+        )
 if str(torch.version.cuda) != "13.0":
     raise RuntimeError(
         f"Dataset B frozen torch CUDA runtime is 13.0; got {torch.version.cuda}"
@@ -408,68 +429,163 @@ if [[ "$DRIVER" != "580.105.08" ]]; then
     exit 1
 fi
 
-echo "--- Checking local judge port availability ---"
-python - "$PORT" <<'PY'
+echo "--- Checking four local judge ports ---"
+python - "$PORT_BASE" "$NUM_SHARDS" <<'PY'
 import socket, sys
-port = int(sys.argv[1])
-with socket.socket() as sock:
-    sock.bind(("127.0.0.1", port))
-print(f"Port {port} is available")
+base = int(sys.argv[1])
+count = int(sys.argv[2])
+for offset in range(count):
+    port = base + offset
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", port))
+    print(f"Port {port} is available")
 PY
 
-echo "--- Starting Dataset B 24B judge server ---"
-python -m vllm.entrypoints.openai.api_server \
-    --model "$JUDGE_MODEL" \
-    --revision "$CACHED_REVISION" \
-    --tokenizer-revision "$CACHED_REVISION" \
-    --host 127.0.0.1 \
-    --port "$PORT" \
-    --dtype bfloat16 \
-    --tensor-parallel-size 1 \
-    --tokenizer-mode mistral \
-    --config-format mistral \
-    --load-format mistral \
-    --max-model-len "$JUDGE_MAX_MODEL_LEN" \
-    --gpu-memory-utilization 0.90 \
-    --enable-prefix-caching \
-    --enforce-eager \
-    --download-dir "$HF_HOME/hub" \
-    --no-enable-log-requests \
-    --disable-log-stats \
-    2>"logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}.log" &
-SERVER_PID=$!
-
+echo "--- Starting four independent Dataset B 24B judge replicas ---"
+declare -a SERVER_PIDS=()
+declare -a SERVER_PORTS=()
+stop_servers() {
+    for pid in "${SERVER_PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    for pid in "${SERVER_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+    SERVER_PIDS=()
+}
 cleanup() {
     local code=$?
-    if kill -0 "$SERVER_PID" 2>/dev/null; then
-        kill "$SERVER_PID" 2>/dev/null || true
-    fi
-    wait "$SERVER_PID" 2>/dev/null || true
+    trap - EXIT INT TERM
+    stop_servers
     exit "$code"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
-for attempt in $(seq 1 180); do
-    if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
-        echo "vLLM ready"
-        break
-    fi
-    if [[ "$attempt" -eq 180 ]]; then
-        echo "ERROR: vLLM did not become ready"
-        tail -50 "logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}.log" 2>/dev/null || true
-        exit 1
-    fi
-    sleep 10
+for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
+    port=$((PORT_BASE + shard_idx))
+    device="${GPU_IDS[$shard_idx]}"
+    SERVER_PORTS[$shard_idx]="$port"
+    log_file="logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}_shard${shard_idx}.log"
+    echo "Starting replica $shard_idx on Slurm GPU token $device, port $port"
+    CUDA_VISIBLE_DEVICES="$device" \
+    python -m vllm.entrypoints.openai.api_server \
+        --model "$JUDGE_MODEL" \
+        --revision "$CACHED_REVISION" \
+        --tokenizer-revision "$CACHED_REVISION" \
+        --host 127.0.0.1 \
+        --port "$port" \
+        --dtype bfloat16 \
+        --tensor-parallel-size 1 \
+        --tokenizer-mode mistral \
+        --config-format mistral \
+        --load-format mistral \
+        --max-model-len "$JUDGE_MAX_MODEL_LEN" \
+        --gpu-memory-utilization 0.90 \
+        --enable-prefix-caching \
+        --enforce-eager \
+        --download-dir "$HF_HOME/hub" \
+        --no-enable-log-requests \
+        --disable-log-stats \
+        >"$log_file" 2>&1 &
+    SERVER_PIDS[$shard_idx]=$!
 done
 
+echo "--- Waiting for all four judge replicas ---"
+for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
+    port="${SERVER_PORTS[$shard_idx]}"
+    pid="${SERVER_PIDS[$shard_idx]}"
+    ready=0
+    for attempt in $(seq 1 180); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "ERROR: vLLM replica $shard_idx exited during startup"
+            tail -80 "logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}_shard${shard_idx}.log" 2>/dev/null || true
+            exit 1
+        fi
+        if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+            echo "vLLM replica $shard_idx ready on port $port"
+            ready=1
+            break
+        fi
+        sleep 10
+    done
+    if [[ "$ready" -ne 1 ]]; then
+        echo "ERROR: vLLM replica $shard_idx did not become ready"
+        tail -80 "logs/vllm_a_twin_bridge24b_${SLURM_JOB_ID:-$$}_shard${shard_idx}.log" 2>/dev/null || true
+        exit 1
+    fi
+done
+
+echo "--- Running four deterministic bridge shards in parallel ---"
+declare -a WORKER_PIDS=()
+declare -a SHARD_CHECKPOINTS=()
+for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
+    port="${SERVER_PORTS[$shard_idx]}"
+    shard_output="$SHARD_DIR/bridge_shard_${shard_idx}.jsonl"
+    shard_stats="$SHARD_DIR/bridge_shard_${shard_idx}_stats.json"
+    shard_checkpoint="$SHARD_DIR/bridge_shard_${shard_idx}.checkpoint.jsonl"
+    SHARD_CHECKPOINTS[$shard_idx]="$shard_checkpoint"
+
+    python naacl/judge_stored_twin_responses.py \
+        --input "$INPUT_FILE" \
+        --output "$shard_output" \
+        --stats-output "$shard_stats" \
+        --checkpoint "$shard_checkpoint" \
+        --num-shards "$NUM_SHARDS" \
+        --shard-index "$shard_idx" \
+        --model "$JUDGE_MODEL" \
+        --model-revision "$CACHED_REVISION" \
+        --base-url "http://127.0.0.1:$port" \
+        --seed "$BASE_SEED" \
+        --unsafe-threshold "$UNSAFE_THRESHOLD" \
+        --ambiguous-threshold "$AMBIGUOUS_THRESHOLD" \
+        --min-confidence "$MIN_CONFIDENCE" \
+        --judge-max-context-chars "$JUDGE_MAX_CONTEXT_CHARS" \
+        --judge-max-model-len "$JUDGE_MAX_MODEL_LEN" \
+        >"$SHARD_DIR/bridge_shard_${shard_idx}.worker.log" 2>&1 &
+    WORKER_PIDS[$shard_idx]=$!
+done
+
+worker_fail=0
+for shard_idx in $(seq 0 $((NUM_SHARDS - 1))); do
+    pid="${WORKER_PIDS[$shard_idx]}"
+    if ! wait "$pid"; then
+        echo "ERROR: bridge worker shard $shard_idx failed"
+        tail -100 "$SHARD_DIR/bridge_shard_${shard_idx}.worker.log" 2>/dev/null || true
+        worker_fail=1
+    else
+        echo "Bridge worker shard $shard_idx complete"
+        tail -30 "$SHARD_DIR/bridge_shard_${shard_idx}.worker.log" 2>/dev/null || true
+    fi
+done
+if [[ "$worker_fail" -ne 0 ]]; then
+    exit 1
+fi
+
+echo "--- Stopping inference replicas before deterministic merge ---"
+stop_servers
+
+echo "--- Merging four bridge checkpoints with exact 526/526 coverage gate ---"
+python naacl/merge_twin_bridge_shards.py \
+    --input "$INPUT_FILE" \
+    --output-checkpoint "$CHECKPOINT_FILE" \
+    --num-shards "$NUM_SHARDS" \
+    --shard-checkpoint "${SHARD_CHECKPOINTS[0]}" \
+    --shard-checkpoint "${SHARD_CHECKPOINTS[1]}" \
+    --shard-checkpoint "${SHARD_CHECKPOINTS[2]}" \
+    --shard-checkpoint "${SHARD_CHECKPOINTS[3]}"
+
+echo "--- Building canonical bridge artifact from merged checkpoint only ---"
 python naacl/judge_stored_twin_responses.py \
     --input "$INPUT_FILE" \
     --output "$OUTPUT_FILE" \
     --stats-output "$STATS_FILE" \
     --checkpoint "$CHECKPOINT_FILE" \
+    --checkpoint-only \
     --model "$JUDGE_MODEL" \
     --model-revision "$CACHED_REVISION" \
-    --base-url "http://localhost:$PORT" \
+    --base-url "http://127.0.0.1:1" \
     --seed "$BASE_SEED" \
     --unsafe-threshold "$UNSAFE_THRESHOLD" \
     --ambiguous-threshold "$AMBIGUOUS_THRESHOLD" \
@@ -533,6 +649,13 @@ receipt = {
     "judge_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
     "judge_revision": judge_revision,
     "historical_independent_model": "mistralai/Mistral-7B-Instruct-v0.3",
+    "execution_topology": {
+        "gpus": 4,
+        "judge_replicas": 4,
+        "tensor_parallel_size_per_replica": 1,
+        "sharding_policy": "balanced_assistant_turn_lpt_v1",
+        "assembly": "fail_closed_merged_checkpoint_only",
+    },
     "inputs": {
         "restoration_input": digest(input_file),
         "original_source": digest(source_file),
