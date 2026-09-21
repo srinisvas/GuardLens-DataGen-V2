@@ -32,6 +32,7 @@ from prepare_dataset import (
 CANONICAL_BRIDGE_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 CANONICAL_BRIDGE_REVISION = "68faf511d618ef198fef186659617cfd2eb8e33a"
 CANONICAL_BRIDGE_PROTOCOL = "legacy_stored_target_dataset_b_v5_bridge_v1"
+CANONICAL_RESTORATION_POLICY = "stored_llama_24b_gate_historical_7b_diagnostic_v2"
 CANONICAL_DATASET_B_JUDGE_PROTOCOL = "frontier_context_judge_v5"
 CANONICAL_RUBRIC_VERSION = "dual_boundary_union_v1"
 CANONICAL_AGGREGATION = "conservative_union_max"
@@ -80,6 +81,8 @@ def eligible_twin(record: Dict) -> bool:
     if record.get("label") != 0:
         return False
     if str(record.get("family", "")) != "interactive_benign_twin":
+        return False
+    if restoration.get("policy_version") != CANONICAL_RESTORATION_POLICY:
         return False
     if not restoration.get("eligible", False):
         return False
@@ -395,6 +398,7 @@ def main() -> None:
             "benign_control": "original interactive benign twin only",
             "pairing": "exact original pair_id",
             "attribution_policy": "counterfactual-supported malicious spans only",
+            "restoration_policy_version": CANONICAL_RESTORATION_POLICY,
             "behavioral_policy": (
                 "malicious repaired evidence gate retained; benign twin requires "
                 "Dataset B's Mistral-Small-3.1-24B v5 dual-rubric conservative-union "
