@@ -29,6 +29,7 @@ import math
 import os
 import random
 import shutil
+import subprocess
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -78,11 +79,47 @@ B_JUDGE = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
 SPLITS = ("train", "dev", "test")
 DEFAULT_MAX_TURNS = 64
+EXPECTED_DATAGEN_BRANCH = "naacl-validity-repair"
 
 
 # -------------------------------
 # Generic file helpers
 # -------------------------------
+
+def git_output(*args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args],
+        text=True,
+        stderr=subprocess.STDOUT,
+    ).strip()
+
+
+def verify_code_checkout() -> Dict:
+    branch = git_output("rev-parse", "--abbrev-ref", "HEAD")
+    if branch != EXPECTED_DATAGEN_BRANCH:
+        raise RuntimeError(
+            f"expected DataGen branch {EXPECTED_DATAGEN_BRANCH}, got {branch}"
+        )
+    commit = git_output("rev-parse", "HEAD")
+
+    tracked_dirty = subprocess.run(
+        ["git", "diff", "--quiet"],
+        check=False,
+    ).returncode != 0 or subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        check=False,
+    ).returncode != 0
+    if tracked_dirty:
+        raise RuntimeError(
+            "tracked DataGen working-tree changes detected; commit or stash "
+            "before creating a scientific freeze"
+        )
+    return {
+        "branch": branch,
+        "commit": commit,
+        "tracked_working_tree_clean": True,
+    }
+
 
 def load_jsonl(path: str) -> List[Dict]:
     rows: List[Dict] = []
@@ -1216,7 +1253,8 @@ def main() -> None:
     if args.max_turns <= 0:
         raise RuntimeError("--max-turns must be positive")
 
-    # Verify immutable input identities before parsing or writing anything.
+    # Verify code and immutable input identities before parsing or writing anything.
+    code_provenance = verify_code_checkout()
     input_hashes = {
         "a_primary": require_sha(args.a_primary, A_PRIMARY_SHA256, "A primary"),
         "a_aux": require_sha(args.a_aux, A_AUX_SHA256, "A auxiliary"),
@@ -1341,6 +1379,7 @@ def main() -> None:
 
     manifest = {
         "status": "passed",
+        "code_provenance": code_provenance,
         "input_sha256": input_hashes,
         "counts": {
             "primary_all": len(primary),
@@ -1415,6 +1454,7 @@ def main() -> None:
             "test_byte_identical_to_primary": True,
             "attachment_metadata": attachment,
         },
+        "code_provenance": code_provenance,
         "input_sha256": input_hashes,
         "shortcut_diagnostics": {
             "primary_train": primary_descriptions["train"],
@@ -1435,6 +1475,12 @@ def main() -> None:
         attachment,
         os.path.join(candidate_dir, "auxiliary_attachment_metadata.json"),
     )
+    with open(
+        os.path.join(args.output_dir, "data_prep_code_commit.txt"),
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(code_provenance["commit"] + "\n")
 
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
