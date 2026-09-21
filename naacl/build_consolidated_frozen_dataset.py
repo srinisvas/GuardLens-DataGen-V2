@@ -824,6 +824,9 @@ def canonicalize_a_aux(record: Dict) -> Dict:
     out = copy.deepcopy(record)
     out["corpus_source"] = "legacy_detection_aux"
     metadata = out.setdefault("metadata", {})
+    metadata["consolidated_split_group"] = (
+        f"legacy_aux::conversation::{out.get('conversation_id')}"
+    )
     metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
     metadata["observable_turn_hash"] = observable_turn_hash(out)
     return out
@@ -839,7 +842,8 @@ def attach_auxiliary(
     # A auxiliary is independently generated and intentionally train-only.
     # Any exact overlap with primary is unexpected and therefore fail-closed.
     seen_ids = set(primary_ids)
-    seen_hashes = set(hash_owner)
+    primary_hashes = set(hash_owner)
+    a_aux_hashes = set()
     included_a: List[Dict] = []
 
     for original in a_aux:
@@ -851,12 +855,16 @@ def attach_auxiliary(
             raise RuntimeError(
                 f"A auxiliary conversation_id overlaps primary material: {cid}"
             )
-        if trajectory_hash in seen_hashes:
+        if trajectory_hash in primary_hashes:
             raise RuntimeError(
                 f"A auxiliary exact user trajectory overlaps primary material: {cid}"
             )
+        if trajectory_hash in a_aux_hashes:
+            raise RuntimeError(
+                f"A auxiliary contains duplicate normalized user trajectory: {cid}"
+            )
         seen_ids.add(cid)
-        seen_hashes.add(trajectory_hash)
+        a_aux_hashes.add(trajectory_hash)
         included_a.append(record)
 
     # B auxiliary follows the frozen optimized-branch attachment policy.
@@ -884,7 +892,7 @@ def attach_auxiliary(
             raise RuntimeError(f"{cid}: B auxiliary missing frozen group/hash")
 
         # Cross-A/B exact auxiliary duplication is an independent-corpus defect.
-        if trajectory_hash in seen_hashes and trajectory_hash not in hash_owner:
+        if trajectory_hash in a_aux_hashes:
             raise RuntimeError(
                 f"B auxiliary exact trajectory duplicates A auxiliary: {cid}"
             )
@@ -912,7 +920,6 @@ def attach_auxiliary(
             if owner == "train"
             else "included_aux_only_family"
         ] += 1
-        seen_hashes.add(trajectory_hash)
 
     train_with_aux = (
         list(splits["train"])
