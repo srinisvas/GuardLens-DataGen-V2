@@ -285,7 +285,11 @@ contract:
 - `pivot_loss_weight=0.0`
 - `span_loss_weight=0.0`
 
-All 721 broad benign records extend to at most 64 physical turns. The canonical\nGuardLens runtime ceiling is therefore 64 so these validated conversations can be\nretained unchanged rather than truncated or silently dropped.\n\nPrimary splitting must remain independent. As with Dataset B, auxiliary rows are
+All 721 broad benign records extend to at most 64 physical turns. The canonical
+GuardLens runtime ceiling is therefore 64 so these validated conversations can be
+retained unchanged rather than truncated or silently dropped.
+
+Primary splitting must remain independent. As with Dataset B, auxiliary rows are
 added to training only after the primary train/dev/test split is frozen; they do
 not enter dev or test and cannot provide localization targets.
 
