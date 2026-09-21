@@ -725,12 +725,21 @@ def main() -> None:
                     and validation.get("judge_vllm_batch_invariant") is True
                     and validation.get("judge_vllm_enforce_eager") is True
                 ):
+                    previous_restoration = copy.deepcopy(
+                        cached.get("twin_restoration", {}) or {}
+                    )
                     cached = apply_restoration_policy(copy.deepcopy(cached), args)
                     if turn_text_hash(cached) != input_hash:
                         raise RuntimeError(
                             f"{cid}: cached conversation text changed while "
                             "refreshing restoration policy"
                         )
+                    if (
+                        cached.get("twin_restoration", {})
+                        != previous_restoration
+                    ):
+                        ckpt.write(json.dumps(cached, ensure_ascii=False) + "\n")
+                        ckpt.flush()
                     completed[cid] = cached
                     continue
 
