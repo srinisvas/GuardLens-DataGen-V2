@@ -21,6 +21,7 @@ import json
 import math
 import os
 import random
+import shutil
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -673,6 +674,74 @@ def filter_aux_against_primary_and_each_other(
     return kept_a, kept_b, dict(excluded)
 
 
+def assert_b_aux_no_eval_group_leakage(
+    b_aux: Sequence[Dict],
+    splits: Dict[str, List[Dict]],
+) -> Dict:
+    """B auxiliary may join train only if it does not belong to a dev/test B group."""
+    primary_groups = {}
+    for split_name, records in splits.items():
+        pair_ids = {
+            str(r.get("pair_id"))
+            for r in records
+            if r.get("corpus_source") == "frontier_authored_v3"
+            and r.get("pair_id") not in (None, "")
+        }
+        scenarios = {
+            frontier_scenario(r)
+            for r in records
+            if r.get("corpus_source") == "frontier_authored_v3"
+            and frontier_scenario(r)
+        }
+        primary_groups[split_name] = {
+            "pair_ids": pair_ids,
+            "scenarios": scenarios,
+        }
+
+    overlaps = Counter()
+    examples = []
+    for record in b_aux:
+        cid = str(record.get("conversation_id", ""))
+        pair_id = str(record.get("pair_id", ""))
+        scenario = frontier_scenario(record)
+
+        for split_name in ("dev", "test"):
+            if pair_id and pair_id in primary_groups[split_name]["pair_ids"]:
+                overlaps[f"{split_name}:pair_id"] += 1
+                examples.append((cid, split_name, "pair_id", pair_id))
+            if scenario and scenario in primary_groups[split_name]["scenarios"]:
+                overlaps[f"{split_name}:scenario_family"] += 1
+                examples.append((cid, split_name, "scenario_family", scenario))
+
+    if overlaps:
+        raise RuntimeError(
+            "B auxiliary would leak primary dev/test grouping information into "
+            f"training: counts={dict(overlaps)} examples={examples[:10]}"
+        )
+
+    train_pair_overlap = sum(
+        1 for r in b_aux
+        if str(r.get("pair_id", ""))
+        and str(r.get("pair_id", "")) in primary_groups["train"]["pair_ids"]
+    )
+    train_scenario_overlap = sum(
+        1 for r in b_aux
+        if frontier_scenario(r)
+        and frontier_scenario(r) in primary_groups["train"]["scenarios"]
+    )
+    return {
+        "dev_test_group_overlap": 0,
+        "train_pair_id_overlap": train_pair_overlap,
+        "train_scenario_family_overlap": train_scenario_overlap,
+        "records_without_pair_id": sum(
+            1 for r in b_aux if r.get("pair_id") in (None, "")
+        ),
+        "records_without_scenario_family": sum(
+            1 for r in b_aux if not frontier_scenario(r)
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--a-primary", required=True)
@@ -778,6 +847,7 @@ def main() -> None:
         fractions,
         max_group=max(len(group) for group in groups.values()),
     )
+    b_aux_group_audit = assert_b_aux_no_eval_group_leakage(b_aux, splits)
 
     kept_a_aux, kept_b_aux, aux_exclusions = filter_aux_against_primary_and_each_other(
         a_aux, b_aux, primary
@@ -809,13 +879,20 @@ def main() -> None:
     if aux_ids & primary_dev_ids or aux_ids & primary_test_ids:
         raise RuntimeError("auxiliary record leaked into dev/test")
 
-    # No primary test access is needed downstream to create the train+aux artifact.
+    # Emit the exact layout consumed by GuardLens-Transformer/train_naacl.slurm.
     os.makedirs(args.output_dir, exist_ok=True)
+    primary_dir = os.path.join(args.output_dir, "splits_primary")
+    aux_dir = os.path.join(args.output_dir, "splits_primary_plus_train_auxiliary")
+    os.makedirs(primary_dir, exist_ok=True)
+    os.makedirs(aux_dir, exist_ok=True)
+
     primary_path = os.path.join(args.output_dir, "primary_all.jsonl")
-    train_path = os.path.join(args.output_dir, "train_primary.jsonl")
-    dev_path = os.path.join(args.output_dir, "dev_primary.jsonl")
-    test_path = os.path.join(args.output_dir, "test_primary.jsonl")
-    train_aux_path = os.path.join(args.output_dir, "train_with_aux.jsonl")
+    train_path = os.path.join(primary_dir, "train.jsonl")
+    dev_path = os.path.join(primary_dir, "dev.jsonl")
+    test_path = os.path.join(primary_dir, "test.jsonl")
+    train_aux_path = os.path.join(aux_dir, "train.jsonl")
+    aux_dev_path = os.path.join(aux_dir, "dev.jsonl")
+    aux_test_path = os.path.join(aux_dir, "test.jsonl")
     a_aux_path = os.path.join(args.output_dir, "a_detection_aux.jsonl")
     b_aux_path = os.path.join(args.output_dir, "b_detection_aux.jsonl")
 
@@ -824,17 +901,27 @@ def main() -> None:
     write_jsonl(splits["dev"], dev_path)
     write_jsonl(splits["test"], test_path)
     write_jsonl(train_with_aux, train_aux_path)
+    # Auxiliary candidate changes TRAIN only. Copy bytes so identity is literal.
+    shutil.copyfile(dev_path, aux_dev_path)
+    shutil.copyfile(test_path, aux_test_path)
     write_jsonl(kept_a_aux, a_aux_path)
     write_jsonl(kept_b_aux, b_aux_path)
+
+    if sha256_file(dev_path) != sha256_file(aux_dev_path):
+        raise RuntimeError("auxiliary candidate dev is not byte-identical to primary dev")
+    if sha256_file(test_path) != sha256_file(aux_test_path):
+        raise RuntimeError("auxiliary candidate test is not byte-identical to primary test")
 
     output_hashes = {
         name: sha256_file(path)
         for name, path in {
             "primary_all": primary_path,
-            "train_primary": train_path,
-            "dev_primary": dev_path,
-            "test_primary": test_path,
-            "train_with_aux": train_aux_path,
+            "primary_train": train_path,
+            "primary_dev": dev_path,
+            "primary_test": test_path,
+            "auxiliary_candidate_train": train_aux_path,
+            "auxiliary_candidate_dev": aux_dev_path,
+            "auxiliary_candidate_test": aux_test_path,
             "a_detection_aux": a_aux_path,
             "b_detection_aux": b_aux_path,
         }.items()
@@ -861,6 +948,7 @@ def main() -> None:
         },
         "train_with_aux": describe(train_with_aux),
         "auxiliary_exclusions": aux_exclusions,
+        "b_aux_group_audit": b_aux_group_audit,
         "policy": {
             "primary_split_before_auxiliary_attachment": True,
             "a_grouping": "original generation-time pair_id",
@@ -879,7 +967,46 @@ def main() -> None:
         },
         "output_sha256": output_hashes,
     }
+
+    # Keep a detailed manifest for DataGen review.
     write_json(metadata, os.path.join(args.output_dir, "freeze_manifest.json"))
+
+    # Emit the compatibility report consumed fail-closed by Transformer
+    # guardlens.data.verify_freeze and train_naacl.slurm.
+    freeze_report = {
+        "status": "passed",
+        "artifact_sha256": {
+            "primary_train": output_hashes["primary_train"],
+            "primary_dev": output_hashes["primary_dev"],
+            "primary_test": output_hashes["primary_test"],
+            "auxiliary_candidate_train": output_hashes["auxiliary_candidate_train"],
+            "auxiliary_candidate_dev": output_hashes["auxiliary_candidate_dev"],
+            "auxiliary_candidate_test": output_hashes["auxiliary_candidate_test"],
+        },
+        "counts": {
+            "primary_splits": {
+                "train": len(splits["train"]),
+                "dev": len(splits["dev"]),
+                "test": len(splits["test"]),
+            },
+            "primary_all": len(primary),
+        },
+        "auxiliary_candidate": {
+            "train_records": len(train_with_aux),
+            "dev_records": len(splits["dev"]),
+            "test_records": len(splits["test"]),
+            "a_auxiliary_records": len(kept_a_aux),
+            "b_auxiliary_records": len(kept_b_aux),
+            "dev_byte_identical_to_primary": True,
+            "test_byte_identical_to_primary": True,
+        },
+        "input_sha256": actual_hashes,
+        "policy": metadata["policy"],
+    }
+    write_json(
+        freeze_report,
+        os.path.join(args.output_dir, "data_prep_freeze_report.json"),
+    )
     print(json.dumps(metadata, indent=2, sort_keys=True))
 
 
