@@ -251,6 +251,13 @@ bridge gate, the accepted primary contains 516 malicious records and their 516
 original semantic benign twins. Do not length-match, truncate, or replace those
 twins.
 
+The historical EMNLP final Dataset A contained 1,213 benign records: 721
+separately generated clean benign records plus 492 validated interactive benign
+twins (see `logs/final_data.out`). The restored primary replaces that historical
+twin component with the 516 twins that survive the current repaired malicious
+gate and frozen 24B stored-response bridge. The same 721 broad clean-benign
+population is retained separately for detection support.
+
 The older broad benign population remains useful, but it has a different role.
 `results-new/naacl_legacy_benign_stress.jsonl` contains the 721 historically
 validated full benign conversations before the old one-to-one prefix
