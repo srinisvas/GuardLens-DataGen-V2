@@ -30,6 +30,7 @@ import os
 import random
 import shutil
 import subprocess
+import unicodedata
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -200,6 +201,7 @@ def n_user_turns(record: Dict) -> int:
 
 
 def normalized_user_hash(record: Dict) -> str:
+    """Frozen B-compatible whitespace-normalized user-trajectory hash."""
     texts = [
         str(turn.get("text", "")).strip()
         for turn in record.get("turns", [])
@@ -208,6 +210,18 @@ def normalized_user_hash(record: Dict) -> str:
     normalized = "\n<USER_TURN>\n".join(
         " ".join(text.split()) for text in texts
     )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def nfkc_casefold_user_hash(record: Dict) -> str:
+    """Stronger exact-content leakage hash used in addition to frozen B hash."""
+    texts = []
+    for turn in record.get("turns", []):
+        if str(turn.get("role", "")).lower() != "user":
+            continue
+        text = unicodedata.normalize("NFKC", str(turn.get("text", "")))
+        texts.append(" ".join(text.casefold().split()))
+    normalized = "\n<USER_TURN>\n".join(texts)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -550,6 +564,7 @@ def canonicalize_a_primary(record: Dict) -> Dict:
     metadata = out.setdefault("metadata", {})
     metadata["consolidated_split_group"] = f"legacy::pair::{pair_id}"
     metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
+    metadata["nfkc_casefold_user_trajectory_hash"] = nfkc_casefold_user_hash(out)
     metadata["observable_turn_hash"] = observable_turn_hash(out)
     return out
 
@@ -567,6 +582,7 @@ def canonicalize_b_primary(record: Dict) -> Dict:
         )
     metadata["consolidated_split_group"] = expected_group
     metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
+    metadata["nfkc_casefold_user_trajectory_hash"] = nfkc_casefold_user_hash(out)
     metadata["observable_turn_hash"] = observable_turn_hash(out)
     return out
 
@@ -578,21 +594,32 @@ def assert_primary_cross_corpus_integrity(records: Sequence[Dict]) -> None:
         raise RuntimeError(f"primary missing/duplicate conversation IDs: {duplicates[:10]}")
 
     hash_groups = defaultdict(set)
+    strong_hash_groups = defaultdict(set)
     for record in records:
         metadata = record.get("metadata", {}) or {}
         trajectory_hash = str(metadata.get("normalized_user_trajectory_hash", ""))
+        strong_hash = nfkc_casefold_user_hash(record)
         group = str(metadata.get("consolidated_split_group", ""))
         if not trajectory_hash or not group:
             raise RuntimeError(
                 f"{record.get('conversation_id')}: missing primary hash/group"
             )
         hash_groups[trajectory_hash].add(group)
+        strong_hash_groups[strong_hash].add(group)
 
     cross_group = [h for h, groups in hash_groups.items() if len(groups) > 1]
     if cross_group:
         raise RuntimeError(
             "exact normalized primary user trajectories cross independent groups: "
             f"{cross_group[:10]}"
+        )
+    strong_cross_group = [
+        h for h, groups in strong_hash_groups.items() if len(groups) > 1
+    ]
+    if strong_cross_group:
+        raise RuntimeError(
+            "NFKC/casefold-equivalent primary user trajectories cross independent "
+            f"groups: {strong_cross_group[:10]}"
         )
 
 
@@ -762,6 +789,7 @@ def assert_primary_split_integrity(
     pair_owner = {}
     scenario_owner = {}
     hash_owner = {}
+    strong_hash_owner = {}
     ids = set()
 
     for split_name, records in splits.items():
@@ -791,6 +819,12 @@ def assert_primary_split_integrity(
             if prior != split_name:
                 raise RuntimeError(
                     "exact primary user-trajectory leakage across splits"
+                )
+            strong_hash = nfkc_casefold_user_hash(record)
+            prior = strong_hash_owner.setdefault(strong_hash, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    "NFKC/casefold primary user-trajectory leakage across splits"
                 )
 
             pair_id = str(record.get("pair_id", "")).strip()
@@ -826,9 +860,10 @@ def assert_primary_split_integrity(
 
 def index_primary_ownership(
     splits: Dict[str, List[Dict]],
-) -> Tuple[Dict[str, str], Dict[str, str], set]:
+) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str], set]:
     group_owner: Dict[str, str] = {}
     hash_owner: Dict[str, str] = {}
+    strong_hash_owner: Dict[str, str] = {}
     ids = set()
 
     for split_name, records in splits.items():
@@ -856,8 +891,14 @@ def index_primary_ownership(
                 raise RuntimeError(
                     "primary exact trajectory ownership conflict"
                 )
+            strong_hash = nfkc_casefold_user_hash(record)
+            prior = strong_hash_owner.setdefault(strong_hash, split_name)
+            if prior != split_name:
+                raise RuntimeError(
+                    "primary NFKC/casefold trajectory ownership conflict"
+                )
 
-    return group_owner, hash_owner, ids
+    return group_owner, hash_owner, strong_hash_owner, ids
 
 
 def canonicalize_a_aux(record: Dict) -> Dict:
@@ -868,6 +909,7 @@ def canonicalize_a_aux(record: Dict) -> Dict:
         f"legacy_aux::conversation::{out.get('conversation_id')}"
     )
     metadata["normalized_user_trajectory_hash"] = normalized_user_hash(out)
+    metadata["nfkc_casefold_user_trajectory_hash"] = nfkc_casefold_user_hash(out)
     metadata["observable_turn_hash"] = observable_turn_hash(out)
     return out
 
@@ -877,19 +919,22 @@ def attach_auxiliary(
     a_aux: Sequence[Dict],
     b_aux: Sequence[Dict],
 ) -> Tuple[Dict[str, List[Dict]], List[Dict], List[Dict], Dict]:
-    group_owner, hash_owner, primary_ids = index_primary_ownership(splits)
+    group_owner, hash_owner, strong_hash_owner, primary_ids = index_primary_ownership(splits)
 
     # A auxiliary is independently generated and intentionally train-only.
     # Any exact overlap with primary is unexpected and therefore fail-closed.
     seen_ids = set(primary_ids)
     primary_hashes = set(hash_owner)
+    primary_strong_hashes = set(strong_hash_owner)
     a_aux_hashes = set()
+    a_aux_strong_hashes = set()
     included_a: List[Dict] = []
 
     for original in a_aux:
         record = canonicalize_a_aux(original)
         cid = str(record.get("conversation_id", ""))
         trajectory_hash = normalized_user_hash(record)
+        strong_hash = nfkc_casefold_user_hash(record)
 
         if cid in seen_ids:
             raise RuntimeError(
@@ -899,12 +944,17 @@ def attach_auxiliary(
             raise RuntimeError(
                 f"A auxiliary exact user trajectory overlaps primary material: {cid}"
             )
-        if trajectory_hash in a_aux_hashes:
+        if strong_hash in primary_strong_hashes:
             raise RuntimeError(
-                f"A auxiliary contains duplicate normalized user trajectory: {cid}"
+                f"A auxiliary NFKC/casefold trajectory overlaps primary material: {cid}"
+            )
+        if trajectory_hash in a_aux_hashes or strong_hash in a_aux_strong_hashes:
+            raise RuntimeError(
+                f"A auxiliary contains duplicate/equivalent user trajectory: {cid}"
             )
         seen_ids.add(cid)
         a_aux_hashes.add(trajectory_hash)
+        a_aux_strong_hashes.add(strong_hash)
         included_a.append(record)
 
     # B auxiliary follows the frozen optimized-branch attachment policy.
@@ -928,22 +978,26 @@ def attach_auxiliary(
         trajectory_hash = str(
             metadata.get("normalized_user_trajectory_hash", "")
         ).strip()
+        strong_hash = nfkc_casefold_user_hash(record)
         if not group or not trajectory_hash:
             raise RuntimeError(f"{cid}: B auxiliary missing frozen group/hash")
 
         # Cross-A/B exact auxiliary duplication is an independent-corpus defect.
-        if trajectory_hash in a_aux_hashes:
+        if trajectory_hash in a_aux_hashes or strong_hash in a_aux_strong_hashes:
             raise RuntimeError(
-                f"B auxiliary exact trajectory duplicates A auxiliary: {cid}"
+                f"B auxiliary exact/equivalent trajectory duplicates A auxiliary: {cid}"
             )
 
         owner = group_owner.get(group)
         exact_owner = hash_owner.get(trajectory_hash)
+        strong_owner = strong_hash_owner.get(strong_hash)
         reason = None
         if owner in {"dev", "test"}:
             reason = f"primary_{owner}_family"
         elif exact_owner in {"dev", "test"}:
             reason = f"primary_{exact_owner}_exact_user_trajectory"
+        elif strong_owner in {"dev", "test"}:
+            reason = f"primary_{strong_owner}_nfkc_casefold_user_trajectory"
 
         if reason is not None:
             withheld = copy.deepcopy(record)
