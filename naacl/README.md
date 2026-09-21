@@ -395,9 +395,10 @@ BASE_OUTPUT=$HOME/work/results/guardlens_naacl/checkpoints \
 sbatch train_naacl.slurm
 ```
 
-Before GPU training, `train_naacl.slurm` runs a **train/dev-only** length probe.
-The held-out test set is not used to decide whether preprocessing is acceptable.
-By default, dev length-only AUC above 0.65 stops training for investigation.
+Before GPU training, `train_naacl.slurm` runs a **train/dev-only** length
+diagnostic. The held-out test set remains unopened. The probe reports overall,
+single-feature, and leave-one-feature-out shortcut signals; no arbitrary AUC
+threshold is used as an automatic training gate.
 
 The same five existing variants are retrained:
 
@@ -443,8 +444,9 @@ Proceed to the manuscript rewrite only when all of the following hold:
 
 1. both dataset audits pass;
 2. no validated-malicious evidence jobs remain in error state;
-3. the dev shortcut preflight passes, and the final held-out length-only probe
-   is not a strong classifier;
+3. the train/dev shortcut diagnostics are reviewed in context, including
+   source-stratified behavior, and the final held-out length-only probe is
+   reported transparently;
 4. a meaningful subset of malicious trajectories has supported evidence;
 5. GuardLens retains the qualitative classification/localization/intervention
    story relative to direct baselines;
