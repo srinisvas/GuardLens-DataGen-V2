@@ -499,14 +499,14 @@ cat "$CANDIDATE_STATS"
 echo "--- Writing completion receipt ---"
 python - \
     "$COMPLETION_MANIFEST" "$REVIEWED_HEAD" "$INPUT_FILE" "$ORIGINAL_SOURCE_FILE" \
-    "$FROZEN_PREPARED_A" "$OUTPUT_FILE" "$STATS_FILE" "$CANDIDATE_FILE" \
+    "$ORIGINAL_SOURCE_MANIFEST" "$FROZEN_PREPARED_A" "$OUTPUT_FILE" "$STATS_FILE" "$CANDIDATE_FILE" \
     "$CANDIDATE_STATS" "$EXCLUDED_FILE" "$CACHED_REVISION" "${SLURM_JOB_ID:-unknown}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
 (
-    manifest_path, git_head, input_file, source_file, frozen_prepared,
-    bridge_output, bridge_stats, candidate, candidate_stats, excluded,
-    judge_revision, job_id,
+    manifest_path, git_head, input_file, source_file, source_manifest,
+    frozen_prepared, bridge_output, bridge_stats, candidate, candidate_stats,
+    excluded, judge_revision, job_id,
 ) = sys.argv[1:]
 
 def digest(path):
@@ -528,6 +528,7 @@ receipt = {
     "git_head": git_head,
     "slurm_job_id": job_id,
     "protocol": "legacy_stored_target_dataset_b_v5_bridge_v1",
+    "restoration_policy_version": "stored_llama_24b_gate_historical_7b_diagnostic_v2",
     "dataset_b_judge_protocol": "frontier_context_judge_v5",
     "judge_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
     "judge_revision": judge_revision,
@@ -535,6 +536,7 @@ receipt = {
     "inputs": {
         "restoration_input": digest(input_file),
         "original_source": digest(source_file),
+        "original_source_manifest": digest(source_manifest),
         "frozen_prepared_a": digest(frozen_prepared),
     },
     "outputs": {
